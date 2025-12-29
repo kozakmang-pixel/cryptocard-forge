@@ -1,15 +1,20 @@
 // src/components/AnimatedBackground.tsx
 import { useEffect, useRef } from 'react';
 
-interface Node {
+type Node = {
   x: number;
   y: number;
   vx: number;
   vy: number;
-}
+};
+
+const NODE_COUNT = 70;
+const MAX_SPEED = 0.25;
+const CONNECT_DISTANCE = 220; // px
 
 export function AnimatedBackground() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const rafRef = useRef<number | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -17,51 +22,34 @@ export function AnimatedBackground() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    let animationFrameId: number;
-    let nodes: Node[] = [];
-    let lastTime = 0;
-
-    const DPR = window.devicePixelRatio || 1;
+    let width = window.innerWidth;
+    let height = window.innerHeight;
 
     const resize = () => {
-      const { innerWidth, innerHeight } = window;
-      canvas.width = innerWidth * DPR;
-      canvas.height = innerHeight * DPR;
-      canvas.style.width = `${innerWidth}px`;
-      canvas.style.height = `${innerHeight}px`;
-      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-
-      const count = Math.floor((innerWidth * innerHeight) / 26000); // ~60 on 1920x1080
-      nodes = [];
-      for (let i = 0; i < count; i++) {
-        nodes.push({
-          x: Math.random() * innerWidth,
-          y: Math.random() * innerHeight,
-          vx: (Math.random() - 0.5) * 0.25,
-          vy: (Math.random() - 0.5) * 0.25,
-        });
-      }
+      width = window.innerWidth;
+      height = window.innerHeight;
+      canvas.width = width;
+      canvas.height = height;
     };
 
     resize();
     window.addEventListener('resize', resize);
 
-    const maxDist = 180;
-    const maxDistSq = maxDist * maxDist;
+    // Seed nodes
+    const nodes: Node[] = [];
+    for (let i = 0; i < NODE_COUNT; i++) {
+      nodes.push({
+        x: Math.random() * width,
+        y: Math.random() * height,
+        vx: (Math.random() - 0.5) * MAX_SPEED,
+        vy: (Math.random() - 0.5) * MAX_SPEED,
+      });
+    }
 
-    const draw = (time: number) => {
-      const dt = time - lastTime;
-      if (dt < 33) {
-        animationFrameId = requestAnimationFrame(draw);
-        return;
-      }
-      lastTime = time;
+    const maxDistSq = CONNECT_DISTANCE * CONNECT_DISTANCE;
 
-      const width = canvas.clientWidth;
-      const height = canvas.clientHeight;
-
-      // Soft background
-      ctx.clearRect(0, 0, width, height);
+    const drawFrame = () => {
+      // Soft gradient background similar to your reference GIF
       const grad = ctx.createRadialGradient(
         width * 0.5,
         height * 0.3,
@@ -70,90 +58,113 @@ export function AnimatedBackground() {
         height * 0.5,
         Math.max(width, height)
       );
-      grad.addColorStop(0, 'rgba(34, 197, 235, 0.10)');
-      grad.addColorStop(0.35, 'rgba(16, 185, 129, 0.08)');
-      grad.addColorStop(1, 'rgba(15, 23, 42, 0.0)');
+      grad.addColorStop(0, 'rgba(45, 212, 191, 0.12)');
+      grad.addColorStop(0.4, 'rgba(56, 189, 248, 0.10)');
+      grad.addColorStop(1, 'rgba(2, 6, 23, 1.0)'); // slate-950 base
+
       ctx.fillStyle = grad;
       ctx.fillRect(0, 0, width, height);
 
-      // Update + draw network
-      ctx.lineWidth = 0.7;
-      ctx.strokeStyle = 'rgba(56, 189, 248, 0.20)';
-      ctx.fillStyle = 'rgba(56, 189, 248, 0.85)';
-
-      for (let i = 0; i < nodes.length; i++) {
-        const n = nodes[i];
-
+      // Update positions with gentle drift
+      for (const n of nodes) {
         n.x += n.vx;
         n.y += n.vy;
 
-        if (n.x < -40) n.x = width + 40;
-        if (n.x > width + 40) n.x = -40;
-        if (n.y < -40) n.y = height + 40;
-        if (n.y > height + 40) n.y = -40;
+        if (n.x < 0) {
+          n.x = 0;
+          n.vx *= -1;
+        } else if (n.x > width) {
+          n.x = width;
+          n.vx *= -1;
+        }
 
+        if (n.y < 0) {
+          n.y = 0;
+          n.vy *= -1;
+        } else if (n.y > height) {
+          n.y = height;
+          n.vy *= -1;
+        }
+      }
+
+      // Draw connections
+      ctx.lineWidth = 0.5;
+      for (let i = 0; i < nodes.length; i++) {
         for (let j = i + 1; j < nodes.length; j++) {
-          const m = nodes[j];
-          const dx = n.x - m.x;
-          const dy = n.y - m.y;
+          const a = nodes[i];
+          const b = nodes[j];
+          const dx = a.x - b.x;
+          const dy = a.y - b.y;
           const distSq = dx * dx + dy * dy;
-          if (distSq < maxDistSq) {
-            const alpha = 1 - distSq / maxDistSq;
-            ctx.globalAlpha = alpha * 0.6;
+
+          if (distSq <= maxDistSq) {
+            const t = 1 - distSq / maxDistSq; // 0..1
+            const alpha = 0.16 * t;
+
+            ctx.strokeStyle = `rgba(56, 189, 248, ${alpha})`;
             ctx.beginPath();
-            ctx.moveTo(n.x, n.y);
-            ctx.lineTo(m.x, m.y);
+            ctx.moveTo(a.x, a.y);
+            ctx.lineTo(b.x, b.y);
             ctx.stroke();
           }
         }
       }
 
-      // Nodes on top
-      ctx.globalAlpha = 1;
+      // Draw glowing nodes
       for (const n of nodes) {
-        const pulse =
-          1 + 0.4 * Math.sin((time / 900) + (n.x + n.y) * 0.01);
-
-        const radius = 1.1 * pulse;
-        const glowRadius = 3.2 * pulse;
-
-        const radial = ctx.createRadialGradient(
+        const nodeGrad = ctx.createRadialGradient(
           n.x,
           n.y,
           0,
           n.x,
           n.y,
-          glowRadius
+          10
         );
-        radial.addColorStop(0, 'rgba(125, 211, 252, 0.9)');
-        radial.addColorStop(0.4, 'rgba(56, 189, 248, 0.6)');
-        radial.addColorStop(1, 'rgba(15, 23, 42, 0)');
-        ctx.fillStyle = radial;
+        nodeGrad.addColorStop(0, 'rgba(45, 212, 191, 0.95)');
+        nodeGrad.addColorStop(0.5, 'rgba(56, 189, 248, 0.4)');
+        nodeGrad.addColorStop(1, 'rgba(15, 23, 42, 0)');
+
+        ctx.fillStyle = nodeGrad;
         ctx.beginPath();
-        ctx.arc(n.x, n.y, glowRadius, 0, Math.PI * 2);
+        ctx.arc(n.x, n.y, 10, 0, Math.PI * 2);
         ctx.fill();
 
-        ctx.fillStyle = 'rgba(240, 249, 255, 0.95)';
+        ctx.fillStyle = 'rgba(190, 242, 255, 0.9)';
         ctx.beginPath();
-        ctx.arc(n.x, n.y, radius, 0, Math.PI * 2);
+        ctx.arc(n.x, n.y, 1.8, 0, Math.PI * 2);
         ctx.fill();
       }
 
-      animationFrameId = requestAnimationFrame(draw);
+      rafRef.current = window.requestAnimationFrame(drawFrame);
     };
 
-    animationFrameId = requestAnimationFrame(draw);
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)');
+    if (media.matches) {
+      // One static frame for people who disable animation
+      drawFrame();
+    } else {
+      rafRef.current = window.requestAnimationFrame(drawFrame);
+    }
 
     return () => {
-      cancelAnimationFrame(animationFrameId);
+      if (rafRef.current !== null) {
+        window.cancelAnimationFrame(rafRef.current);
+      }
       window.removeEventListener('resize', resize);
     };
   }, []);
 
   return (
-    <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
-      <canvas ref={canvasRef} className="w-full h-full" />
-      <div className="absolute inset-0 mix-blend-screen opacity-70 bg-[radial-gradient(circle_at_top,_rgba(56,189,248,0.16),transparent_55%),radial-gradient(circle_at_bottom,_rgba(34,197,94,0.12),transparent_60%)]" />
+    <div
+      className="fixed inset-0 -z-10 pointer-events-none"
+      style={{
+        background:
+          'radial-gradient(circle at 0% 0%, rgba(45,212,191,0.18), transparent 55%), ' +
+          'radial-gradient(circle at 100% 100%, rgba(56,189,248,0.14), transparent 55%), ' +
+          '#020617',
+      }}
+    >
+      <canvas ref={canvasRef} className="w-full h-full opacity-80" />
     </div>
   );
 }
