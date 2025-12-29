@@ -1,28 +1,46 @@
+// src/components/UserDashboard.tsx
 import { useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { apiService } from '@/services/api';
-import { ExternalLink, LogOut, RefreshCw, Trash2 } from 'lucide-react';
 import { useLanguage } from '@/lib/languageStore';
+import { toast } from 'sonner';
+import { Loader2, RefreshCcw, Mail, LogOut, CreditCard } from 'lucide-react';
+
+interface UserInfo {
+  id: string;
+  username: string;
+  email?: string;
+}
 
 interface UserDashboardProps {
   token: string | null;
-  user: { id: string; username: string; email?: string | null };
+  user: UserInfo | null;
   onLogout: () => void;
   onEmailUpdate: (email: string) => void;
   refreshKey: number;
 }
 
-interface DbCard {
-  id: string;
+interface DashboardCard {
   public_id: string;
   created_at: string;
   funded: boolean;
   locked: boolean;
   claimed: boolean;
   token_amount: number | null;
-  currency: string | null;
   amount_fiat: number | null;
+  currency: string | null;
+}
+
+function formatDateTime(iso: string) {
+  if (!iso) return '-';
+  const d = new Date(iso);
+  return d.toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 export function UserDashboard({
@@ -33,75 +51,82 @@ export function UserDashboard({
   refreshKey,
 }: UserDashboardProps) {
   const { t } = useLanguage();
-  const [cards, setCards] = useState<DbCard[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [emailEditing, setEmailEditing] = useState(false);
-  const [emailInput, setEmailInput] = useState(user.email || '');
 
-  const loadCards = async () => {
+  const [cards, setCards] = useState<DashboardCard[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [solPrice, setSolPrice] = useState<number | null>(null);
+  const [emailInput, setEmailInput] = useState(user?.email || '');
+  const [savingEmail, setSavingEmail] = useState(false);
+
+  // Fetch SOL price from backend
+  const fetchSolPrice = async () => {
+    try {
+      const res = await fetch('/sol-price');
+      if (!res.ok) throw new Error('Failed to fetch SOL price');
+      const data = await res.json();
+      const price = typeof data.price_usd === 'number' ? data.price_usd : data.sol_price_usd;
+      if (typeof price === 'number') {
+        setSolPrice(price);
+      }
+    } catch (err) {
+      console.error('UserDashboard: failed to fetch SOL price', err);
+    }
+  };
+
+  // Fetch cards created by this user
+  const fetchCards = async () => {
     if (!token) return;
     setLoading(true);
     try {
-      const data = await apiService.getMyCards(token);
-      setCards(data as DbCard[]);
-    } catch (err) {
-      console.error('UserDashboard error', err);
+      const res = await fetch('/my-cards', {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      if (!res.ok) {
+        throw new Error('Failed to load cards');
+      }
+      const data = (await res.json()) as DashboardCard[];
+      setCards(Array.isArray(data) ? data : []);
+    } catch (err: any) {
+      console.error('UserDashboard: failed to fetch cards', err);
+      toast.error(err?.message || 'Failed to load your cards');
     } finally {
       setLoading(false);
     }
   };
 
+  // Initial + refresh on refreshKey change
   useEffect(() => {
-    loadCards();
+    fetchSolPrice();
+    fetchCards();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, refreshKey]);
+  }, [refreshKey, token]);
 
-  const recent = useMemo(() => cards.slice(0, 10), [cards]);
-
-  const formatDateTime = (iso: string) => {
-    try {
-      const d = new Date(iso);
-      return d.toLocaleString();
-    } catch {
-      return iso;
+  // Keep email input in sync with user
+  useEffect(() => {
+    if (user?.email) {
+      setEmailInput(user.email);
     }
-  };
+  }, [user?.email]);
 
-  const formatUsd = (v: number | null | undefined) =>
-    v && v > 0 ? `$${v.toFixed(2)} USD` : '$0.00 USD';
-
-  const formatSol = (v: number | null | undefined) =>
-    v && v > 0 ? `${v.toFixed(6)} SOL` : '0.000000 SOL';
-
-  const displayStatus = (c: DbCard) => {
-    if (c.claimed) return 'Claimed • completed';
-    if (c.locked && c.funded) return 'Locked • ready to claim';
-    if (c.funded) return 'Funded • awaiting lock';
-    return 'Not funded yet';
-  };
-
-  const handleDelete = async (cardId: string) => {
-    const sure = window.confirm(
-      'Deleting this CRYPTOCARD will permanently remove it from your creator dashboard. On-chain history remains immutable. Continue?'
-    );
-    if (!sure) return;
-
-    try {
-      await apiService.deleteCard(cardId);
-      setCards((prev) => prev.filter((c) => c.public_id !== cardId));
-    } catch (err) {
-      console.error('Failed to delete card', err);
-    }
+  const handleRefreshClick = () => {
+    fetchSolPrice();
+    fetchCards();
   };
 
   const handleEmailSave = async () => {
-    if (!token) return;
     const trimmed = emailInput.trim();
     if (!trimmed || !trimmed.includes('@')) {
-      alert('Please enter a valid email address.');
+      toast.error('Please enter a valid email address');
+      return;
+    }
+    if (!token) {
+      toast.error('Not authenticated');
       return;
     }
 
+    setSavingEmail(true);
     try {
       const res = await fetch('/auth/update-email', {
         method: 'POST',
@@ -112,180 +137,291 @@ export function UserDashboard({
         body: JSON.stringify({ newEmail: trimmed }),
       });
 
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+      const data = await res.json();
+      if (!res.ok || !data.success) {
         throw new Error(data.error || 'Failed to update email');
       }
 
+      toast.success('Notification email updated');
       onEmailUpdate(trimmed);
-      setEmailEditing(false);
-    } catch (err) {
-      console.error('Email update error', err);
-      alert(
-        err instanceof Error ? err.message : 'Failed to update email. Please try again.'
-      );
+    } catch (err: any) {
+      console.error('UserDashboard: update email failed', err);
+      toast.error(err?.message || 'Failed to update email');
+    } finally {
+      setSavingEmail(false);
     }
   };
 
+  const enrichedCards = useMemo(() => {
+    return cards.map((card) => {
+      const sol = typeof card.token_amount === 'number' ? card.token_amount : 0;
+      const currency = card.currency || 'USD';
+      const fiatFromDb =
+        typeof card.amount_fiat === 'number' && card.amount_fiat > 0
+          ? card.amount_fiat
+          : null;
+      const fiat =
+        fiatFromDb !== null
+          ? fiatFromDb
+          : solPrice && sol > 0
+          ? sol * solPrice
+          : 0;
+
+      return {
+        ...card,
+        sol,
+        fiat,
+        currency,
+      };
+    });
+  }, [cards, solPrice]);
+
+  const visibleCards = enrichedCards.slice(0, enrichedCards.length); // all, but scroll container handles height
+
+  const totalCreated = enrichedCards.length;
+  const totalFunded = enrichedCards.filter((c) => c.funded).length;
+  const totalClaimed = enrichedCards.filter((c) => c.claimed).length;
+
   return (
-    <section className="mt-8 glass-card rounded-2xl border border-border/40 bg-card/60 shadow-card">
-      <div className="px-4 pt-4 pb-3 border-b border-border/30 flex items-center justify-between gap-2">
-        <div className="flex-1 text-center">
-          <h2 className="text-base md:text-lg font-black gradient-text uppercase tracking-wide">
-            Creator Dashboard
-          </h2>
-          <p className="text-[10px] text-muted-foreground mt-1">
-            Overview of all CRYPTOCARDS you&apos;ve created on Solana mainnet.
-          </p>
-        </div>
+    <section className="glass-card rounded-xl p-3 mt-5 shadow-card hover:shadow-card-hover transition-all">
+      {/* Header */}
+      <div className="flex flex-col items-center text-center mb-3">
+        <h2 className="text-xs font-black gradient-text tracking-[0.25em] uppercase">
+          CREATOR DASHBOARD
+        </h2>
+        <p className="text-[9px] text-muted-foreground mt-1 max-w-md">
+          Overview of all <span className="font-semibold text-primary">CRYPTOCARDS</span> you&apos;ve
+          created on Solana mainnet.
+        </p>
+      </div>
+
+      {/* Top row: user info + actions */}
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-3">
         <div className="flex items-center gap-2">
+          <div className="w-8 h-8 rounded-full bg-primary/15 border border-primary/30 flex items-center justify-center">
+            <CreditCard className="w-4 h-4 text-primary" />
+          </div>
+          <div className="text-left">
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Signed in as
+            </div>
+            <div className="text-[11px] font-bold">
+              {user?.username || 'Creator'}
+              {user?.email && (
+                <span className="text-[9px] text-muted-foreground ml-1">
+                  · {user.email}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 justify-end">
           <Button
-            size="icon"
+            type="button"
             variant="outline"
-            onClick={loadCards}
+            size="sm"
+            className="h-7 px-2 text-[9px] flex items-center gap-1"
+            onClick={handleRefreshClick}
             disabled={loading}
-            className="h-8 w-8 border-border/40"
           >
-            <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
+            {loading ? (
+              <>
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Refresh
+              </>
+            ) : (
+              <>
+                <RefreshCcw className="w-3 h-3" />
+                Refresh
+              </>
+            )}
           </Button>
           <Button
-            size="icon"
-            variant="outline"
+            type="button"
+            variant="destructive"
+            size="sm"
+            className="h-7 px-2 text-[9px] flex items-center gap-1"
             onClick={onLogout}
-            className="h-8 w-8 border-border/40"
           >
             <LogOut className="w-3 h-3" />
+            Logout
           </Button>
         </div>
       </div>
 
-      <div className="p-4 space-y-3">
-        {/* User + email row */}
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-[10px]">
-          <div>
-            <div className="font-semibold">{user.username}</div>
-            {!emailEditing ? (
-              <div className="flex items-center gap-2 mt-0.5">
-                <span className="text-muted-foreground">
-                  {user.email || 'No email set'}
-                </span>
-                <Button
-                  variant="outline"
-                  size="xs"
-                  className="h-6 px-2 text-[9px]"
-                  onClick={() => {
-                    setEmailInput(user.email || '');
-                    setEmailEditing(true);
-                  }}
-                >
-                  Change email
-                </Button>
-              </div>
-            ) : (
-              <div className="flex flex-col sm:flex-row gap-2 mt-0.5">
-                <Input
-                  value={emailInput}
-                  onChange={(e) => setEmailInput(e.target.value)}
-                  placeholder="your@email.com"
-                  className="h-7 text-[9px] bg-card/60 border-border/40"
-                />
-                <div className="flex gap-1">
-                  <Button
-                    size="xs"
-                    className="h-7 px-2 text-[9px]"
-                    onClick={handleEmailSave}
-                  >
-                    Save
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="xs"
-                    className="h-7 px-2 text-[9px]"
-                    onClick={() => setEmailEditing(false)}
-                  >
-                    Cancel
-                  </Button>
-                </div>
-              </div>
-            )}
+      {/* Email settings */}
+      <div className="mb-3 rounded-lg border border-border/40 bg-card/60 p-2.5">
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <div className="flex items-center gap-2">
+            <Mail className="w-3 h-3 text-primary" />
+            <span className="text-[9px] font-semibold uppercase tracking-wide">
+              Notification email
+            </span>
           </div>
-          <div className="text-muted-foreground">
-            Total cards:{' '}
-            <span className="font-semibold">{cards.length}</span>
-          </div>
-        </div>
-
-        {/* Scrollable list */}
-        <div className="mt-2 max-h-80 overflow-y-auto space-y-2 pr-1">
-          {recent.length === 0 && (
-            <div className="text-[10px] text-muted-foreground text-center py-4">
-              No CRYPTOCARDS created yet. Design and fund a card to see it here.
-            </div>
+          {solPrice !== null && (
+            <span className="text-[8px] text-muted-foreground">
+              Live SOL price: <span className="font-semibold">${solPrice.toFixed(2)} USD</span>
+            </span>
           )}
+        </div>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <Input
+            value={emailInput}
+            onChange={(e) => setEmailInput(e.target.value)}
+            placeholder="your@email.com"
+            className="h-7 text-[10px] bg-background/60 border-border/40"
+          />
+          <Button
+            type="button"
+            size="sm"
+            className="h-7 px-3 text-[9px] font-semibold"
+            onClick={handleEmailSave}
+            disabled={savingEmail}
+          >
+            {savingEmail ? (
+              <>
+                <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                Saving…
+              </>
+            ) : (
+              'Save email'
+            )}
+          </Button>
+        </div>
+        <p className="text-[8px] text-muted-foreground mt-1">
+          Used for claim notifications and security alerts. This does not change your login
+          username.
+        </p>
+      </div>
 
-          {recent.map((c) => {
-            const token = c.token_amount || 0;
-            const fiat = c.amount_fiat || 0;
+      {/* Summary */}
+      <div className="grid grid-cols-3 gap-2 mb-3">
+        <div className="rounded-lg bg-primary/5 border border-primary/30 px-2 py-1.5 text-center">
+          <div className="text-[8px] uppercase tracking-wide text-muted-foreground mb-0.5">
+            Total created
+          </div>
+          <div className="text-[13px] font-black text-primary">{totalCreated}</div>
+        </div>
+        <div className="rounded-lg bg-accent/5 border border-accent/30 px-2 py-1.5 text-center">
+          <div className="text-[8px] uppercase tracking-wide text-muted-foreground mb-0.5">
+            Funded
+          </div>
+          <div className="text-[13px] font-black text-accent">{totalFunded}</div>
+        </div>
+        <div className="rounded-lg bg-secondary/5 border border-secondary/30 px-2 py-1.5 text-center">
+          <div className="text-[8px] uppercase tracking-wide text-muted-foreground mb-0.5">
+            Claimed
+          </div>
+          <div className="text-[13px] font-black text-secondary">{totalClaimed}</div>
+        </div>
+      </div>
 
-            return (
-              <div
-                key={c.id}
-                className="flex items-start justify-between gap-2 bg-background/40 border border-border/40 rounded-lg px-2 py-2 text-[9px]"
-              >
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono font-semibold truncate">
-                      {c.public_id || '—'}
-                    </span>
-                    <span className="text-[8px] text-muted-foreground">
-                      {formatDateTime(c.created_at)}
-                    </span>
+      {/* Cards list */}
+      <div className="rounded-xl border border-border/40 bg-background/40 p-2 max-h-72 overflow-y-auto">
+        {loading && visibleCards.length === 0 && (
+          <div className="flex items-center justify-center py-6 text-[9px] text-muted-foreground">
+            <Loader2 className="w-3 h-3 mr-2 animate-spin" />
+            Loading your CRYPTOCARDS…
+          </div>
+        )}
+
+        {!loading && visibleCards.length === 0 && (
+          <div className="py-5 text-center text-[9px] text-muted-foreground">
+            You haven&apos;t created any CRYPTOCARDS yet. Design one above to see it here.
+          </div>
+        )}
+
+        {visibleCards.map((card) => {
+          const tokenSymbol = 'TOKEN'; // Logical token; for SOL-only cards this will mirror SOL
+          const solDisplay = card.sol ?? 0;
+          const fiatDisplay = card.fiat ?? 0;
+          const currency = card.currency || 'USD';
+
+          let statusLabel = 'Not funded';
+          let statusClass = 'bg-muted text-muted-foreground';
+          if (card.funded && !card.claimed && !card.locked) {
+            statusLabel = 'Funded';
+            statusClass = 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/40';
+          } else if (card.funded && card.locked && !card.claimed) {
+            statusLabel = 'Locked';
+            statusClass = 'bg-amber-500/15 text-amber-400 border border-amber-500/40';
+          } else if (card.claimed) {
+            statusLabel = 'Claimed';
+            statusClass = 'bg-purple-500/15 text-purple-400 border border-purple-500/40';
+          }
+
+          return (
+            <div
+              key={card.public_id}
+              className="mb-2 last:mb-0 rounded-lg bg-card/70 border border-border/40 px-2 py-1.5"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
+                    Card ID
                   </div>
-                  <div className="mt-0.5 text-muted-foreground">{displayStatus(c)}</div>
-                  <div className="mt-1 text-[8px] text-muted-foreground">
-                    Value:{' '}
-                    {token > 0 ? (
-                      <>
-                        <span className="font-semibold">
-                          {token.toFixed(6)} {c.currency || 'SOL'}
-                        </span>{' '}
-                        • <span>{formatUsd(fiat)}</span>
-                      </>
-                    ) : (
-                      'Not funded yet'
-                    )}
+                  <div className="text-[11px] font-mono font-semibold">
+                    {card.public_id}
                   </div>
                 </div>
-
-                <div className="flex flex-col items-end gap-1 flex-shrink-0">
-                  <a
-                    href={`https://solscan.io/account/${encodeURIComponent(
-                      c.public_id
-                    )}?cluster=mainnet`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 text-[8px] text-primary hover:text-primary/80"
-                  >
-                    Solscan
-                    <ExternalLink className="w-3 h-3" />
-                  </a>
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className="h-6 w-6 border-destructive/40 text-destructive hover:bg-destructive/10"
-                    onClick={() => handleDelete(c.public_id)}
-                  >
-                    <Trash2 className="w-3 h-3" />
-                  </Button>
+                <div className="text-right">
+                  <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
+                    Created
+                  </div>
+                  <div className="text-[9px]">
+                    {formatDateTime(card.created_at)}
+                  </div>
                 </div>
               </div>
-            );
-          })}
-        </div>
 
-        <div className="text-[9px] text-muted-foreground text-center mt-2">
-          On-chain history remains immutable even if you delete a CRYPTOCARD from this dashboard.
-        </div>
+              <div className="mt-1 grid grid-cols-3 gap-2">
+                <div>
+                  <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
+                    Token
+                  </div>
+                  <div className="text-[10px] font-semibold">
+                    {solDisplay.toFixed(6)} {tokenSymbol}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
+                    SOL
+                  </div>
+                  <div className="text-[10px] font-semibold">
+                    {solDisplay.toFixed(6)} SOL
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
+                    Fiat
+                  </div>
+                  <div className="text-[10px] font-semibold">
+                    {currency} {fiatDisplay.toFixed(2)}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-1 flex items-center justify-between gap-2">
+                <span
+                  className={
+                    'inline-flex items-center px-2 py-0.5 rounded-full text-[8px] font-semibold ' +
+                    statusClass
+                  }
+                >
+                  {statusLabel.toUpperCase()}
+                </span>
+                <span className="text-[8px] text-muted-foreground">
+                  {card.funded
+                    ? card.claimed
+                      ? 'Funding + claim complete'
+                      : 'Funded on-chain, awaiting lock or claim'
+                    : 'Waiting for deposit to funding address'}
+                </span>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </section>
   );
