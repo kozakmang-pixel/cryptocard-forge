@@ -1,5 +1,3 @@
-// src/components/ClaimModal.tsx
-
 import { useEffect, useMemo, useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -18,13 +16,13 @@ interface ClaimModalProps {
   initialCardId?: string;
 }
 
-interface ClaimResult {
-  success: boolean;
-  signature?: string;
-  amount_sol?: number;
-  amount_fiat?: number;
-  destination_wallet?: string;
-  error?: string;
+interface ClaimSummary {
+  tokenAmount: number;
+  tokenSymbol: string;
+  solAmount: number;
+  usdAmount: number;
+  destination: string;
+  txSignature: string | null;
 }
 
 export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProps) {
@@ -36,6 +34,9 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
   const [loading, setLoading] = useState(false);
   const [pulledCard, setPulledCard] = useState<CardStatusResponse | (CardStatusResponse & any) | null>(null);
 
+  const [solPriceUsd, setSolPriceUsd] = useState<number | null>(null);
+  const [claimSummary, setClaimSummary] = useState<ClaimSummary | null>(null);
+
   // Keep cardId in sync if initialCardId changes (e.g. different /claim?id=...)
   useEffect(() => {
     if (initialCardId) {
@@ -43,12 +44,40 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
     }
   }, [initialCardId]);
 
+  // Fetch SOL price from backend when modal opens
+  useEffect(() => {
+    if (!open) return;
+
+    let cancelled = false;
+
+    const fetchSolPrice = async () => {
+      try {
+        const res = await fetch('/sol-price');
+        if (!res.ok) return;
+        const data = await res.json();
+        const price = typeof data.price_usd === 'number' ? data.price_usd : null;
+        if (!cancelled && price && price > 0) {
+          setSolPriceUsd(price);
+        }
+      } catch {
+        // silent – we fall back to whatever amount_fiat exists
+      }
+    };
+
+    fetchSolPrice();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
   const handleClose = () => {
     setCardId(initialCardId ?? '');
     setWalletAddress('');
     setCvv('');
     setPulledCard(null);
     setLoading(false);
+    setClaimSummary(null);
     onOpenChange(false);
   };
 
@@ -61,6 +90,7 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
 
     setLoading(true);
     setPulledCard(null);
+    setClaimSummary(null);
 
     try {
       const status = await apiService.getCardStatus(trimmed);
@@ -73,16 +103,12 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
       }
 
       setPulledCard(status as any);
-      // Hard-coded professional copy so no more "claim.card found"
-      toast.success('CRYPTOCARD located. Review details carefully before claiming.');
+      toast.success(t('claim.cardFound') ?? 'CRYPTOCARD found!');
     } catch (err: any) {
       console.error('Failed to load card status', err);
       setPulledCard(null);
-      toast.error(
-        err?.message ||
-          t('claim.notFound') ||
-          'CRYPTOCARD not found. Please double-check the Card ID.'
-      );
+      setClaimSummary(null);
+      toast.error(err?.message || t('claim.notFound') || 'CRYPTOCARD not found. Check the Card ID.');
     } finally {
       setLoading(false);
     }
@@ -94,7 +120,7 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
       return;
     }
     if (!walletAddress.trim()) {
-      toast.error(t('claim.walletRequired') ?? 'Please enter a destination wallet');
+      toast.error(t('claim.walletRequired') ?? 'Please enter a wallet address');
       return;
     }
     if (!cvv.trim()) {
@@ -114,91 +140,102 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
     setLoading(true);
 
     try {
-      const result = (await apiService.claimCard({
+      const result: any = await apiService.claimCard({
         public_id: pulledCard.public_id,
         cvv: cvv.trim(),
         destination_wallet: walletAddress.trim(),
-      })) as ClaimResult;
+      });
 
       if (!result?.success) {
         throw new Error(result?.error || 'Claim failed');
       }
 
-      const amountSol = typeof result.amount_sol === 'number' ? result.amount_sol : 0;
-      const amountFiat = typeof result.amount_fiat === 'number' ? result.amount_fiat : 0;
+      const solAmount =
+        typeof result.amount_sol === 'number'
+          ? result.amount_sol
+          : typeof (pulledCard as any).token_amount === 'number'
+          ? (pulledCard as any).token_amount
+          : 0;
 
-      const shortDest = result.destination_wallet
-        ? `${result.destination_wallet.slice(0, 4)}...${result.destination_wallet.slice(-4)}`
-        : '';
+      const usdFromCard =
+        typeof pulledCard.amount_fiat === 'number' ? pulledCard.amount_fiat : 0;
 
-      const signature = result.signature;
+      const usdAmount =
+        solPriceUsd && solAmount
+          ? solAmount * solPriceUsd
+          : usdFromCard;
 
-      // V1 behavior: token == SOL
-      const tokenSymbol = 'SOL';
+      const tokenAmount =
+        typeof (pulledCard as any).token_amount === 'number'
+          ? (pulledCard as any).token_amount
+          : solAmount;
 
-      // Hard-coded professional copy so we never see "claim.sent" etc.
+      const tokenSymbol = 'SOL'; // Claim flow is SOL-based
+
+      setClaimSummary({
+        tokenAmount,
+        tokenSymbol,
+        solAmount,
+        usdAmount,
+        destination: result.destination_wallet || walletAddress.trim(),
+        txSignature: result.signature || null,
+      });
+
       toast.success(
-        [
-          'Claim complete',
-          `${amountSol.toFixed(6)} ${tokenSymbol} • ${amountSol.toFixed(6)} SOL • $${amountFiat.toFixed(
-            2
-          )} USD has been sent to: ${shortDest}`,
-          signature ? `Tx: ${signature.slice(0, 8)}...` : '',
-        ]
-          .filter(Boolean)
-          .join('\n')
+        `Claim complete: ${tokenAmount.toFixed(6)} ${tokenSymbol} • ${solAmount.toFixed(
+          6
+        )} SOL • $${usdAmount.toFixed(2)} USD`
       );
 
-      // Keep modal open, but update local card state to reflect claimed
+      // Mark card locally as claimed
       setPulledCard((prev) =>
         prev
-          ? ({
+          ? {
               ...prev,
-              funded: false,
               claimed: true,
-              token_amount: amountSol,
-              amount_fiat: amountFiat,
-            } as any)
+              funded: false,
+              token_amount: solAmount,
+              amount_fiat: usdAmount,
+            }
           : prev
       );
-
-      setLoading(false);
     } catch (err: any) {
       console.error('Claim failed', err);
-      toast.error(
-        err?.message ||
-          t('claim.claimError') ||
-          'Failed to claim this CRYPTOCARD. Please try again.'
-      );
+      toast.error(err?.message || t('claim.claimError') || 'Failed to claim this CRYPTOCARD');
+    } finally {
       setLoading(false);
     }
   };
 
+  // Build preview CardData with correct SOL + fiat
   const cardData: CardData | null = useMemo(() => {
     if (!pulledCard) return null;
 
     const anyCard = pulledCard as any;
 
-    const tokenAmount =
+    const rawTokenAmount =
       typeof anyCard.token_amount === 'number' ? anyCard.token_amount : 0;
 
-    // For v1 we treat "token" as SOL on all loaded cards
-    const solAmount = tokenAmount;
-    const amountFiat =
-      typeof anyCard.amount_fiat === 'number' ? anyCard.amount_fiat : 0;
+    const solAmount = rawTokenAmount;
+    const fiatFromCard =
+      typeof pulledCard.amount_fiat === 'number' ? pulledCard.amount_fiat : 0;
 
-    const createdAt: string = anyCard.created_at || new Date().toISOString();
+    const usdAmount =
+      solPriceUsd && solAmount
+        ? solAmount * solPriceUsd
+        : fiatFromCard;
 
-    const tokenSymbol = 'SOL';
+    const createdAt: string =
+      anyCard.created_at || new Date().toISOString();
 
     return {
       cardId: pulledCard.public_id,
-      cvv: '•••••',
+      cvv: '•••••', // never show real CVV here
       depositAddress: anyCard.deposit_address || '',
       image: anyCard.template_url || '',
       tokenAddress: anyCard.token_mint || '',
-      tokenSymbol,
-      tokenAmount: tokenAmount.toString(),
+      tokenSymbol: 'SOL', // display as SOL, not USD
+      tokenAmount: solAmount.toFixed(9),
       message: anyCard.message || 'Gift',
       font: anyCard.font || 'Inter',
       hasExpiry: !!pulledCard.expires_at,
@@ -206,32 +243,41 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
       created: createdAt,
       locked: !!pulledCard.locked,
       funded: !!pulledCard.funded,
-      fiatValue: amountFiat.toFixed(2),
+      fiatValue: usdAmount.toFixed(2),
       solValue: solAmount.toFixed(6),
       step: 3,
     };
-  }, [pulledCard]);
+  }, [pulledCard, solPriceUsd]);
 
-  // Triple summary just below the preview: TOKEN • SOL • FIAT
-  const summaryTriple = useMemo(() => {
-    if (!pulledCard) {
-      return {
-        tokenAmount: 0,
-        solAmount: 0,
-        fiatAmount: 0,
-        currency: 'USD',
-      };
-    }
+  // Helper to render a clean amount line
+  const renderAmountTriple = (tokenAmount: number, tokenSymbol: string, solAmount: number, usdAmount: number) => {
+    return `${tokenAmount.toFixed(6)} ${tokenSymbol} • ${solAmount.toFixed(
+      6
+    )} SOL • $${usdAmount.toFixed(2)} USD`;
+  };
+
+  // Amounts used in the main "Locked / On-chain amount" line
+  const previewTriple = useMemo(() => {
+    if (!pulledCard) return null;
+
     const anyCard = pulledCard as any;
     const tokenAmount =
       typeof anyCard.token_amount === 'number' ? anyCard.token_amount : 0;
-    const solAmount = tokenAmount; // v1: token = SOL
-    const fiatAmount =
-      typeof anyCard.amount_fiat === 'number' ? anyCard.amount_fiat : 0;
-    const currency: string = anyCard.currency || 'USD';
+    const solAmount = tokenAmount;
+    const fiatFromCard =
+      typeof pulledCard.amount_fiat === 'number' ? pulledCard.amount_fiat : 0;
 
-    return { tokenAmount, solAmount, fiatAmount, currency };
-  }, [pulledCard]);
+    const usdAmount =
+      solPriceUsd && solAmount
+        ? solAmount * solPriceUsd
+        : fiatFromCard;
+
+    return {
+      tokenAmount,
+      solAmount,
+      usdAmount,
+    };
+  }, [pulledCard, solPriceUsd]);
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
@@ -278,48 +324,37 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
                 onScratch={() => {
                   toast.success(
                     t('claim.scratchHint') ??
-                      'CVV is on the physical/sent card. Keep it safe!'
+                      'CVV is on the physical/sent CRYPTOCARD. Keep it safe!'
                   );
                 }}
               />
 
-              {/* Clean triple line: TOKEN • SOL • FIAT */}
-              <div className="text-[9px] space-y-1 mt-1">
-                <div>
-                  <span className="font-semibold">
-                    {/* Hard-coded so we never see "claim.balance" */}
-                    On-chain balance{' '}
-                  </span>
-                  <span>
-                    {summaryTriple.tokenAmount.toFixed(6)} SOL •{' '}
-                    {summaryTriple.solAmount.toFixed(6)} SOL • $
-                    {summaryTriple.fiatAmount.toFixed(2)}{' '}
-                    {summaryTriple.currency}
-                  </span>
-                </div>
-              </div>
-
-              {/* Status line with hard-coded labels */}
-              <div className="text-[9px] space-y-1 mt-1">
-                <div>
-                  <span className="font-semibold">Status </span>
-                  <span
-                    className={
-                      pulledCard.claimed
-                        ? 'text-emerald-400'
+              {/* Summary info under card preview */}
+              {previewTriple && (
+                <div className="text-[9px] space-y-1 mt-2">
+                  <div>
+                    <span className="font-semibold">Status: </span>
+                    <span className={pulledCard.claimed ? 'text-emerald-500' : pulledCard.locked ? 'text-destructive' : 'text-muted-foreground'}>
+                      {pulledCard.claimed
+                        ? 'CLAIMED'
                         : pulledCard.locked
-                        ? 'text-destructive'
-                        : 'text-amber-400'
-                    }
-                  >
-                    {pulledCard.claimed
-                      ? 'Claimed'
-                      : pulledCard.locked
-                      ? 'Locked'
-                      : 'Unlocked'}
-                  </span>
+                        ? 'LOCKED'
+                        : 'UNLOCKED'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="font-semibold">On-chain amount: </span>
+                    <span>
+                      {renderAmountTriple(
+                        previewTriple.tokenAmount,
+                        'SOL',
+                        previewTriple.solAmount,
+                        previewTriple.usdAmount
+                      )}
+                    </span>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           )}
 
@@ -359,6 +394,45 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
           >
             {loading ? t('claim.claiming') : t('claim.claimButton')}
           </Button>
+
+          {/* Claim summary AFTER success */}
+          {claimSummary && (
+            <div className="mt-2 p-2 rounded-lg border border-emerald-400/40 bg-emerald-500/5 text-[9px] space-y-1">
+              <div className="font-semibold text-emerald-400 uppercase tracking-wide">
+                Claim complete
+              </div>
+              <div>
+                <span className="font-semibold">Amount claimed: </span>
+                <span>
+                  {renderAmountTriple(
+                    claimSummary.tokenAmount,
+                    claimSummary.tokenSymbol,
+                    claimSummary.solAmount,
+                    claimSummary.usdAmount
+                  )}
+                </span>
+              </div>
+              <div>
+                <span className="font-semibold">Sent to: </span>
+                <span className="font-mono">
+                  {claimSummary.destination}
+                </span>
+              </div>
+              {claimSummary.txSignature && (
+                <div>
+                  <span className="font-semibold">Transaction: </span>
+                  <a
+                    href={`https://solscan.io/tx/${claimSummary.txSignature}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline text-primary"
+                  >
+                    View on Solscan
+                  </a>
+                </div>
+              )}
+            </div>
+          )}
 
           <Button
             onClick={handleClose}
