@@ -1,82 +1,138 @@
-import { useMemo, useState, useCallback } from 'react';
-import { cn } from '@/lib/utils';
+import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Switch } from '@/components/ui/switch';
-import { Upload, RefreshCw } from 'lucide-react';
-import { useLanguage } from '@/lib/languageStore';
+import { cn } from '@/lib/utils';
 
-interface ImageGridProps { selectedImage: string; onSelectImage: (url: string) => void; onUpload: (file: File) => void; }
+interface ImageGridProps {
+  selectedImage: string;
+  onSelectImage: (url: string) => void;
+  onUpload: (file: File) => void;
+}
 
-const CRYPTO_IMAGES = [
-  { url: 'https://images.unsplash.com/photo-1621416894569-0f39ed31d247?w=300&h=190&fit=crop', tag: 'bitcoin' },
-  { url: 'https://images.unsplash.com/photo-1518546305927-5a555bb7020d?w=300&h=190&fit=crop', tag: 'crypto' },
-  { url: 'https://images.unsplash.com/photo-1639762681485-074b7f938ba0?w=300&h=190&fit=crop', tag: 'nft' },
-  { url: 'https://images.unsplash.com/photo-1642104704074-907c0698cbd9?w=300&h=190&fit=crop', tag: 'ethereum' },
-  { url: 'https://images.unsplash.com/photo-1622630998477-20aa696ecb05?w=300&h=190&fit=crop', tag: 'blockchain' },
-  { url: 'https://images.unsplash.com/photo-1516245834210-c4c142787335?w=300&h=190&fit=crop', tag: 'mining' },
-  { url: 'https://images.unsplash.com/photo-1620321023374-d1a68fbc720d?w=300&h=190&fit=crop', tag: 'defi' },
-  { url: 'https://images.unsplash.com/photo-1634704784915-aacf363b021f?w=300&h=190&fit=crop', tag: 'solana' },
+type GridItem = {
+  url: string;
+};
+
+// Degen Sol / meme / crypto-flavoured queries
+const UNSPLASH_QUERIES = [
+  'solana,crypto,neon',
+  'solana,memecoin,poster',
+  'crypto,meme,neon',
+  'degen,crypto,trading',
+  'pumpfun,chart,green candles',
+  'blockchain,futuristic,grid',
+  'crypto,laser eyes,memes',
+  'neon,cyberpunk,finance',
 ];
 
-const CRYPTO_GIFS = [
-  { url: 'https://media.giphy.com/media/trN9ber5sRVNS/giphy.gif', tag: 'crypto' },
-  { url: 'https://media.giphy.com/media/JTzPN5kkobFv7X0zPJ/giphy.gif', tag: 'bitcoin' },
-  { url: 'https://media.giphy.com/media/xT0xezQGU5xCDJuCPe/giphy.gif', tag: 'money' },
-  { url: 'https://media.giphy.com/media/3oKIPdGYRGEby6jQwE/giphy.gif', tag: 'gold' },
-  { url: 'https://media.giphy.com/media/l0HlNQ03J5JxX6lva/giphy.gif', tag: 'celebration' },
-  { url: 'https://media.giphy.com/media/67ThRZlYBvibtdF9JH/giphy.gif', tag: 'rocket' },
-  { url: 'https://media.giphy.com/media/xT9DPofgEkyu9t4wPm/giphy.gif', tag: 'gift' },
-  { url: 'https://media.giphy.com/media/26tPplGWjN0xLybiU/giphy.gif', tag: 'party' },
-];
+function buildRandomUnsplashUrl() {
+  const q = UNSPLASH_QUERIES[Math.floor(Math.random() * UNSPLASH_QUERIES.length)];
+  const sig = Math.floor(Math.random() * 1_000_000_000);
+  // 400x260 keeps close to your card aspect and is light enough
+  return `https://source.unsplash.com/featured/400x260/?${encodeURIComponent(q)}&sig=${sig}`;
+}
+
+function generateGridItems(count: number): GridItem[] {
+  const items: GridItem[] = [];
+  for (let i = 0; i < count; i++) {
+    items.push({ url: buildRandomUnsplashUrl() });
+  }
+  return items;
+}
 
 export function ImageGrid({ selectedImage, onSelectImage, onUpload }: ImageGridProps) {
-  const { t } = useLanguage();
-  const [searchQuery, setSearchQuery] = useState('');
-  const [useGifs, setUseGifs] = useState(false);
-  const [refreshKey, setRefreshKey] = useState(0);
+  // 7 random tiles + 1 upload tile
+  const [items, setItems] = useState<GridItem[]>(() => generateGridItems(7));
+  const [refreshing, setRefreshing] = useState(false);
 
-  const visibleImages = useMemo(() => useGifs ? CRYPTO_GIFS : CRYPTO_IMAGES, [useGifs]);
-  const filteredImages = useMemo(() => !searchQuery ? visibleImages : visibleImages.filter((img) => img.tag.toLowerCase().includes(searchQuery.toLowerCase())), [visibleImages, searchQuery]);
-  const handleRefresh = useCallback(() => setRefreshKey(prev => prev + 1), []);
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => { const file = e.target.files?.[0]; if (file) onUpload(file); };
+  // If selectedImage is something custom (e.g. upload), ensure it shows visually
+  useEffect(() => {
+    if (!selectedImage) return;
+    const exists = items.some((i) => i.url === selectedImage);
+    if (!exists) {
+      setItems((prev) => {
+        const clone = [...prev];
+        // Put the selected image in the first slot
+        clone[0] = { url: selectedImage };
+        return clone;
+      });
+    }
+  }, [selectedImage, items]);
+
+  const handleRefresh = () => {
+    setRefreshing(true);
+    setItems(generateGridItems(7));
+    setTimeout(() => setRefreshing(false), 250);
+  };
+
+  const handleUploadClick = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      onUpload(file);
+      const localUrl = URL.createObjectURL(file);
+      onSelectImage(localUrl);
+    };
+
+    input.click();
+  };
 
   return (
     <div className="space-y-2">
-      <div>
-        <Label className="text-[8px] uppercase tracking-wide opacity-80">{t('designer.imageSearch')}</Label>
-        <Input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder={t('designer.searchPlaceholder')} className="mt-1 h-7 text-[9px] bg-card/60 border-border/30" />
-      </div>
-      <div className="flex items-center justify-between bg-card p-1.5 rounded-lg border border-border/30">
-        <span className="text-[8px] font-semibold">{t('designer.useGifs')}</span>
-        <div className="flex items-center gap-2">
-          <Button onClick={handleRefresh} variant="ghost" size="sm" className="h-6 px-2 text-[8px] font-semibold hover:bg-primary/10">
-            <RefreshCw className="w-3 h-3 mr-1" />{t('designer.refreshImages')}
-          </Button>
-          <Switch checked={useGifs} onCheckedChange={setUseGifs} className="scale-75" />
-        </div>
-      </div>
-      <div className="grid grid-cols-4 gap-1.5">
-        {filteredImages.map((img, i) => (
-          <img 
-            key={`${img.url}-${i}-${refreshKey}`} 
-            src={img.url} 
-            alt={img.tag} 
-            loading="lazy" 
-            onClick={() => onSelectImage(img.url)} 
-            className={cn(
-              'w-full aspect-[1.6/1] object-cover rounded-lg cursor-pointer border transition-all hover:scale-[1.03] hover:shadow-glow-cyan', 
-              selectedImage === img.url ? 'border-primary scale-[1.01] shadow-glow-cyan' : 'border-transparent'
-            )} 
-          />
-        ))}
-      </div>
-      <div>
-        <input type="file" id="imageUpload" accept="image/*,.gif" onChange={handleFileChange} className="hidden" />
-        <Button onClick={() => document.getElementById('imageUpload')?.click()} variant="outline" size="sm" className="w-full h-6 text-[8px] font-semibold border-border/50 hover:bg-primary/10">
-          <Upload className="w-3 h-3 mr-1" />{t('designer.uploadImage')}
+      <div className="flex items-center justify-between">
+        <span className="text-[8px] uppercase tracking-wide opacity-80">
+          Card artwork
+        </span>
+        <Button
+          type="button"
+          variant="outline"
+          size="xs"
+          onClick={handleRefresh}
+          disabled={refreshing}
+          className="h-6 px-2 text-[9px] rounded-full border-border/40"
+        >
+          {refreshing ? 'Refreshing…' : 'Refresh images'}
         </Button>
+      </div>
+
+      <div className="grid grid-cols-4 gap-1.5">
+        {items.map((item) => (
+          <button
+            key={item.url}
+            type="button"
+            onClick={() => onSelectImage(item.url)}
+            className={cn(
+              'relative aspect-[3/2] rounded-md overflow-hidden border transition-all',
+              'bg-card/60 hover:bg-card/80 hover:shadow-sm',
+              selectedImage === item.url
+                ? 'border-accent ring-1 ring-accent/60'
+                : 'border-border/40'
+            )}
+          >
+            <img
+              src={item.url}
+              alt="Background option"
+              className="w-full h-full object-cover"
+              loading="lazy"
+            />
+            {selectedImage === item.url && (
+              <div className="absolute inset-0 ring-2 ring-accent/70 pointer-events-none" />
+            )}
+          </button>
+        ))}
+
+        {/* Upload tile (the 8th tile) */}
+        <button
+          type="button"
+          onClick={handleUploadClick}
+          className="flex flex-col items-center justify-center aspect-[3/2] rounded-md border border-dashed border-border/50 bg-card/40 hover:bg-card/70 hover:border-accent/60 transition-all text-[9px] text-muted-foreground"
+        >
+          <span className="text-lg mb-0.5">＋</span>
+          <span>Upload</span>
+        </button>
       </div>
     </div>
   );
