@@ -68,16 +68,8 @@ export function CardDesigner({
   }, [tokenInfo, onTokenInfoChange]);
 
   return (
-    <div className="glass-card rounded-2xl p-3 space-y-3 shadow-card hover:shadow-card-hover transition-all hover:-translate-y-0.5 border border-border/40 bg-card/70">
-      <div className="mb-1 text-center">
-        <h3 className="text-xs font-black gradient-text uppercase tracking-wide">
-          Design your CRYPTOCARD
-        </h3>
-        <p className="text-[9px] text-muted-foreground">
-          Choose token, message, art, and expiry before funding on-chain.
-        </p>
-      </div>
-
+    <div className="glass-card rounded-xl p-3 space-y-2 shadow-card hover:shadow-card-hover transition-all hover:-translate-y-0.5">
+      {/* TOKEN ADDRESS */}
       <div>
         <Label className="text-[8px] uppercase tracking-wide opacity-80">
           {t('designer.tokenAddress')}
@@ -86,7 +78,7 @@ export function CardDesigner({
           value={tokenAddress}
           onChange={(e) => onTokenAddressChange(e.target.value)}
           placeholder={t('designer.tokenPlaceholder')}
-          className="mt-1 h-7 text-[9px] bg-card/60 border-border/30 font-mono"
+          className="mt-1 h-7 text-[9px] bg-card/60 border-border/30"
         />
         {tokenLoading && (
           <div className="flex items-center gap-1 text-[8px] text-muted-foreground mt-1">
@@ -104,6 +96,7 @@ export function CardDesigner({
         )}
       </div>
 
+      {/* MESSAGE */}
       <div>
         <Label className="text-[8px] uppercase tracking-wide opacity-80">
           {t('designer.message')}
@@ -118,6 +111,7 @@ export function CardDesigner({
         />
       </div>
 
+      {/* FONT */}
       <div>
         <Label className="text-[8px] uppercase tracking-wide opacity-80">
           {t('designer.font')}
@@ -141,8 +135,11 @@ export function CardDesigner({
         </Select>
       </div>
 
-      <div className="flex items-center justify-between bg-background/40 p-1.5 rounded-lg border border-border/30">
-        <span className="text-[8px] font-semibold">{t('designer.expiry')}</span>
+      {/* EXPIRY TOGGLE */}
+      <div className="flex items-center justify-between bg-card p-1.5 rounded-lg border border-border/30">
+        <span className="text-[8px] font-semibold">
+          {t('designer.expiry')}
+        </span>
         <Switch checked={hasExpiry} onCheckedChange={onExpiryToggle} className="scale-75" />
       </div>
 
@@ -155,64 +152,84 @@ export function CardDesigner({
             className="h-7 text-[9px] bg-card/60 border-border/30"
           />
           <div className="text-[7px] text-warning p-1.5 bg-warning/10 border border-warning/30 rounded">
-            If not claimed, funds return to creator&apos;s wallet.
+            If not claimed by the expiry date, funds return automatically to the creator&apos;s
+            wallet.
           </div>
         </>
       )}
 
-      <ImageGrid selectedImage={selectedImage} onSelectImage={onImageSelect} onUpload={onImageUpload} />
+      {/* IMAGE GRID (unchanged visually) */}
+      <ImageGrid
+        selectedImage={selectedImage}
+        onSelectImage={onImageSelect}
+        onUpload={onImageUpload}
+      />
 
-      <div className="bg-gradient-to-br from-primary/10 via-accent/5 to-secondary/10 border border-primary/30 rounded-xl p-4 mt-2 text-center">
-        <h4 className="text-xs font-bold gradient-text text-center mb-3 uppercase tracking-wide">
-          How do CRYPTOCARDS work?
+      {/* SAVE DESIGN & CONTINUE BUTTON (ABOVE INFO PILL, PERSISTS) */}
+      <Button
+        onClick={onCreateCard}
+        disabled={isCreating || cardCreated}
+        className="w-full h-8 text-[10px] font-black gradient-primary text-primary-foreground rounded-lg hover:brightness-110 transition-all disabled:opacity-60 disabled:cursor-not-allowed mt-2"
+      >
+        {isCreating
+          ? t('designer.creating')
+          : t('designer.createButton')}
+      </Button>
+
+      {/* INFO PILL – HOW CRYPTOCARDS WORK */}
+      <div className="bg-gradient-to-br from-primary/10 via-accent/5 to-secondary/10 border border-primary/30 rounded-xl p-4 mt-3 text-center">
+        <h4 className="text-xs font-black tracking-[0.18em] uppercase bg-gradient-to-r from-cyan-400 via-sky-300 to-emerald-400 bg-clip-text text-transparent mb-2">
+          HOW DO CRYPTOCARDS WORK?
         </h4>
-        <p className="text-[10px] text-foreground/90 mb-4">
-          Create on-chain crypto gift cards with{' '}
-          <strong className="text-accent">no wallet connection required</strong>. Perfect for
-          giveaways, streams, and IRL gifting.
+        <p className="text-[9px] text-foreground/90 mb-4 max-w-xs mx-auto">
+          Create on-chain crypto gift cards with <strong>no wallet connection required.</strong>{' '}
+          Perfect for giveaways, streams, and IRL gifting on Solana.
         </p>
-        <div className="space-y-2.5">
+
+        <div className="space-y-2.5 text-left">
+          {/* On-chain & verifiable */}
           <div className="p-2 bg-card/40 rounded-lg border border-border/40">
-            <div className="flex items-center justify-center gap-2 mb-1">
+            <div className="flex items-center gap-2 mb-1">
               <span className="text-primary text-sm">🛡️</span>
-              <span className="text-[9px] font-bold uppercase">On-chain &amp; verifiable</span>
+              <span className="text-[9px] font-bold uppercase tracking-wide">
+                On-chain & verifiable
+              </span>
             </div>
-            <p className="text-[10px] text-foreground">
-              Every card is <strong>funded on-chain</strong>,{' '}
-              <strong>publicly verifiable</strong>, and can only be used <strong>once</strong>.
+            <p className="text-[9px] text-foreground/90 leading-snug">
+              Every CRYPTOCARD is funded <strong>directly on-chain</strong>,{' '}
+              <strong>publicly verifiable</strong>, and can only be claimed <strong>once</strong>.
             </p>
           </div>
+
+          {/* Protocol tax → buybacks */}
           <div className="p-2 bg-card/40 rounded-lg border border-border/40">
-            <div className="flex items-center justify-center gap-2 mb-1">
+            <div className="flex items-center gap-2 mb-1">
               <span className="text-warning text-sm">🔥</span>
-              <span className="text-[9px] font-bold uppercase">Protocol tax → buybacks</span>
+              <span className="text-[9px] font-bold uppercase tracking-wide">
+                Protocol tax → buybacks
+              </span>
             </div>
-            <p className="text-[10px] text-foreground">
-              A transparent protocol tax powers <strong>$CRYPTOCARDS</strong> buybacks and{' '}
-              <strong>permanent burns</strong>.
+            <p className="text-[9px] text-foreground/90 leading-snug">
+              A transparent <strong>1.5% protocol tax</strong> on funded & locked CRYPTOCARDS
+              powers <strong>$CRYPTOCARDS buybacks</strong> and automated burn activity.
             </p>
           </div>
+
+          {/* Recycled fees */}
           <div className="p-2 bg-card/40 rounded-lg border border-border/40">
-            <div className="flex items-center justify-center gap-2 mb-1">
+            <div className="flex items-center gap-2 mb-1">
               <span className="text-accent text-sm">⚡</span>
-              <span className="text-[9px] font-bold uppercase">Recycled fees</span>
+              <span className="text-[9px] font-bold uppercase tracking-wide">
+                Recycled fees
+              </span>
             </div>
-            <p className="text-[10px] text-foreground">
-              All fees are <strong>recycled back into the ecosystem</strong> to grow the protocol.
+            <p className="text-[9px] text-foreground/90 leading-snug">
+              All protocol fees are <strong>recycled back into the ecosystem</strong> to grow and
+              sustain the CRYPTOCARDS protocol over time.
             </p>
           </div>
         </div>
       </div>
-
-      {!cardCreated && (
-        <Button
-          onClick={onCreateCard}
-          disabled={isCreating}
-          className="w-full h-8 text-[10px] font-black gradient-primary text-primary-foreground rounded-lg hover:brightness-110 transition-all mt-2"
-        >
-          {isCreating ? t('designer.creating') : t('designer.createButton')}
-        </Button>
-      )}
     </div>
   );
 }
