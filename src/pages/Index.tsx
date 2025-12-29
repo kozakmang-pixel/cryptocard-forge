@@ -24,7 +24,15 @@ import { DevPanel } from '@/components/DevPanel';
 import { CardData, FontFamily } from '@/types/card';
 import { apiService } from '@/services/api';
 import { toast } from 'sonner';
-import { Palette, Gift, Lock, Share2, Info, FileText, Shield, ExternalLink } from 'lucide-react';
+import {
+  Palette,
+  Gift,
+  Lock,
+  Share2,
+  FileText,
+  Shield,
+  ExternalLink,
+} from 'lucide-react';
 import { useLanguage } from '@/lib/languageStore';
 
 const BUILDER_STORAGE_KEY = 'cc_builder_state_v1';
@@ -49,15 +57,18 @@ interface StoredBuilderState {
 
 export default function Index() {
   const { language, setLanguage, t } = useLanguage();
+
   const [cardData, setCardData] = useState<CardData | null>(null);
   const [cardCreated, setCardCreated] = useState(false);
   const [funded, setFunded] = useState(false);
   const [locked, setLocked] = useState(false);
   const [currentStep, setCurrentStep] = useState(1);
+
   const [tokenAddress, setTokenAddress] = useState('');
   const [tokenSymbol, setTokenSymbol] = useState('TOKEN');
   const [tokenName, setTokenName] = useState('');
   const [tokenAmount, setTokenAmount] = useState('');
+
   const [message, setMessage] = useState('');
   const [font, setFont] = useState<FontFamily>('Inter');
   const [hasExpiry, setHasExpiry] = useState(false);
@@ -65,22 +76,25 @@ export default function Index() {
   const [selectedImage, setSelectedImage] = useState(
     'https://images.unsplash.com/photo-1621416894569-0f39ed31d247?w=300&h=190&fit=crop'
   );
+
   const [currency, setCurrency] = useState('USD');
   const [solPrice, setSolPrice] = useState(150);
+
   const [isCreating, setIsCreating] = useState(false);
+
   const [claimModalOpen, setClaimModalOpen] = useState(false);
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const [docsModalOpen, setDocsModalOpen] = useState(false);
   const [termsModalOpen, setTermsModalOpen] = useState(false);
   const [privacyModalOpen, setPrivacyModalOpen] = useState(false);
   const [discordModalOpen, setDiscordModalOpen] = useState(false);
+
   const [authToken, setAuthToken] = useState<string | null>(null);
-  const [authUser, setAuthUser] = useState<{ id: string; username: string; email?: string } | null>(
-    null
-  );
+  const [authUser, setAuthUser] = useState<{ id: string; username: string; email?: string } | null>(null);
+
   const [cardsRefreshKey, setCardsRefreshKey] = useState(0);
 
-  // Hydrate auth
+  // Hydrate auth from localStorage
   useEffect(() => {
     const storedToken = localStorage.getItem('auth_token');
     const storedUser = localStorage.getItem('auth_user');
@@ -89,27 +103,31 @@ export default function Index() {
       try {
         setAuthUser(JSON.parse(storedUser));
       } catch {
-        // ignore
+        // ignore bad json
       }
     }
   }, []);
 
-  // SOL price
+  // Simple SOL price fetch for the top banner (client-side).
+  // Backend handles pricing for funding/audit/claim.
   useEffect(() => {
     const fetchPrice = async () => {
       try {
-        const res = await fetch('/sol-price');
+        const res = await fetch(
+          'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd'
+        );
         if (!res.ok) return;
         const data = await res.json();
-        if (typeof data.price_usd === 'number') {
-          setSolPrice(data.price_usd);
+        if (data.solana?.usd) {
+          setSolPrice(data.solana.usd);
         }
       } catch {
-        // silent
+        // silent – backend still has its own pricing
       }
     };
+
     fetchPrice();
-    const interval = setInterval(fetchPrice, 60000);
+    const interval = setInterval(fetchPrice, 60_000);
     return () => clearInterval(interval);
   }, []);
 
@@ -198,17 +216,18 @@ export default function Index() {
     toast.success('Image uploaded!');
   };
 
-  // Funding callback from FundingPanel
+  // Funding callback from FundingPanel → keep card preview in sync
   const handleFundingStatusChange = useCallback(
-    (isFunded: boolean, solAmount: number) => {
+    (isFunded: boolean, solAmount: number, tokenSymbolFromPanel?: string) => {
       setFunded(isFunded);
       setCardData((prev) =>
         prev
           ? {
               ...prev,
               funded: isFunded,
-              solValue: solAmount.toFixed(6),
+              tokenSymbol: tokenSymbolFromPanel || prev.tokenSymbol,
               tokenAmount: solAmount.toString(),
+              solValue: solAmount.toFixed(6),
               fiatValue:
                 solAmount > 0 && solPrice
                   ? (solAmount * solPrice).toFixed(2)
@@ -254,11 +273,13 @@ export default function Index() {
         solValue: '0.000000',
         step: 2,
       };
+
       setCardData(newCard);
       setCardCreated(true);
       setCurrentStep(2);
       setFunded(false);
       setCardsRefreshKey((prev) => prev + 1);
+
       toast.success(`Card created! ID: ${newCard.cardId}`);
     } catch (error: any) {
       toast.error(error.message || 'Failed to create card');
@@ -289,6 +310,7 @@ export default function Index() {
     setFunded(false);
     setLocked(false);
     setCurrentStep(1);
+
     setTokenAddress('');
     setTokenSymbol('TOKEN');
     setTokenName('');
@@ -297,6 +319,7 @@ export default function Index() {
     setFont('Inter');
     setHasExpiry(false);
     setExpiryDate('');
+
     try {
       localStorage.removeItem(BUILDER_STORAGE_KEY);
     } catch {
@@ -315,6 +338,7 @@ export default function Index() {
       <PriceBanner solPrice={solPrice} />
 
       <div className="pt-[60px] px-3 max-w-5xl mx-auto relative z-10">
+        {/* Top controls */}
         <div className="flex items-center justify-between gap-2 mb-2">
           <CurrencySelect value={currency} onChange={setCurrency} />
           <LanguageSelect value={language} onChange={setLanguage} />
@@ -323,7 +347,9 @@ export default function Index() {
         <Header onClaimClick={() => setClaimModalOpen(true)} />
         <ProgressBar currentStep={currentStep} locked={locked} funded={funded} />
 
+        {/* Main grid: Designer + Preview/Funding */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mt-3">
+          {/* Designer */}
           <CardDesigner
             tokenAddress={tokenAddress}
             message={message}
@@ -346,6 +372,7 @@ export default function Index() {
             locked={locked}
           />
 
+          {/* Preview + Funding */}
           <div className="glass-card rounded-xl p-3 shadow-card">
             <CryptoCard
               data={cardData}
@@ -363,42 +390,44 @@ export default function Index() {
               isClaimMode={false}
             />
 
+            {/* Instructions pill under preview */}
             <div className="bg-primary/5 border border-primary/20 rounded-xl p-3 text-center">
               <div className="text-[10px] text-primary uppercase font-bold mb-2">
-                HOW TO CREATE A CRYPTOCARD
+                {t('instructions.title')}
               </div>
               <div className="text-[8px] space-y-1.5">
                 <p className="flex items-center justify-center gap-2">
                   <Palette className="w-3 h-3 flex-shrink-0 text-primary" />
                   <span>
-                    <strong>Design</strong> — choose your token, artwork, personal message, and
-                    optional expiry date.
+                    <strong>{t('instructions.design')}</strong>{' '}
+                    {t('instructions.designDesc')}
                   </span>
                 </p>
                 <p className="flex items-center justify-center gap-2">
                   <Gift className="w-3 h-3 flex-shrink-0 text-accent" />
                   <span>
-                    <strong>Fund</strong> — send the selected token to the one-time deposit wallet
-                    for this CRYPTOCARD.
+                    <strong>{t('instructions.fund')}</strong>{' '}
+                    {t('instructions.fundDesc')}
                   </span>
                 </p>
                 <p className="flex items-center justify-center gap-2">
                   <Lock className="w-3 h-3 flex-shrink-0 text-warning" />
                   <span>
-                    <strong>Lock</strong> — finalize the card on-chain so the balance is reserved
-                    and ready to claim (irreversible).
+                    <strong>{t('instructions.lock')}</strong>{' '}
+                    {t('instructions.lockDesc')}
                   </span>
                 </p>
                 <p className="flex items-center justify-center gap-2">
                   <Share2 className="w-3 h-3 flex-shrink-0 text-secondary" />
                   <span>
-                    <strong>Gift</strong> — share the secure claim link with your recipient so they
-                    can redeem the funds.
+                    <strong>{t('instructions.share')}</strong>{' '}
+                    {t('instructions.shareDesc')}
                   </span>
                 </p>
               </div>
             </div>
 
+            {/* Funding */}
             {cardCreated && cardData && (
               <FundingPanel
                 cardId={cardData.cardId}
@@ -434,6 +463,7 @@ export default function Index() {
           </div>
         </div>
 
+        {/* Auth + dashboards */}
         {!authUser ? (
           <LoginPanel
             onLoginSuccess={(token, user) => {
@@ -455,17 +485,21 @@ export default function Index() {
             refreshKey={cardsRefreshKey}
           />
         )}
+
         <AuditSection />
         <PublicDashboard />
 
-        {/* Footer (unchanged) */}
+        {/* Footer */}
         <footer className="mt-8 pt-8 border-t border-border/30">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
             {/* Brand Section */}
             <div className="text-center md:text-left">
-              <h4 className="text-lg font-black gradient-text mb-2">CRYPTOCARDS</h4>
+              <h4 className="text-lg font-black gradient-text mb-2">
+                CRYPTOCARDS
+              </h4>
               <p className="text-[9px] text-muted-foreground max-w-xs">
-                On-chain, non-custodial crypto gift cards. The future of digital gifting on Solana.
+                On-chain, non-custodial crypto gift cards. The future of digital
+                gifting on Solana.
               </p>
             </div>
 
@@ -550,9 +584,10 @@ export default function Index() {
             </div>
           </div>
 
-          {/* Bottom Bar */}
-          <div className="pt-4 border-t border-border/20 flex flex-col md:flex-row items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
+          {/* Bottom Bar – aligned grid so © line is under QUICK LINKS */}
+          <div className="pt-4 border-t border-border/20 grid grid-cols-1 md:grid-cols-3 items-center gap-3">
+            {/* Left: Solana badge */}
+            <div className="flex items-center gap-2 justify-center md:justify-start">
               <img
                 src="https://cryptologos.cc/logos/solana-sol-logo.svg"
                 alt="Solana"
@@ -562,11 +597,19 @@ export default function Index() {
                 {t('footer.poweredBy')}
               </span>
             </div>
-            <div className="text-center">
-              <p className="text-[9px] text-primary font-bold">{t('footer.copyright')}</p>
+
+            {/* Center: copyright under QUICK LINKS */}
+            <div className="flex justify-center">
+              <p className="text-[9px] text-primary font-bold">
+                {t('footer.copyright')}
+              </p>
             </div>
-            <div className="text-right">
-              <p className="text-[8px] text-muted-foreground">{t('footer.creator')}</p>
+
+            {/* Right: creator credit */}
+            <div className="flex justify-center md:justify-end">
+              <p className="text-[8px] text-muted-foreground">
+                {t('footer.creator')}
+              </p>
             </div>
           </div>
         </footer>
@@ -586,6 +629,7 @@ export default function Index() {
       <PrivacyModal open={privacyModalOpen} onOpenChange={setPrivacyModalOpen} />
       <DiscordModal open={discordModalOpen} onOpenChange={setDiscordModalOpen} />
 
+      {/* Dev panel (unchanged) */}
       <DevPanel
         onSimulateCardCreated={(id, amount, symbol) => {
           setCardData({
@@ -604,7 +648,7 @@ export default function Index() {
             locked: false,
             funded: false,
             fiatValue: '50.00',
-            solValue: '0.333333',
+            solValue: '0.333300',
             step: 2,
           });
           setCardCreated(true);
@@ -621,7 +665,7 @@ export default function Index() {
                   funded: true,
                   tokenAmount: '1000',
                   fiatValue: '50.00',
-                  solValue: '0.333333',
+                  solValue: '0.333300',
                 }
               : null
           );
