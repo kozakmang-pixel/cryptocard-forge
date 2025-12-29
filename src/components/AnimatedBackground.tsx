@@ -1,8 +1,9 @@
 // src/components/AnimatedBackground.tsx
 import React, { useEffect, useRef } from 'react';
 
-const AnimatedBackground: React.FC = () => {
+export function AnimatedBackground() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const animationRef = useRef<number | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -11,219 +12,155 @@ const AnimatedBackground: React.FC = () => {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    let animationFrameId: number;
-    let running = true;
-
-    const dpr = window.devicePixelRatio || 1;
+    let width = window.innerWidth;
+    let height = window.innerHeight;
 
     const resize = () => {
-      const { innerWidth, innerHeight } = window;
-      canvas.width = innerWidth * dpr;
-      canvas.height = innerHeight * dpr;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      width = window.innerWidth;
+      height = window.innerHeight;
+      canvas.width = width;
+      canvas.height = height;
     };
 
     resize();
     window.addEventListener('resize', resize);
 
-    // --- Network + blob data structures ---
-
-    const nodeCount = 80;
-    const maxSpeed = 0.05; // px per ms
-    const linkDistance = 180;
-
-    type Node = {
+    const NODE_COUNT = 90;
+    const MAX_LINK_DISTANCE = 180;
+    const nodes: {
       x: number;
       y: number;
       vx: number;
       vy: number;
-    };
+      pulseOffset: number;
+    }[] = [];
 
-    type Blob = {
-      x: number;
-      y: number;
-      radius: number;
-      vx: number;
-      vy: number;
-      baseAlpha: number;
-    };
-
-    const nodes: Node[] = [];
-    const blobs: Blob[] = [];
-    const { innerWidth, innerHeight } = window;
-
-    // Initialize nodes
-    for (let i = 0; i < nodeCount; i++) {
+    for (let i = 0; i < NODE_COUNT; i++) {
       nodes.push({
-        x: Math.random() * innerWidth,
-        y: Math.random() * innerHeight,
-        vx: (Math.random() - 0.5) * maxSpeed,
-        vy: (Math.random() - 0.5) * maxSpeed,
+        x: Math.random() * width,
+        y: Math.random() * height,
+        vx: (Math.random() - 0.5) * 0.25,
+        vy: (Math.random() - 0.5) * 0.25,
+        pulseOffset: Math.random() * Math.PI * 2,
       });
     }
 
-    // A few large glowing blobs in background
-    const blobCount = 7;
-    for (let i = 0; i < blobCount; i++) {
-      blobs.push({
-        x: Math.random() * innerWidth,
-        y: Math.random() * innerHeight,
-        radius: 220 + Math.random() * 220,
-        vx: (Math.random() - 0.5) * 0.01,
-        vy: (Math.random() - 0.5) * 0.01,
-        baseAlpha: 0.15 + Math.random() * 0.25,
-      });
-    }
+    const draw = (time: number) => {
+      const t = time / 1000;
 
-    let lastTime = performance.now();
+      ctx.clearRect(0, 0, width, height);
 
-    const drawBackground = (width: number, height: number) => {
-      // Deep teal / navy gradient
-      const gradient = ctx.createLinearGradient(0, 0, 0, height);
-      gradient.addColorStop(0, '#020410');
-      gradient.addColorStop(0.4, '#02081c');
-      gradient.addColorStop(1, '#010612');
-      ctx.fillStyle = gradient;
+      // Background glow
+      const grad = ctx.createRadialGradient(
+        width * 0.5,
+        height * 0.4,
+        0,
+        width * 0.5,
+        height * 0.6,
+        Math.max(width, height)
+      );
+      grad.addColorStop(0, 'rgba(15, 118, 110, 0.35)');
+      grad.addColorStop(0.4, 'rgba(59, 130, 246, 0.12)');
+      grad.addColorStop(1, 'rgba(2, 6, 23, 1)');
+      ctx.fillStyle = grad;
       ctx.fillRect(0, 0, width, height);
-    };
 
-    const drawBlobs = (width: number, height: number, time: number) => {
-      for (const blob of blobs) {
-        // Soft drifting
-        blob.x += blob.vx * (time / 16);
-        blob.y += blob.vy * (time / 16);
+      // Slight hazy bokeh blobs
+      for (let i = 0; i < 24; i++) {
+        const bx = (Math.sin(t * 0.15 + i) * 0.5 + 0.5) * width;
+        const by = (Math.cos(t * 0.12 + i * 1.3) * 0.5 + 0.5) * height;
+        const r = 80 + Math.sin(t * 0.7 + i) * 30;
 
-        // Wrap around edges
-        if (blob.x < -blob.radius) blob.x = width + blob.radius;
-        if (blob.x > width + blob.radius) blob.x = -blob.radius;
-        if (blob.y < -blob.radius) blob.y = height + blob.radius;
-        if (blob.y > height + blob.radius) blob.y = -blob.radius;
-
-        const gradient = ctx.createRadialGradient(
-          blob.x,
-          blob.y,
-          0,
-          blob.x,
-          blob.y,
-          blob.radius
-        );
-
-        // Teal / aqua glow similar to the gif
-        gradient.addColorStop(0, `rgba(45, 255, 210, ${blob.baseAlpha + 0.1})`);
-        gradient.addColorStop(0.5, `rgba(45, 255, 210, ${blob.baseAlpha})`);
-        gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
-
-        ctx.fillStyle = gradient;
-        ctx.fillRect(blob.x - blob.radius, blob.y - blob.radius, blob.radius * 2, blob.radius * 2);
-      }
-    };
-
-    const drawNetwork = (width: number, height: number, dt: number) => {
-      // Move nodes
-      for (const n of nodes) {
-        n.x += n.vx * dt;
-        n.y += n.vy * dt;
-
-        // Soft wrap to keep motion smooth
-        if (n.x < -50) n.x = width + 50;
-        if (n.x > width + 50) n.x = -50;
-        if (n.y < -50) n.y = height + 50;
-        if (n.y > height + 50) n.y = -50;
+        const g2 = ctx.createRadialGradient(bx, by, 0, bx, by, r);
+        g2.addColorStop(0, 'rgba(45, 212, 191, 0.28)');
+        g2.addColorStop(0.4, 'rgba(56, 189, 248, 0.18)');
+        g2.addColorStop(1, 'rgba(2, 6, 23, 0)');
+        ctx.fillStyle = g2;
+        ctx.beginPath();
+        ctx.arc(bx, by, r, 0, Math.PI * 2);
+        ctx.fill();
       }
 
-      // Draw connections
-      ctx.lineWidth = 0.6;
-      ctx.shadowBlur = 0;
+      // Update node positions
+      for (const node of nodes) {
+        node.x += node.vx;
+        node.y += node.vy;
+
+        if (node.x < -50) node.x = width + 50;
+        if (node.x > width + 50) node.x = -50;
+        if (node.y < -50) node.y = height + 50;
+        if (node.y > height + 50) node.y = -50;
+      }
+
+      // Draw links
+      ctx.lineWidth = 1;
       for (let i = 0; i < nodes.length; i++) {
-        const a = nodes[i];
         for (let j = i + 1; j < nodes.length; j++) {
+          const a = nodes[i];
           const b = nodes[j];
           const dx = a.x - b.x;
           const dy = a.y - b.y;
           const dist = Math.sqrt(dx * dx + dy * dy);
-          if (dist < linkDistance) {
-            const t = 1 - dist / linkDistance; // 0..1
-            const alpha = 0.04 + t * 0.16;
-            ctx.strokeStyle = `rgba(76, 255, 214, ${alpha})`;
-            ctx.beginPath();
-            ctx.moveTo(a.x, a.y);
-            ctx.lineTo(b.x, b.y);
-            ctx.stroke();
-          }
+          if (dist > MAX_LINK_DISTANCE) continue;
+
+          const alpha = 1 - dist / MAX_LINK_DISTANCE;
+          ctx.strokeStyle = `rgba(56, 189, 248, ${alpha * 0.45})`;
+
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
+          ctx.stroke();
         }
       }
 
-      // Draw glowing nodes
-      ctx.shadowColor = 'rgba(120, 255, 230, 0.9)';
-      ctx.shadowBlur = 8;
-      for (const n of nodes) {
+      // Draw nodes
+      for (const node of nodes) {
+        const baseRadius = 2.1;
+        const pulse = (Math.sin(t * 3 + node.pulseOffset) + 1) * 0.9;
+        const r = baseRadius + pulse * 0.9;
+
+        // Outer glow
+        const glowRadius = r * 6;
+        const g = ctx.createRadialGradient(
+          node.x,
+          node.y,
+          0,
+          node.x,
+          node.y,
+          glowRadius
+        );
+        g.addColorStop(0, 'rgba(45, 212, 191, 0.9)');
+        g.addColorStop(0.4, 'rgba(59, 130, 246, 0.6)');
+        g.addColorStop(1, 'rgba(15, 23, 42, 0)');
+
+        ctx.fillStyle = g;
         ctx.beginPath();
-        ctx.fillStyle = 'rgba(158, 255, 245, 0.95)';
-        ctx.arc(n.x, n.y, 2.2, 0, Math.PI * 2);
+        ctx.arc(node.x, node.y, glowRadius, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Core node
+        ctx.fillStyle = 'rgba(240, 253, 250, 0.96)';
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
         ctx.fill();
       }
-      ctx.shadowBlur = 0;
+
+      animationRef.current = requestAnimationFrame(draw);
     };
 
-    const drawVignette = (width: number, height: number) => {
-      const vignette = ctx.createRadialGradient(
-        width / 2,
-        height * 0.25,
-        0,
-        width / 2,
-        height / 2,
-        Math.max(width, height) * 0.9
-      );
-      vignette.addColorStop(0, 'rgba(0,0,0,0)');
-      vignette.addColorStop(0.4, 'rgba(0,0,0,0.2)');
-      vignette.addColorStop(1, 'rgba(0,0,0,0.9)');
-      ctx.fillStyle = vignette;
-      ctx.fillRect(0, 0, width, height);
-    };
-
-    const render = (time: number) => {
-      if (!running) return;
-      const now = time;
-      const dt = now - lastTime;
-      lastTime = now;
-
-      const width = canvas.clientWidth;
-      const height = canvas.clientHeight;
-
-      // Base gradient
-      drawBackground(width, height);
-
-      // Soft teal blobs (bokeh)
-      drawBlobs(width, height, dt);
-
-      // Network
-      drawNetwork(width, height, dt);
-
-      // Vignette for readability
-      drawVignette(width, height);
-
-      animationFrameId = requestAnimationFrame(render);
-    };
-
-    animationFrameId = requestAnimationFrame(render);
+    animationRef.current = requestAnimationFrame(draw);
 
     return () => {
-      running = false;
-      cancelAnimationFrame(animationFrameId);
+      if (animationRef.current !== null) {
+        cancelAnimationFrame(animationRef.current);
+      }
       window.removeEventListener('resize', resize);
     };
   }, []);
 
   return (
-    <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
-      <canvas
-        ref={canvasRef}
-        className="w-full h-full block"
-        aria-hidden="true"
-      />
+    <div className="pointer-events-none fixed inset-0 -z-10 bg-[#020617]">
+      <canvas ref={canvasRef} className="w-full h-full" />
     </div>
   );
-};
-
-export default AnimatedBackground;
-export { AnimatedBackground };
+}
