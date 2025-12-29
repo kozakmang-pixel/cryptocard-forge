@@ -24,7 +24,7 @@ import { DevPanel } from '@/components/DevPanel';
 import { CardData, FontFamily } from '@/types/card';
 import { apiService } from '@/services/api';
 import { toast } from 'sonner';
-import { Palette, Gift, Lock, Share2, FileText, Shield, ExternalLink } from 'lucide-react';
+import { Palette, Gift, Lock, Share2, Info, FileText, Shield, ExternalLink } from 'lucide-react';
 import { useLanguage } from '@/lib/languageStore';
 
 const BUILDER_STORAGE_KEY = 'cc_builder_state_v1';
@@ -94,22 +94,22 @@ export default function Index() {
     }
   }, []);
 
-  // SOL price (via backend to avoid CORS)
+  // SOL price
   useEffect(() => {
     const fetchPrice = async () => {
       try {
         const res = await fetch('/sol-price');
         if (!res.ok) return;
         const data = await res.json();
-        if (data.price_usd) {
-          setSolPrice(Number(data.price_usd));
+        if (typeof data.price_usd === 'number') {
+          setSolPrice(data.price_usd);
         }
       } catch {
         // silent
       }
     };
     fetchPrice();
-    const interval = setInterval(fetchPrice, 30000);
+    const interval = setInterval(fetchPrice, 60000);
     return () => clearInterval(interval);
   }, []);
 
@@ -207,7 +207,7 @@ export default function Index() {
           ? {
               ...prev,
               funded: isFunded,
-              solValue: solAmount.toFixed(4),
+              solValue: solAmount.toFixed(6),
               tokenAmount: solAmount.toString(),
               fiatValue:
                 solAmount > 0 && solPrice
@@ -251,7 +251,7 @@ export default function Index() {
         locked: false,
         funded: false,
         fiatValue: '0.00',
-        solValue: '0.0000',
+        solValue: '0.000000',
         step: 2,
       };
       setCardData(newCard);
@@ -315,14 +315,9 @@ export default function Index() {
       <PriceBanner solPrice={solPrice} />
 
       <div className="pt-[60px] px-3 max-w-5xl mx-auto relative z-10">
-        {/* TOP CONTROLS TIGHT TO EDGES */}
-        <div className="flex items-center justify-between mb-2 w-full">
-          <div className="flex flex-1 justify-start">
-            <CurrencySelect value={currency} onChange={setCurrency} />
-          </div>
-          <div className="flex flex-1 justify-end">
-            <LanguageSelect value={language} onChange={setLanguage} />
-          </div>
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <CurrencySelect value={currency} onChange={setCurrency} />
+          <LanguageSelect value={language} onChange={setLanguage} />
         </div>
 
         <Header onClaimClick={() => setClaimModalOpen(true)} />
@@ -358,9 +353,9 @@ export default function Index() {
               message={message || 'Your message here'}
               image={selectedImage}
               font={font}
-              tokenSymbol={tokenSymbol}
+              tokenSymbol={cardData?.tokenSymbol || tokenSymbol}
               tokenAmount={cardData?.tokenAmount || '0'}
-              solValue={cardData?.solValue || '0.0000'}
+              solValue={cardData?.solValue || '0.000000'}
               fiatValue={cardData?.fiatValue || '0.00'}
               fiatCurrency={currency}
               hasExpiry={hasExpiry}
@@ -369,32 +364,36 @@ export default function Index() {
             />
 
             <div className="bg-primary/5 border border-primary/20 rounded-xl p-3 text-center">
-              <div className="text-[10px] font-black gradient-text uppercase mb-2">
-                {t('instructions.title')}
+              <div className="text-[10px] text-primary uppercase font-bold mb-2">
+                HOW TO CREATE A CRYPTOCARD
               </div>
               <div className="text-[8px] space-y-1.5">
                 <p className="flex items-center justify-center gap-2">
                   <Palette className="w-3 h-3 flex-shrink-0 text-primary" />
                   <span>
-                    <strong>{t('instructions.design')}</strong> {t('instructions.designDesc')}
+                    <strong>Design</strong> — choose your token, artwork, personal message, and
+                    optional expiry date.
                   </span>
                 </p>
                 <p className="flex items-center justify-center gap-2">
                   <Gift className="w-3 h-3 flex-shrink-0 text-accent" />
                   <span>
-                    <strong>{t('instructions.fund')}</strong> {t('instructions.fundDesc')}
+                    <strong>Fund</strong> — send the selected token to the one-time deposit wallet
+                    for this CRYPTOCARD.
                   </span>
                 </p>
                 <p className="flex items-center justify-center gap-2">
                   <Lock className="w-3 h-3 flex-shrink-0 text-warning" />
                   <span>
-                    <strong>{t('instructions.lock')}</strong> {t('instructions.lockDesc')}
+                    <strong>Lock</strong> — finalize the card on-chain so the balance is reserved
+                    and ready to claim (irreversible).
                   </span>
                 </p>
                 <p className="flex items-center justify-center gap-2">
                   <Share2 className="w-3 h-3 flex-shrink-0 text-secondary" />
                   <span>
-                    <strong>{t('instructions.share')}</strong> {t('instructions.shareDesc')}
+                    <strong>Gift</strong> — share the secure claim link with your recipient so they
+                    can redeem the funds.
                   </span>
                 </p>
               </div>
@@ -407,9 +406,8 @@ export default function Index() {
                 depositAddress={cardData.depositAddress}
                 funded={funded}
                 locked={locked}
-                tokenAmount={Number(cardData.tokenAmount || '0')}
-                solAmount={Number(cardData.solValue || '0')}
-                fiatAmount={Number(cardData.fiatValue || '0')}
+                fundedAmount={funded ? `${cardData.solValue} SOL` : '0 SOL'}
+                tokenSymbol={cardData.tokenSymbol || tokenSymbol}
                 onFundingStatusChange={handleFundingStatusChange}
               />
             )}
@@ -606,7 +604,7 @@ export default function Index() {
             locked: false,
             funded: false,
             fiatValue: '50.00',
-            solValue: '0.3333',
+            solValue: '0.333333',
             step: 2,
           });
           setCardCreated(true);
@@ -623,7 +621,7 @@ export default function Index() {
                   funded: true,
                   tokenAmount: '1000',
                   fiatValue: '50.00',
-                  solValue: '0.3333',
+                  solValue: '0.333333',
                 }
               : null
           );
