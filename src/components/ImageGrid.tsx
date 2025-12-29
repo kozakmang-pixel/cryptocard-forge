@@ -53,10 +53,11 @@ export function ImageGrid({ selectedImage, onSelectImage, onUpload }: ImageGridP
           'bitcoin laser eyes',
           'trading meme',
           'elon doge',
-          'crypto casino'
+          'crypto casino',
         ];
 
-        const searchTerm = term || fallbackQueries[Math.floor(Math.random() * fallbackQueries.length)];
+        const searchTerm =
+          term || fallbackQueries[Math.floor(Math.random() * fallbackQueries.length)];
 
         const res = await fetch(
           `https://api.giphy.com/v1/gifs/search?api_key=${giphyApiKey}&q=${encodeURIComponent(
@@ -233,7 +234,7 @@ export function ImageGrid({ selectedImage, onSelectImage, onUpload }: ImageGridP
         </form>
       </div>
 
-      {/* Grid */}
+      {/* Grid – NO inner pills/labels, just the artwork */}
       <div className="grid grid-cols-4 gap-2">
         {displayItems.map((url, idx) => (
           <button
@@ -249,21 +250,10 @@ export function ImageGrid({ selectedImage, onSelectImage, onUpload }: ImageGridP
           >
             <img
               src={url}
-              alt="Background option"
+              alt=""
               className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
               loading="lazy"
             />
-            <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity" />
-            <div className="absolute bottom-1 left-1 right-1 flex items-center justify-between">
-              <span className="text-[7px] px-1.5 py-0.5 rounded-full bg-black/60 text-white/90 uppercase tracking-wide">
-                Background option
-              </span>
-              {selectedImage === url && (
-                <span className="text-[7px] px-1.5 py-0.5 rounded-full bg-accent text-black font-bold uppercase">
-                  Selected
-                </span>
-              )}
-            </div>
           </button>
         ))}
       </div>
