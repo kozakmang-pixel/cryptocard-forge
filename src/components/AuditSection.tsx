@@ -1,296 +1,484 @@
-import { useEffect, useState } from 'react';
+// src/components/AuditSection.tsx
+import { useEffect, useMemo, useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { ExternalLink } from 'lucide-react';
-import { apiService, type CardStatusResponse } from '@/services/api';
 import { useLanguage } from '@/lib/languageStore';
+import { apiService } from '@/services/api';
+import { toast } from 'sonner';
+import {
+  Loader2,
+  Search,
+  RefreshCcw,
+  Shield,
+  Activity,
+  ExternalLink,
+} from 'lucide-react';
+
+interface CardStatus {
+  public_id: string;
+  created_at: string;
+  updated_at: string;
+  funded: boolean;
+  locked: boolean;
+  claimed: boolean;
+  refunded: boolean;
+  token_amount: number | null;
+  amount_fiat: number | null;
+  currency: string | null;
+  deposit_address: string | null;
+  template_url?: string | null;
+  message?: string | null;
+  expires_at?: string | null;
+}
+
+interface CardBalanceResponse {
+  deposit_address: string;
+  lamports: number;
+  sol: number;
+  rpc?: string;
+}
 
 export function AuditSection() {
   const { t } = useLanguage();
-  const [cardId, setCardId] = useState('');
+
+  const [cardIdInput, setCardIdInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [card, setCard] = useState<CardStatusResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [card, setCard] = useState<CardStatus | null>(null);
+  const [balance, setBalance] = useState<CardBalanceResponse | null>(null);
   const [solPrice, setSolPrice] = useState<number | null>(null);
 
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const res = await fetch('/sol-price');
-        if (!res.ok) return;
-        const data = await res.json();
-        if (data.price_usd) setSolPrice(Number(data.price_usd));
-      } catch {
-        // ignore
+  const fetchSolPrice = async () => {
+    try {
+      const res = await fetch('/sol-price');
+      if (!res.ok) throw new Error('Failed to fetch SOL price');
+      const data = await res.json();
+      const price = typeof data.price_usd === 'number' ? data.price_usd : data.sol_price_usd;
+      if (typeof price === 'number') {
+        setSolPrice(price);
       }
-    };
-    load();
-  }, []);
+    } catch (err) {
+      console.error('AuditSection: failed to fetch SOL price', err);
+    }
+  };
 
-  const handleSearch = async () => {
-    const trimmed = cardId.trim();
-    if (!trimmed) return;
+  const handlePullAudit = async () => {
+    const trimmed = cardIdInput.trim();
+    if (!trimmed) {
+      toast.error('Please enter a Card ID.');
+      return;
+    }
 
     setLoading(true);
-    setError(null);
     setCard(null);
+    setBalance(null);
 
     try {
-      const status = await apiService.getCardStatus(trimmed);
+      const status = (await apiService.getCardStatus(trimmed)) as CardStatus;
       setCard(status);
-    } catch (e: any) {
-      setError(e?.message || 'Card not found');
+
+      try {
+        const res = await fetch(`/card-balance/${encodeURIComponent(trimmed)}`);
+        if (res.ok) {
+          const bal = (await res.json()) as CardBalanceResponse;
+          setBalance(bal);
+        }
+      } catch (err) {
+        console.error('AuditSection: failed to fetch card-balance', err);
+      }
+
+      toast.success('On-chain audit loaded.');
+    } catch (err: any) {
+      console.error('AuditSection: failed to load card status', err);
+      setCard(null);
+      setBalance(null);
+      toast.error(err?.message || 'Card not found. Check the Card ID.');
     } finally {
       setLoading(false);
     }
   };
 
-  const formatDateTime = (iso?: string | null) => {
-    if (!iso) return '—';
-    try {
-      const d = new Date(iso);
-      return d.toLocaleString();
-    } catch {
-      return iso;
-    }
+  const handleRefresh = () => {
+    if (!cardIdInput.trim()) return;
+    fetchSolPrice();
+    handlePullAudit();
   };
 
-  const tokenAmount =
-    typeof card?.token_amount === 'number' && card.token_amount > 0
-      ? card.token_amount
-      : 0;
-  const solAmount = tokenAmount; // using SOL as token
-  const usdAmount =
-    solPrice && tokenAmount > 0 ? tokenAmount * solPrice : card?.amount_fiat || 0;
+  useEffect(() => {
+    fetchSolPrice();
+  }, []);
 
-  const tokenStr = tokenAmount > 0 ? tokenAmount.toFixed(6) : '0.000000';
-  const solStr = solAmount > 0 ? solAmount.toFixed(6) : '0.000000';
-  const usdStr = usdAmount > 0 ? `$${usdAmount.toFixed(2)} USD` : '$0.00 USD';
+  const derived = useMemo(() => {
+    if (!card) {
+      return null;
+    }
 
-  const statusColor = (flag: boolean, neutral = false) =>
-    flag
-      ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/40'
-      : neutral
-      ? 'bg-muted/40 text-muted-foreground border-muted/40'
-      : 'bg-yellow-500/15 text-yellow-400 border-yellow-500/40';
+    const solFromStatus =
+      typeof card.token_amount === 'number' && card.token_amount > 0
+        ? card.token_amount
+        : 0;
+
+    const solFromBalance =
+      typeof balance?.sol === 'number' && balance.sol > 0
+        ? balance.sol
+        : 0;
+
+    const onChainSol = solFromBalance || solFromStatus;
+    const tokenAmount = solFromStatus || onChainSol;
+    const currency = card.currency || 'USD';
+
+    const fiatFromDb =
+      typeof card.amount_fiat === 'number' && card.amount_fiat > 0
+        ? card.amount_fiat
+        : null;
+
+    const fiat =
+      fiatFromDb !== null
+        ? fiatFromDb
+        : solPrice && onChainSol > 0
+        ? onChainSol * solPrice
+        : 0;
+
+    const statusLabel = card.claimed
+      ? 'Claimed'
+      : card.locked
+      ? 'Locked'
+      : card.funded
+      ? 'Funded'
+      : 'Not funded';
+
+    const statusColor =
+      card.claimed
+        ? 'bg-purple-500/15 text-purple-400 border border-purple-500/40'
+        : card.locked
+        ? 'bg-amber-500/15 text-amber-400 border border-amber-500/40'
+        : card.funded
+        ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/40'
+        : 'bg-muted text-muted-foreground';
+
+    const onChainAddress = balance?.deposit_address || card.deposit_address || '';
+
+    return {
+      tokenAmount,
+      onChainSol,
+      fiat,
+      currency,
+      statusLabel,
+      statusColor,
+      onChainAddress,
+    };
+  }, [card, balance, solPrice]);
+
+  const timeline = useMemo(() => {
+    if (!card || !derived) return [];
+
+    const events: {
+      label: string;
+      detail: string;
+      at: string | null;
+    }[] = [];
+
+    events.push({
+      label: 'Created',
+      detail: 'CRYPTOCARD created on-chain with unique deposit wallet.',
+      at: card.created_at || null,
+    });
+
+    if (card.funded) {
+      events.push({
+        label: 'Funded',
+        detail: `On-chain funding detected: ${derived.tokenAmount.toFixed(
+          6
+        )} TOKEN • ${derived.onChainSol.toFixed(6)} SOL • ${derived.currency} ${derived.fiat.toFixed(
+          2
+        )}.`,
+        at: card.updated_at || card.created_at || null,
+      });
+    }
+
+    if (card.locked) {
+      events.push({
+        label: 'Locked',
+        detail: 'Card locked for claiming. Funding amount is now fixed for the recipient.',
+        at: card.updated_at || card.created_at || null,
+      });
+    }
+
+    if (card.claimed) {
+      events.push({
+        label: 'Claimed',
+        detail: `Final claimed amount: ${derived.tokenAmount.toFixed(
+          6
+        )} TOKEN • ${derived.onChainSol.toFixed(6)} SOL • ${derived.currency} ${derived.fiat.toFixed(
+          2
+        )}.`,
+        at: card.updated_at || null,
+      });
+    }
+
+    if (card.refunded) {
+      events.push({
+        label: 'Refunded',
+        detail: 'Funds were returned to the original creator wallet.',
+        at: card.updated_at || null,
+      });
+    }
+
+    return events;
+  }, [card, derived]);
 
   return (
-    <section className="mt-8 glass-card rounded-2xl border border-border/40 bg-card/60 shadow-card">
-      <div className="px-4 pt-4 pb-3 border-b border-border/30">
-        <h2 className="text-base md:text-lg font-black gradient-text text-center uppercase tracking-wide">
-          On-chain Audit Trail
+    <section className="glass-card rounded-xl p-3 mt-5 shadow-card hover:shadow-card-hover transition-all">
+      {/* Header */}
+      <div className="flex flex-col items-center text-center mb-3">
+        <h2 className="text-xs font-black gradient-text tracking-[0.25em] uppercase">
+          ON-CHAIN AUDIT TRAIL
         </h2>
-        <p className="text-[10px] text-muted-foreground text-center mt-1">
-          Search any CRYPTOCARD ID to view its full on-chain lifecycle on Solana mainnet.
+        <p className="text-[9px] text-muted-foreground mt-1 max-w-md">
+          Inspect the full lifecycle of any{' '}
+          <span className="font-semibold text-primary">CRYPTOCARD</span> by its public Card ID —
+          from funding to lock to claim.
         </p>
       </div>
 
-      <div className="p-4 space-y-4">
-        {/* Search row */}
-        <div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center">
+      {/* Search row */}
+      <div className="flex flex-col sm:flex-row gap-2 mb-3">
+        <div className="flex-1 flex items-center gap-2">
           <Input
-            value={cardId}
-            onChange={(e) => setCardId(e.target.value.toUpperCase())}
-            placeholder="Enter CRYPTOCARD ID (e.g. 1234-5678)"
-            className="h-8 text-[10px] font-mono bg-card/60 border-border/40"
+            value={cardIdInput}
+            onChange={(e) => setCardIdInput(e.target.value.toUpperCase())}
+            placeholder="Enter Card ID (e.g. 1234-5678)"
+            className="h-8 text-[10px] bg-card/60 border-border/40 font-mono"
           />
           <Button
-            onClick={handleSearch}
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 px-3 text-[9px] flex items-center gap-1"
+            onClick={handlePullAudit}
             disabled={loading}
-            className="h-8 text-[10px] font-black gradient-primary text-primary-foreground"
           >
-            {loading ? 'Searching…' : 'Pull Audit'}
+            {loading ? (
+              <>
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Loading
+              </>
+            ) : (
+              <>
+                <Search className="w-3 h-3" />
+                Pull audit
+              </>
+            )}
           </Button>
         </div>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-8 px-2 text-[9px] flex items-center gap-1"
+          onClick={handleRefresh}
+          disabled={loading || !cardIdInput.trim()}
+        >
+          <RefreshCcw className="w-3 h-3" />
+          Refresh
+        </Button>
+      </div>
 
-        {error && (
-          <div className="text-[10px] text-destructive bg-destructive/10 border border-destructive/40 rounded-md px-3 py-2">
-            {error}
-          </div>
-        )}
+      {!card && !loading && (
+        <div className="rounded-lg border border-dashed border-border/50 bg-background/40 p-3 text-center text-[9px] text-muted-foreground">
+          Enter a Card ID above and pull the on-chain audit to view its lifecycle.
+        </div>
+      )}
 
-        {card && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-2">
-            {/* Summary */}
-            <div className="md:col-span-1 space-y-2 bg-card/80 border border-border/40 rounded-xl p-3">
-              <div className="text-[10px] font-semibold text-muted-foreground uppercase mb-1">
-                Summary
-              </div>
-              <div className="text-[10px] space-y-1">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">ID</span>
-                  <span className="font-mono font-bold">{card.public_id}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Status</span>
-                  <span>
-                    {card.claimed
-                      ? 'Claimed'
-                      : card.locked
-                      ? 'Locked'
-                      : card.funded
-                      ? 'Funded'
-                      : 'Created'}
+      {card && derived && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {/* Left: summary */}
+          <div className="md:col-span-1 space-y-2">
+            <div className="rounded-lg border border-border/40 bg-background/60 p-2.5">
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="flex items-center gap-2">
+                  <Shield className="w-3 h-3 text-primary" />
+                  <span className="text-[9px] font-semibold uppercase tracking-wide">
+                    Summary
                   </span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Token</span>
-                  <span>
-                    {tokenStr} {card.token_symbol || card.currency || 'SOL'}
+                {solPrice !== null && (
+                  <span className="text-[8px] text-muted-foreground">
+                    SOL: ${solPrice.toFixed(2)} USD
                   </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Value</span>
-                  <span className="font-semibold">
-                    {solStr} SOL • {usdStr}
-                  </span>
-                </div>
-              </div>
-
-              {card.deposit_address && (
-                <div className="mt-3">
-                  <div className="text-[9px] uppercase text-muted-foreground mb-1">
-                    Deposit Address
-                  </div>
-                  <div className="text-[9px] font-mono break-all bg-background/40 border border-border/40 rounded-md px-2 py-1">
-                    {card.deposit_address}
-                  </div>
-                </div>
-              )}
-
-              {card.claimed && card.claim_tx && (
-                <div className="mt-3">
-                  <div className="text-[9px] uppercase text-muted-foreground mb-1">
-                    Claim Transaction
-                  </div>
-                  <a
-                    href={`https://solscan.io/tx/${card.claim_tx}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 text-[9px] text-primary hover:text-primary/80"
-                  >
-                    View on Solscan
-                    <ExternalLink className="w-3 h-3" />
-                  </a>
-                </div>
-              )}
-            </div>
-
-            {/* Timeline */}
-            <div className="md:col-span-2 bg-card/80 border border-border/40 rounded-xl p-3">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[10px] font-semibold text-muted-foreground uppercase">
-                  Lifecycle timeline
-                </span>
-              </div>
-              <div className="space-y-2 text-[10px]">
-                <div className="flex items-start gap-2">
-                  <Badge
-                    variant="outline"
-                    className={statusColor(true, true) + ' text-[9px] px-2 py-0.5'}
-                  >
-                    Created
-                  </Badge>
-                  <div>
-                    <div className="text-muted-foreground">
-                      {formatDateTime(card.created_at || card.createdAt)}
-                    </div>
-                    <div className="text-[9px] text-muted-foreground/80">
-                      Card initialized on-chain with template and message.
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex items-start gap-2">
-                  <Badge
-                    variant="outline"
-                    className={statusColor(!!card.funded) + ' text-[9px] px-2 py-0.5'}
-                  >
-                    Funded
-                  </Badge>
-                  <div>
-                    <div className="text-muted-foreground">
-                      {card.funded
-                        ? formatDateTime(card.funded_at || card.updated_at)
-                        : 'Awaiting on-chain funds'}
-                    </div>
-                    <div className="text-[9px] text-muted-foreground/80">
-                      {card.funded || card.claimed
-                        ? `On-chain balance: ${tokenStr} ${card.token_symbol ||
-                            card.currency ||
-                            'SOL'} • ${solStr} SOL • ${usdStr}`
-                        : 'No value recorded yet.'}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex items-start gap-2">
-                  <Badge
-                    variant="outline"
-                    className={statusColor(!!card.locked) + ' text-[9px] px-2 py-0.5'}
-                  >
-                    Locked
-                  </Badge>
-                  <div>
-                    <div className="text-muted-foreground">
-                      {card.locked
-                        ? formatDateTime(card.locked_at || card.updated_at)
-                        : 'Not locked yet'}
-                    </div>
-                    <div className="text-[9px] text-muted-foreground/80">
-                      Once locked, the deposit wallet can only be claimed or refunded.
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex items-start gap-2">
-                  <Badge
-                    variant="outline"
-                    className={statusColor(!!card.claimed) + ' text-[9px] px-2 py-0.5'}
-                  >
-                    Claimed
-                  </Badge>
-                  <div>
-                    <div className="text-muted-foreground">
-                      {card.claimed
-                        ? formatDateTime(card.claimed_at || card.updated_at)
-                        : 'Not claimed yet'}
-                    </div>
-                    <div className="text-[9px] text-muted-foreground/80">
-                      {card.claimed
-                        ? `Final claimed amount: ${tokenStr} ${card.token_symbol ||
-                            card.currency ||
-                            'SOL'} • ${solStr} SOL • ${usdStr}`
-                        : 'Awaiting claim with correct CVV.'}
-                    </div>
-                  </div>
-                </div>
-
-                {card.refunded && (
-                  <div className="flex items-start gap-2">
-                    <Badge
-                      variant="outline"
-                      className="bg-blue-500/10 text-blue-400 border-blue-500/40 text-[9px] px-2 py-0.5"
-                    >
-                      Refunded
-                    </Badge>
-                    <div>
-                      <div className="text-muted-foreground">
-                        {formatDateTime(card.refunded_at || card.updated_at)}
-                      </div>
-                      <div className="text-[9px] text-muted-foreground/80">
-                        Funds were returned to the creator&apos;s wallet after expiry or manual
-                        refund.
-                      </div>
-                    </div>
-                  </div>
                 )}
               </div>
+
+              <div className="mb-1">
+                <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
+                  Card ID
+                </div>
+                <div className="text-[11px] font-mono font-semibold">
+                  {card.public_id}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 mt-1 mb-2">
+                <div>
+                  <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
+                    Created
+                  </div>
+                  <div className="text-[9px]">
+                    {card.created_at
+                      ? new Date(card.created_at).toLocaleString()
+                      : '-'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
+                    Last update
+                  </div>
+                  <div className="text-[9px]">
+                    {card.updated_at
+                      ? new Date(card.updated_at).toLocaleString()
+                      : '-'}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mb-2">
+                <div className="text-[8px] uppercase tracking-wide text-muted-foreground mb-0.5">
+                  Status
+                </div>
+                <span
+                  className={
+                    'inline-flex items-center px-2 py-0.5 rounded-full text-[8px] font-semibold ' +
+                    derived.statusColor
+                  }
+                >
+                  {derived.statusLabel.toUpperCase()}
+                </span>
+              </div>
+
+              <div className="space-y-0.5">
+                <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
+                  Token amount
+                </div>
+                <div className="text-[10px] font-semibold">
+                  {derived.tokenAmount.toFixed(6)} TOKEN
+                </div>
+
+                <div className="mt-1 text-[8px] uppercase tracking-wide text-muted-foreground">
+                  SOL amount
+                </div>
+                <div className="text-[10px] font-semibold">
+                  {derived.onChainSol.toFixed(6)} SOL
+                </div>
+
+                <div className="mt-1 text-[8px] uppercase tracking-wide text-muted-foreground">
+                  Fiat value
+                </div>
+                <div className="text-[10px] font-semibold">
+                  {derived.currency} {derived.fiat.toFixed(2)}
+                </div>
+              </div>
+            </div>
+
+            {/* On-chain balance */}
+            <div className="rounded-lg border border-primary/30 bg-primary/5 p-2.5">
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="flex items-center gap-2">
+                  <Activity className="w-3 h-3 text-primary" />
+                  <span className="text-[9px] font-semibold uppercase tracking-wide">
+                    On-chain balance
+                  </span>
+                </div>
+                {balance?.rpc && (
+                  <span className="text-[8px] text-muted-foreground">
+                    RPC: {balance.rpc.includes('https') ? 'Custom' : 'Default'}
+                  </span>
+                )}
+              </div>
+
+              <div className="text-[9px] mb-1">
+                {balance ? (
+                  <>
+                    <span className="font-semibold">
+                      {balance.sol.toFixed(6)} SOL
+                    </span>{' '}
+                    ({balance.lamports} lamports)
+                  </>
+                ) : (
+                  <span className="text-muted-foreground">
+                    No live balance data available for this card.
+                  </span>
+                )}
+              </div>
+
+              {derived.onChainAddress && (
+                <div className="mt-1">
+                  <div className="text-[8px] uppercase tracking-wide text-muted-foreground mb-0.5">
+                    Deposit wallet
+                  </div>
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-[9px] font-mono truncate">
+                      {derived.onChainAddress}
+                    </span>
+                    <a
+                      href={`https://solscan.io/account/${derived.onChainAddress}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-[8px] text-primary hover:text-primary/80"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      Solscan
+                    </a>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
-        )}
-      </div>
+
+          {/* Right: timeline */}
+          <div className="md:col-span-2 rounded-lg border border-border/40 bg-background/60 p-2.5">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[9px] font-semibold uppercase tracking-wide">
+                Lifecycle timeline
+              </span>
+            </div>
+
+            {timeline.length === 0 && (
+              <div className="text-[9px] text-muted-foreground">
+                No lifecycle events recorded yet for this CRYPTOCARD.
+              </div>
+            )}
+
+            {timeline.length > 0 && (
+              <ol className="relative border-l border-border/40 pl-3 mt-1 space-y-2">
+                {timeline.map((evt, idx) => (
+                  <li key={idx} className="relative pl-2">
+                    <span className="absolute -left-[9px] top-1 w-2 h-2 rounded-full bg-primary shadow-[0_0_0_3px_rgba(59,130,246,0.25)]" />
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[9px] font-semibold uppercase tracking-wide">
+                        {evt.label}
+                      </span>
+                      <span className="text-[8px] text-muted-foreground">
+                        {evt.at
+                          ? new Date(evt.at).toLocaleString()
+                          : '—'}
+                      </span>
+                    </div>
+                    <p className="text-[9px] text-muted-foreground mt-0.5">
+                      {evt.detail}
+                    </p>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
+        </div>
+      )}
+
+      {loading && (
+        <div className="mt-3 flex items-center justify-center text-[9px] text-muted-foreground">
+          <Loader2 className="w-3 h-3 mr-2 animate-spin" />
+          Loading on-chain audit…
+        </div>
+      )}
     </section>
   );
 }
