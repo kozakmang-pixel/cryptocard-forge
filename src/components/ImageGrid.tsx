@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useMemo, useState } from 'react';
+import { ImageIcon, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
@@ -8,131 +9,144 @@ interface ImageGridProps {
   onUpload: (file: File) => void;
 }
 
-type GridItem = {
-  url: string;
-};
-
-// Degen Sol / meme / crypto-flavoured queries
-const UNSPLASH_QUERIES = [
-  'solana,crypto,neon',
-  'solana,memecoin,poster',
-  'crypto,meme,neon',
-  'degen,crypto,trading',
-  'pumpfun,chart,green candles',
-  'blockchain,futuristic,grid',
-  'crypto,laser eyes,memes',
-  'neon,cyberpunk,finance',
-];
-
-function buildRandomUnsplashUrl() {
-  const q = UNSPLASH_QUERIES[Math.floor(Math.random() * UNSPLASH_QUERIES.length)];
-  const sig = Math.floor(Math.random() * 1_000_000_000);
-  // 400x260 keeps close to your card aspect and is light enough
-  return `https://source.unsplash.com/featured/400x260/?${encodeURIComponent(q)}&sig=${sig}`;
-}
-
-function generateGridItems(count: number): GridItem[] {
-  const items: GridItem[] = [];
-  for (let i = 0; i < count; i++) {
-    items.push({ url: buildRandomUnsplashUrl() });
-  }
-  return items;
-}
-
+/**
+ * 7 preset background tiles + 1 upload tile.
+ * Has a toggle between "Images" and "GIF-vibe" (more degen / meme queries).
+ * Still only shows 8 tiles total at any time.
+ */
 export function ImageGrid({ selectedImage, onSelectImage, onUpload }: ImageGridProps) {
-  // 7 random tiles + 1 upload tile
-  const [items, setItems] = useState<GridItem[]>(() => generateGridItems(7));
-  const [refreshing, setRefreshing] = useState(false);
+  const [mode, setMode] = useState<'images' | 'gifs'>('images');
+  const [refreshKey, setRefreshKey] = useState(0);
 
-  // If selectedImage is something custom (e.g. upload), ensure it shows visually
-  useEffect(() => {
-    if (!selectedImage) return;
-    const exists = items.some((i) => i.url === selectedImage);
-    if (!exists) {
-      setItems((prev) => {
-        const clone = [...prev];
-        // Put the selected image in the first slot
-        clone[0] = { url: selectedImage };
-        return clone;
-      });
-    }
-  }, [selectedImage, items]);
+  // Build Unsplash "random" sources. These are *not* actual GIFs,
+  // but GIF mode uses more degen / meme-focused queries.
+  const items = useMemo(() => {
+    const baseImages =
+      'https://source.unsplash.com/600x400/?solana,crypto,neon,blockchain';
+    const baseGifs =
+      'https://source.unsplash.com/600x400/?crypto,meme,solana,degen,neon';
 
-  const handleRefresh = () => {
-    setRefreshing(true);
-    setItems(generateGridItems(7));
-    setTimeout(() => setRefreshing(false), 250);
-  };
+    const base = mode === 'images' ? baseImages : baseGifs;
 
-  const handleUploadClick = () => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/*';
+    return Array.from({ length: 7 }).map((_, index) => {
+      const url = `${base}&sig=${index}&v=${refreshKey}`;
+      return {
+        url,
+        label: mode === 'images' ? 'Card artwork' : 'Animated-style artwork',
+      };
+    });
+  }, [mode, refreshKey]);
 
-    input.onchange = () => {
-      const file = input.files?.[0];
-      if (!file) return;
-      onUpload(file);
-      const localUrl = URL.createObjectURL(file);
-      onSelectImage(localUrl);
-    };
-
-    input.click();
+  const handleUploadChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    onUpload(file);
   };
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <span className="text-[8px] uppercase tracking-wide opacity-80">
-          Card artwork
-        </span>
-        <Button
-          type="button"
-          variant="outline"
-          size="xs"
-          onClick={handleRefresh}
-          disabled={refreshing}
-          className="h-6 px-2 text-[9px] rounded-full border-border/40"
-        >
-          {refreshing ? 'Refreshing…' : 'Refresh images'}
-        </Button>
+    <div className="mt-2">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-1">
+          <ImageIcon className="w-3 h-3 text-accent" />
+          <span className="text-[9px] font-semibold uppercase tracking-wide opacity-80">
+            Card artwork
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {/* Images / GIF toggle */}
+          <div className="inline-flex rounded-full bg-card/70 border border-border/40 p-0.5">
+            <button
+              type="button"
+              className={cn(
+                'px-2 h-5 text-[8px] rounded-full transition-all',
+                mode === 'images'
+                  ? 'bg-primary text-primary-foreground font-semibold shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+              onClick={() => setMode('images')}
+            >
+              Images
+            </button>
+            <button
+              type="button"
+              className={cn(
+                'px-2 h-5 text-[8px] rounded-full transition-all',
+                mode === 'gifs'
+                  ? 'bg-secondary text-secondary-foreground font-semibold shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+              onClick={() => setMode('gifs')}
+            >
+              GIF mode
+            </button>
+          </div>
+
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="h-6 w-6 border-border/40"
+            onClick={() => setRefreshKey((k) => k + 1)}
+          >
+            <RefreshCw className="w-3 h-3" />
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-4 gap-1.5">
-        {items.map((item) => (
-          <button
-            key={item.url}
-            type="button"
-            onClick={() => onSelectImage(item.url)}
-            className={cn(
-              'relative aspect-[3/2] rounded-md overflow-hidden border transition-all',
-              'bg-card/60 hover:bg-card/80 hover:shadow-sm',
-              selectedImage === item.url
-                ? 'border-accent ring-1 ring-accent/60'
-                : 'border-border/40'
-            )}
-          >
-            <img
-              src={item.url}
-              alt="Background option"
-              className="w-full h-full object-cover"
-              loading="lazy"
-            />
-            {selectedImage === item.url && (
-              <div className="absolute inset-0 ring-2 ring-accent/70 pointer-events-none" />
-            )}
-          </button>
-        ))}
+        {/* 7 preset tiles */}
+        {items.map((item, index) => {
+          const isSelected = selectedImage === item.url;
+          return (
+            <button
+              key={`${mode}-${index}`}
+              type="button"
+              onClick={() => onSelectImage(item.url)}
+              className={cn(
+                'relative rounded-lg overflow-hidden border transition-all aspect-[3/2]',
+                isSelected
+                  ? 'border-accent ring-2 ring-accent/60'
+                  : 'border-border/40 hover:border-accent/60 hover:shadow-md'
+              )}
+            >
+              <img
+                src={item.url}
+                alt={item.label}
+                className="w-full h-full object-cover"
+                loading="lazy"
+              />
+              {isSelected && (
+                <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                  <span className="text-[8px] font-bold uppercase tracking-wide text-accent-foreground">
+                    Selected
+                  </span>
+                </div>
+              )}
+            </button>
+          );
+        })}
 
-        {/* Upload tile (the 8th tile) */}
-        <button
-          type="button"
-          onClick={handleUploadClick}
-          className="flex flex-col items-center justify-center aspect-[3/2] rounded-md border border-dashed border-border/50 bg-card/40 hover:bg-card/70 hover:border-accent/60 transition-all text-[9px] text-muted-foreground"
+        {/* Upload tile */}
+        <label
+          className={cn(
+            'relative rounded-lg border border-dashed border-border/50 flex flex-col items-center justify-center text-center aspect-[3/2] cursor-pointer hover:border-accent/80 hover:bg-card/40 transition-all'
+          )}
         >
-          <span className="text-lg mb-0.5">＋</span>
-          <span>Upload</span>
-        </button>
+          <input
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={handleUploadChange}
+          />
+          <ImageIcon className="w-4 h-4 mb-1 text-muted-foreground" />
+          <span className="text-[8px] font-semibold uppercase text-muted-foreground">
+            Upload
+          </span>
+          <span className="text-[7px] text-muted-foreground/80 mt-0.5 max-w-[90%]">
+            PNG / JPG / GIF
+          </span>
+        </label>
       </div>
     </div>
   );
