@@ -1,11 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
-import { cn } from '@/lib/utils';
-import { Copy, Eye, EyeOff, CheckCircle, Lock } from 'lucide-react';
 import { useLanguage } from '@/lib/languageStore';
-import { apiService } from '@/services/api';
+import { Copy, CheckCircle2, AlertCircle, ExternalLink, RefreshCcw } from 'lucide-react';
 
 interface FundingPanelProps {
   cardId: string;
@@ -13,10 +12,19 @@ interface FundingPanelProps {
   depositAddress: string;
   funded: boolean;
   locked: boolean;
-  tokenAmount: number;
-  solAmount: number;
-  fiatAmount: number;
-  onFundingStatusChange?: (funded: boolean, solAmount: number) => void;
+  fundedAmount: string;
+  onFundingStatusChange?: (isFunded: boolean, solAmount: number) => void;
+}
+
+interface CardStatusResponse {
+  public_id: string;
+  deposit_address: string | null;
+  funded: boolean;
+  locked: boolean;
+  claimed: boolean;
+  token_amount: number | null;
+  amount_fiat: number | null;
+  currency: string | null;
 }
 
 export function FundingPanel({
@@ -25,212 +33,326 @@ export function FundingPanel({
   depositAddress,
   funded,
   locked,
-  tokenAmount,
-  solAmount,
-  fiatAmount,
+  fundedAmount,
   onFundingStatusChange,
 }: FundingPanelProps) {
   const { t } = useLanguage();
-  const [showCvv, setShowCvv] = useState(false);
 
+  const [checking, setChecking] = useState(false);
+  const [copiedAddr, setCopiedAddr] = useState(false);
+  const [copiedCvv, setCopiedCvv] = useState(false);
+
+  // canonical funded amounts that should PERSIST even after claim
+  const [solAmount, setSolAmount] = useState<number | null>(null);
+  const [usdAmount, setUsdAmount] = useState<number | null>(null);
+  const [solPrice, setSolPrice] = useState<number | null>(null);
+
+  // helper: fetch SOL price from backend
+  const fetchSolPrice = useCallback(async () => {
+    try {
+      const res = await fetch('/sol-price');
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      if (typeof data.price_usd === 'number') {
+        setSolPrice(data.price_usd);
+        return data.price_usd as number;
+      }
+    } catch (err) {
+      console.error('FundingPanel: failed to fetch SOL price', err);
+    }
+    return solPrice; // fallback to existing cached value (may be null)
+  }, [solPrice]);
+
+  // initial load: pull any existing funded/claimed amounts from backend
   useEffect(() => {
-    if (!cardId || !depositAddress) return;
-
-    let isMounted = true;
-
-    const checkFunding = async () => {
+    const loadInitial = async () => {
       try {
-        const result = await apiService.syncCardFunding(cardId);
-        if (!isMounted) return;
+        const [statusRes, priceRes] = await Promise.all([
+          fetch(`/card-status/${encodeURIComponent(cardId)}`),
+          fetch('/sol-price').catch(() => null),
+        ]);
 
-        const sol = typeof result.sol === 'number' ? result.sol : 0;
-        const isFunded = !!result.funded;
+        if (statusRes.ok) {
+          const status = (await statusRes.json()) as CardStatusResponse;
+          const tokenAmt =
+            typeof status.token_amount === 'number' && status.token_amount > 0
+              ? status.token_amount
+              : null;
+          const fiatAmt =
+            typeof status.amount_fiat === 'number' && status.amount_fiat > 0
+              ? status.amount_fiat
+              : null;
 
-        if (onFundingStatusChange) {
-          onFundingStatusChange(isFunded, sol);
+          if (tokenAmt !== null) {
+            setSolAmount(tokenAmt);
+            // this keeps the builder card preview in sync on refresh
+            if (onFundingStatusChange) {
+              onFundingStatusChange(true, tokenAmt);
+            }
+          }
+
+          if (fiatAmt !== null) {
+            setUsdAmount(fiatAmt);
+          }
+        }
+
+        if (priceRes && priceRes.ok) {
+          const pd = await priceRes.json();
+          if (typeof pd.price_usd === 'number') {
+            setSolPrice(pd.price_usd);
+            // backfill a missing fiat value if we know SOL
+            if (solAmount !== null && usdAmount == null) {
+              setUsdAmount(solAmount * pd.price_usd);
+            }
+          }
         }
       } catch (err) {
-        console.error('Failed to sync card funding', err);
+        console.error('FundingPanel: failed to load initial card status', err);
       }
     };
 
-    checkFunding();
-    const intervalId = setInterval(checkFunding, 15000);
-    return () => {
-      isMounted = false;
-      clearInterval(intervalId);
-    };
-  }, [cardId, depositAddress, onFundingStatusChange]);
+    loadInitial();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cardId]);
 
-  const copyAddress = () => {
-    navigator.clipboard.writeText(depositAddress);
-    toast.success('Address copied!');
-  };
+  // formatted display values (persist even after claim)
+  const displaySol = solAmount !== null ? solAmount : 0;
+  const displayToken = displaySol; // token is SOL for now
+  const displayUsd =
+    usdAmount !== null
+      ? usdAmount
+      : solPrice !== null
+      ? displaySol * solPrice
+      : 0;
 
-  const copyCardId = () => {
-    navigator.clipboard.writeText(cardId);
-    toast.success('Card ID copied!');
-  };
+  const formattedToken = displayToken.toFixed(6);
+  const formattedSol = displaySol.toFixed(6);
+  const formattedUsd = displayUsd.toFixed(2);
 
-  const copyCvv = () => {
-    navigator.clipboard.writeText(cvv);
-    toast.success('CVV copied!');
-  };
+  // tax: 1.5% of SOL balance, with fiat
+  const taxSol = displaySol * 0.015;
+  const taxUsd = displayUsd * 0.015;
+  const formattedTaxSol = taxSol.toFixed(6);
+  const formattedTaxUsd = taxUsd.toFixed(2);
 
-  const status = (() => {
-    if (locked) {
-      return {
-        text: t('button.cardLocked'),
-        color: 'text-secondary',
-        bgColor: 'bg-secondary',
-        icon: Lock,
-      };
+  const handleCopy = async (value: string, type: 'addr' | 'cvv') => {
+    try {
+      await navigator.clipboard.writeText(value);
+      if (type === 'addr') {
+        setCopiedAddr(true);
+        setTimeout(() => setCopiedAddr(false), 1200);
+      } else {
+        setCopiedCvv(true);
+        setTimeout(() => setCopiedCvv(false), 1200);
+      }
+    } catch {
+      toast.error('Failed to copy to clipboard');
     }
-    if (funded) {
-      return {
-        text: t('funding.funded'),
-        color: 'text-accent',
-        bgColor: 'bg-accent',
-        icon: CheckCircle,
-      };
+  };
+
+  const handleCheckFunding = async () => {
+    if (!cardId) return;
+    setChecking(true);
+    try {
+      const res = await fetch(`/sync-card-funding/${encodeURIComponent(cardId)}`, {
+        method: 'POST',
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        console.error('sync-card-funding error:', res.status, text);
+        throw new Error('Failed to sync card funding');
+      }
+
+      const data = await res.json();
+      const sol =
+        typeof data.sol === 'number' && data.sol > 0
+          ? data.sol
+          : 0;
+
+      if (sol > 0) {
+        // fetch price (or reuse cached)
+        const price = (await fetchSolPrice()) ?? solPrice;
+        const usd = price ? sol * price : displayUsd;
+
+        setSolAmount(sol);
+        setUsdAmount(usd);
+
+        if (onFundingStatusChange) {
+          onFundingStatusChange(true, sol);
+        }
+
+        toast.success('Deposit detected! Your CRYPTOCARD is now funded.');
+      } else {
+        // IMPORTANT: do NOT zero out our stored amounts here.
+        // This keeps historical funded values even after claim/drain.
+        toast.info('No funds detected yet. Try again after your transaction confirms.');
+      }
+    } catch (err: any) {
+      console.error('FundingPanel checkFunding failed', err);
+      toast.error(err?.message || 'Failed to check funding status');
+    } finally {
+      setChecking(false);
     }
-    return {
-      text: t('funding.waiting'),
-      color: 'text-warning',
-      bgColor: 'bg-warning',
-      icon: null,
-    };
-  })();
+  };
 
-  const tokenStr = tokenAmount > 0 ? tokenAmount.toFixed(6) : '0.000000';
-  const solStr = solAmount > 0 ? solAmount.toFixed(6) : '0.000000';
-  const fiatStr = fiatAmount > 0 ? `$${fiatAmount.toFixed(2)} USD` : '$0.00 USD';
-
-  const taxSol = solAmount * 0.015;
-  const taxUsd = fiatAmount * 0.015;
-  const taxToken = tokenAmount * 0.015;
-
-  const taxTokenStr = taxToken > 0 ? taxToken.toFixed(6) : '0.000000';
-  const taxSolStr = taxSol > 0 ? taxSol.toFixed(6) : '0.000000';
-  const taxUsdStr = taxUsd > 0 ? `$${taxUsd.toFixed(2)} USD` : '$0.00 USD';
+  const solscanUrl = depositAddress
+    ? `https://solscan.io/account/${depositAddress}`
+    : undefined;
 
   return (
-    <div className="glass-card rounded-2xl p-4 mt-3 border border-border/40 bg-card/70 space-y-3">
-      <h3 className="text-xs font-black gradient-text text-center uppercase tracking-wide mb-1">
-        Fund your CRYPTOCARD
-      </h3>
-
-      {/* Card ID */}
-      <div>
-        <Label className="text-[9px] uppercase tracking-wide opacity-80 text-center block">
-          {t('funding.cardId')}
-        </Label>
-        <div className="flex items-center justify-center gap-2 mt-1.5 p-2 bg-background/40 rounded-lg border border-border/30">
-          <span className="text-xs font-mono font-bold text-primary truncate max-w-[200px]">
-            {cardId}
-          </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={copyCardId}
-            className="h-6 px-2 text-[8px]"
-          >
-            <Copy className="w-3 h-3" />
-          </Button>
-        </div>
+    <div className="mt-3 space-y-3">
+      {/* TITLE */}
+      <div className="text-center mb-1">
+        <h3 className="text-xs font-black uppercase tracking-[0.18em] bg-gradient-to-r from-cyan-400 via-sky-300 to-emerald-400 bg-clip-text text-transparent">
+          FUND YOUR CRYPTOCARD
+        </h3>
+        <p className="text-[9px] text-muted-foreground mt-1">
+          Send SOL to the deposit wallet below. Once funded, lock and share your CRYPTOCARD.
+        </p>
       </div>
 
-      {/* CVV */}
-      <div className="bg-destructive/10 border border-destructive/30 rounded-lg p-3 text-center">
-        <p className="text-[10px] font-bold text-destructive mb-1.5">
-          {t('funding.cvvWarning')}
-        </p>
-        <div
-          className={cn(
-            'font-mono text-lg text-primary font-black tracking-widest my-2',
-            !showCvv && 'blur-sm select-none'
-          )}
-        >
-          {cvv}
-        </div>
-        <div className="flex justify-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setShowCvv(!showCvv)}
-            className="h-6 px-3 text-[8px] font-semibold"
-          >
-            {showCvv ? <EyeOff className="w-3 h-3 mr-1" /> : <Eye className="w-3 h-3 mr-1" />}
-            {showCvv ? t('funding.hide') : t('funding.show')}
-          </Button>
-          {showCvv && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={copyCvv}
-              className="h-6 px-3 text-[8px] font-semibold"
+      {/* STATUS SUMMARY */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <div className="rounded-lg border border-border/40 bg-card/70 p-2.5 space-y-1">
+          <div className="flex items-center justify-between">
+            <span className="text-[9px] font-semibold uppercase text-muted-foreground">
+              Funded
+            </span>
+            <span
+              className={
+                locked
+                  ? 'inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-full bg-warning/10 border border-warning/40 text-warning-foreground'
+                  : funded
+                  ? 'inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-400/40 text-emerald-300'
+                  : 'inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-full bg-muted/20 border border-muted/40 text-muted-foreground'
+              }
             >
-              <Copy className="w-3 h-3 mr-1" />
-              {t('header.copy')}
-            </Button>
-          )}
+              <CheckCircle2 className="w-3 h-3" />
+              {funded || solAmount ? 'FUNDED' : 'NOT FUNDED'}
+            </span>
+          </div>
+          <p className="text-[10px] font-mono mt-1">
+            {formattedToken} SOL&nbsp;•&nbsp;{formattedSol} SOL&nbsp;•&nbsp;${formattedUsd} USD
+          </p>
+        </div>
+
+        <div className="rounded-lg border border-border/40 bg-card/70 p-2.5 space-y-1">
+          <div className="flex items-center justify-between">
+            <span className="text-[9px] font-semibold uppercase text-muted-foreground">
+              1.5% Protocol Tax on Funded &amp; Locked CRYPTOCARDS
+            </span>
+          </div>
+          <p className="text-[9px] text-muted-foreground mt-1 leading-snug">
+            A 1.5% protocol tax is applied to the SOL balance on each funded and locked
+            CRYPTOCARD. Tax proceeds automatically swap to $CRYPTOCARDS and are sent to our
+            public burn wallet, which triggers a burn whenever its balance reaches 0.02 SOL
+            or more.
+          </p>
+          <p className="text-[10px] font-mono mt-1">
+            Estimated tax on this CRYPTOCARD:{' '}
+            {formattedTaxSol} SOL • ~${formattedTaxUsd} USD
+          </p>
         </div>
       </div>
 
-      {/* Deposit address */}
-      <div>
-        <Label className="text-[9px] uppercase tracking-wide opacity-80">
-          {t('funding.depositAddress')}
-        </Label>
-        <div
-          onClick={copyAddress}
-          className="flex items-center justify-center gap-2 mt-1.5 p-2 bg-background/40 rounded-lg border border-border/30 cursor-pointer hover:border-primary/50 hover:bg-card/80 transition-all"
-        >
-          <span className="text-[9px] font-mono truncate max-w-[220px]">
-            {depositAddress}
+      {/* DEPOSIT DETAILS */}
+      <div className="rounded-xl border border-primary/30 bg-primary/5 p-3 space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[9px] font-semibold uppercase text-primary tracking-wide">
+            Deposit wallet (SOL)
           </span>
-          <Copy className="w-3.5 h-3.5 text-primary flex-shrink-0" />
-        </div>
-      </div>
-
-      {/* Status */}
-      <div className="flex items-center justify-center gap-2 font-bold text-[10px]">
-        <div
-          className={cn(
-            'w-2.5 h-2.5 rounded-full',
-            status.bgColor,
-            !locked && !funded && 'animate-blink'
+          {solscanUrl && (
+            <a
+              href={solscanUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-[9px] text-primary hover:text-accent transition-colors"
+            >
+              <ExternalLink className="w-3 h-3" />
+              View on Solscan
+            </a>
           )}
-        />
-        <span className={status.color}>{status.text}</span>
-        {status.icon && <status.icon className={cn('w-4 h-4', status.color)} />}
-      </div>
+        </div>
 
-      {/* Funded totals */}
-      <div className="space-y-2 text-center text-[9px]">
-        <div className="bg-primary/5 border border-primary/30 rounded-lg py-2 px-2">
-          <div className="font-semibold uppercase mb-0.5">
-            Funded
+        <div className="flex items-center gap-2">
+          <Input
+            value={depositAddress}
+            readOnly
+            className="h-8 text-[9px] font-mono bg-background/80 border-border/50"
+          />
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => handleCopy(depositAddress, 'addr')}
+          >
+            {copiedAddr ? <CheckCircle2 className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+          </Button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 mt-2">
+          <div>
+            <Label className="text-[8px] uppercase tracking-wide opacity-80">
+              Card ID
+            </Label>
+            <Input
+              value={cardId}
+              readOnly
+              className="mt-1 h-7 text-[9px] font-mono bg-background/60 border-border/40"
+            />
           </div>
-          <div className="font-bold">
-            {tokenStr} TOKEN • {solStr} SOL • {fiatStr}
+          <div>
+            <Label className="text-[8px] uppercase tracking-wide opacity-80">
+              CVV
+            </Label>
+            <div className="flex items-center gap-2 mt-1">
+              <Input
+                value={cvv}
+                readOnly
+                className="h-7 text-[9px] font-mono bg-background/60 border-border/40"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => handleCopy(cvv, 'cvv')}
+              >
+                {copiedCvv ? <CheckCircle2 className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+              </Button>
+            </div>
           </div>
         </div>
-      </div>
 
-      {/* Protocol tax */}
-      <div className="bg-warning/10 border border-warning/40 rounded-lg py-2 px-3 text-center text-[9px]">
-        <div className="font-semibold uppercase mb-1">
-          1.5% Protocol Tax on funded &amp; locked CRYPTOCARDS
-        </div>
-        <p className="mb-1">
-          A 1.5% protocol tax is applied to the SOL balance on each funded and locked CRYPTOCARD.
-          Tax proceeds automatically swap to $CRYPTOCARDS and are sent to our public burn wallet,
-          which triggers a burn whenever its balance reaches 0.02&nbsp;SOL or more.
-        </p>
-        <div className="font-bold mt-1">
-          Estimated tax on this CRYPTOCARD: {taxTokenStr} TOKEN • {taxSolStr} SOL • ~
-          {taxUsdStr}
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 mt-3">
+          <Button
+            type="button"
+            onClick={handleCheckFunding}
+            disabled={checking}
+            className="w-full sm:w-auto h-8 text-[10px] font-black gradient-success text-primary-foreground disabled:opacity-60"
+          >
+            {checking ? (
+              <span className="inline-flex items-center gap-2">
+                <RefreshCcw className="w-3 h-3 animate-spin" />
+                Checking funding…
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-2">
+                <RefreshCcw className="w-3 h-3" />
+                Check on-chain funding
+              </span>
+            )}
+          </Button>
+
+          <div className="flex items-center gap-1 text-[8px] text-muted-foreground">
+            <AlertCircle className="w-3 h-3 text-warning" />
+            <span>
+              Use a Solana wallet (Phantom, Backpack, etc.). Wait for finality before locking.
+            </span>
+          </div>
         </div>
       </div>
     </div>
