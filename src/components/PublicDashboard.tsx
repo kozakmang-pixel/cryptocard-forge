@@ -8,6 +8,7 @@ import {
   RefreshCcw,
   Flame,
   Globe2,
+  ExternalLink,
   Copy,
   ArrowUpRight,
 } from 'lucide-react';
@@ -67,9 +68,7 @@ function formatShortTime(iso?: string | null) {
 }
 
 export function PublicDashboard() {
-  // We keep language hook for consistency with the rest of the app,
-  // even though we don't use t() here yet.
-  const { t } = useLanguage(); // eslint-disable-line @typescript-eslint/no-unused-vars
+  const { t } = useLanguage();
 
   const [metrics, setMetrics] = useState<PublicMetrics | null>(null);
   const [activity, setActivity] = useState<PublicActivityEvent[]>([]);
@@ -79,25 +78,10 @@ export function PublicDashboard() {
   const fetchSolPrice = async () => {
     try {
       const res = await fetch('/sol-price');
-      if (!res.ok) {
-        console.warn('PublicDashboard: /sol-price not OK', res.status);
-        return;
-      }
-      const data: SolPriceResponse & Record<string, any> = await res.json();
-
-      // Support multiple backend shapes:
-      // { price_usd } OR { sol_price_usd } OR { price: { usd } }
-      let price: number | null = null;
-
-      if (typeof data.price_usd === 'number') {
-        price = data.price_usd;
-      } else if (typeof data.sol_price_usd === 'number') {
-        price = data.sol_price_usd;
-      } else if (data.price && typeof data.price.usd === 'number') {
-        price = data.price.usd;
-      }
-
-      if (price && price > 0) {
+      if (!res.ok) return;
+      const data: SolPriceResponse = await res.json();
+      const price = typeof data.price_usd === 'number' ? data.price_usd : data.sol_price_usd;
+      if (typeof price === 'number') {
         setSolPrice(price);
       }
     } catch (err) {
@@ -108,107 +92,51 @@ export function PublicDashboard() {
   const fetchMetricsAndActivity = async () => {
     setLoading(true);
     try {
-      // ---- METRICS ----
+      // Metrics
       try {
         const res = await fetch('/public-metrics');
         if (res.ok) {
-          const raw = await res.json();
-          const data = raw || {};
-
-          const normalize = (v: any): number =>
-            typeof v === 'number' ? v : typeof v === 'string' ? Number(v) || 0 : 0;
-
+          const data = (await res.json()) as Partial<PublicMetrics>;
           setMetrics({
-            total_cards_funded: normalize(data.total_cards_funded),
-            total_volume_funded_sol: normalize(data.total_volume_funded_sol),
-            total_volume_funded_fiat: normalize(data.total_volume_funded_fiat),
-            total_volume_claimed_sol: normalize(data.total_volume_claimed_sol),
-            total_volume_claimed_fiat: normalize(data.total_volume_claimed_fiat),
-            protocol_burns_sol: normalize(data.protocol_burns_sol),
-            protocol_burns_fiat: normalize(data.protocol_burns_fiat),
-            burn_wallet: data.burn_wallet || undefined,
-            last_updated: data.last_updated || undefined,
+            total_cards_funded: data.total_cards_funded ?? 0,
+            total_volume_funded_sol: data.total_volume_funded_sol ?? 0,
+            total_volume_funded_fiat: data.total_volume_funded_fiat ?? 0,
+            total_volume_claimed_sol: data.total_volume_claimed_sol ?? 0,
+            total_volume_claimed_fiat: data.total_volume_claimed_fiat ?? 0,
+            protocol_burns_sol: data.protocol_burns_sol ?? 0,
+            protocol_burns_fiat: data.protocol_burns_fiat ?? 0,
+            burn_wallet: data.burn_wallet,
+            last_updated: data.last_updated,
           });
         } else {
           console.warn('PublicDashboard: /public-metrics not OK, falling back to /stats');
-
           const statsRes = await fetch('/stats');
           if (statsRes.ok) {
             const stats = await statsRes.json();
-            const normalize = (v: any): number =>
-              typeof v === 'number' ? v : typeof v === 'string' ? Number(v) || 0 : 0;
-
             setMetrics({
-              total_cards_funded: normalize(stats.total_cards_funded),
-              total_volume_funded_sol: normalize(stats.total_volume_funded_sol),
-              total_volume_funded_fiat: normalize(stats.total_volume_funded_fiat ?? stats.total_funded),
-              total_volume_claimed_sol: normalize(stats.total_volume_claimed_sol),
-              total_volume_claimed_fiat: normalize(stats.total_volume_claimed_fiat),
-              protocol_burns_sol: normalize(stats.protocol_burns_sol ?? stats.total_burned),
-              protocol_burns_fiat: normalize(stats.protocol_burns_fiat ?? stats.total_burned_fiat),
-              burn_wallet: stats.burn_wallet || undefined,
-              last_updated: stats.last_updated || undefined,
+              total_cards_funded: stats.total_cards_funded ?? 0,
+              total_volume_funded_sol: stats.total_volume_funded_sol ?? 0,
+              total_volume_funded_fiat: stats.total_volume_funded_fiat ?? 0,
+              total_volume_claimed_sol: stats.total_volume_claimed_sol ?? 0,
+              total_volume_claimed_fiat: stats.total_volume_claimed_fiat ?? 0,
+              protocol_burns_sol: stats.protocol_burns_sol ?? stats.total_burned ?? 0,
+              protocol_burns_fiat: stats.protocol_burns_fiat ?? stats.total_burned_fiat ?? 0,
+              burn_wallet: stats.burn_wallet,
+              last_updated: stats.last_updated,
             });
-          } else {
-            console.warn('PublicDashboard: /stats not OK', statsRes.status);
           }
         }
       } catch (err) {
         console.error('PublicDashboard: metrics fetch failed', err);
       }
 
-      // ---- ACTIVITY ----
+      // Activity
       try {
         const res = await fetch('/public-activity');
         if (res.ok) {
-          const raw = await res.json();
-
-          // Support either:
-          // { events: [...] } OR just [...]
-          const events = Array.isArray(raw?.events)
-            ? raw.events
-            : Array.isArray(raw)
-            ? raw
-            : [];
-
-          const normalized = (events as any[]).map((e) => ({
-            id: e.id ?? undefined,
-            card_id: String(e.card_id ?? e.public_id ?? 'UNKNOWN'),
-            type: (e.type as ActivityType) ?? 'CREATED',
-            token_amount:
-              typeof e.token_amount === 'number'
-                ? e.token_amount
-                : typeof e.token_amount === 'string'
-                ? Number(e.token_amount) || null
-                : null,
-            sol_amount:
-              typeof e.sol_amount === 'number'
-                ? e.sol_amount
-                : typeof e.sol_amount === 'string'
-                ? Number(e.sol_amount) || null
-                : typeof e.amount_sol === 'number'
-                ? e.amount_sol
-                : typeof e.amount_sol === 'string'
-                ? Number(e.amount_sol) || null
-                : null,
-            fiat_value:
-              typeof e.fiat_value === 'number'
-                ? e.fiat_value
-                : typeof e.fiat_value === 'string'
-                ? Number(e.fiat_value) || null
-                : typeof e.amount_fiat === 'number'
-                ? e.amount_fiat
-                : typeof e.amount_fiat === 'string'
-                ? Number(e.amount_fiat) || null
-                : null,
-            currency: e.currency ?? e.fiat_currency ?? 'USD',
-            timestamp: e.timestamp ?? e.created_at ?? new Date().toISOString(),
-            tx_signature: e.tx_signature ?? e.signature ?? null,
-          }));
-
-          setActivity(normalized);
-        } else {
-          console.warn('PublicDashboard: /public-activity not OK', res.status);
+          const data = await res.json();
+          const events = Array.isArray(data?.events) ? data.events : Array.isArray(data) ? data : [];
+          setActivity(events as PublicActivityEvent[]);
         }
       } catch (err) {
         console.error('PublicDashboard: activity fetch failed', err);
@@ -324,7 +252,7 @@ export function PublicDashboard() {
       {/* Header */}
       <div className="flex flex-col items-center text-center mb-3">
         <h2 className="text-xs font-black gradient-text tracking-[0.25em] uppercase">
-          NETWORK ACTIVITY & BURNS
+          NETWORK ACTIVITY &amp; BURNS
         </h2>
         <p className="text-[9px] text-muted-foreground mt-1 max-w-md">
           Live mainnet view of funded, locked, and claimed{' '}
@@ -335,7 +263,7 @@ export function PublicDashboard() {
 
       {/* Top controls */}
       <div className="flex items-center justify-between gap-2 mb-3">
-        <div className="flex flex-wrap items-center gap-2 text-[8px] text-muted-foreground">
+        <div className="flex items-center gap-2 text-[8px] text-muted-foreground">
           <Globe2 className="w-3 h-3 text-primary" />
           {enrichedMetrics?.last_updated && (
             <span>
@@ -346,16 +274,11 @@ export function PublicDashboard() {
             </span>
           )}
           {solPrice !== null && (
-            <span>
+            <span className="ml-2">
               SOL:{' '}
               <span className="font-semibold">
                 ${solPrice.toFixed(2)} USD
               </span>
-            </span>
-          )}
-          {solPrice === null && (
-            <span className="opacity-70">
-              SOL price unavailable (using on-chain / cached values)
             </span>
           )}
         </div>
@@ -397,10 +320,10 @@ export function PublicDashboard() {
             Total volume funded
           </div>
           <div className="text-[11px] font-black text-emerald-400 leading-tight">
-            {Number(enrichedMetrics?.total_volume_funded_sol ?? 0).toFixed(4)} SOL
+            {(enrichedMetrics?.total_volume_funded_sol ?? 0).toFixed(4)} SOL
           </div>
           <div className="text-[8px] text-muted-foreground">
-            ≈ ${Number(enrichedMetrics?.fundedFiat ?? 0).toFixed(2)} USD
+            ≈ ${(enrichedMetrics?.fundedFiat ?? 0).toFixed(2)} USD
           </div>
         </div>
 
@@ -409,10 +332,10 @@ export function PublicDashboard() {
             Total value claimed
           </div>
           <div className="text-[11px] font-black text-purple-400 leading-tight">
-            {Number(enrichedMetrics?.total_volume_claimed_sol ?? 0).toFixed(4)} SOL
+            {(enrichedMetrics?.total_volume_claimed_sol ?? 0).toFixed(4)} SOL
           </div>
           <div className="text-[8px] text-muted-foreground">
-            ≈ ${Number(enrichedMetrics?.claimedFiat ?? 0).toFixed(2)} USD
+            ≈ ${(enrichedMetrics?.claimedFiat ?? 0).toFixed(2)} USD
           </div>
         </div>
 
@@ -424,21 +347,11 @@ export function PublicDashboard() {
             </span>
           </div>
           <div className="text-[11px] font-black text-rose-400 leading-tight">
-            {Number(enrichedMetrics?.protocol_burns_sol ?? 0).toFixed(4)} SOL
+            {(enrichedMetrics?.protocol_burns_sol ?? 0).toFixed(4)} SOL
           </div>
           <div className="text-[8px] text-muted-foreground mb-0.5">
-            ≈ ${Number(enrichedMetrics?.burnsFiat ?? 0).toFixed(2)} USD
+            ≈ ${(enrichedMetrics?.burnsFiat ?? 0).toFixed(2)} USD
           </div>
-          {enrichedMetrics?.burn_wallet && (
-            <button
-              type="button"
-              onClick={() => handleCopy(enrichedMetrics.burn_wallet!, 'Burn wallet')}
-              className="mt-1 inline-flex items-center justify-center gap-1 text-[8px] text-rose-300 hover:text-rose-200 transition-colors"
-            >
-              <Copy className="w-3 h-3" />
-              Copy burn wallet
-            </button>
-          )}
         </div>
       </div>
 
@@ -468,14 +381,11 @@ export function PublicDashboard() {
           {topTenEvents.length > 0 && (
             <div className="mt-1 max-h-56 overflow-y-auto space-y-1.5">
               {topTenEvents.map((evt, idx) => {
-                const sol = typeof evt.sol_amount === 'number' ? evt.sol_amount : 0;
-                const token =
-                  typeof evt.token_amount === 'number'
-                    ? evt.token_amount
-                    : sol;
+                const sol = evt.sol_amount ?? 0;
+                const token = evt.token_amount ?? sol;
                 const price = solPrice && solPrice > 0 ? solPrice : null;
                 const fiat =
-                  typeof evt.fiat_value === 'number' && evt.fiat_value > 0
+                  evt.fiat_value && evt.fiat_value > 0
                     ? evt.fiat_value
                     : price && sol > 0
                     ? sol * price
@@ -582,7 +492,7 @@ export function PublicDashboard() {
           </div>
           <p className="text-[9px] text-muted-foreground mb-2">
             A <span className="font-semibold text-primary">1.5% protocol tax</span> is applied to
-            the SOL balance on every funded & locked CRYPTOCARD. Tax proceeds swap to{' '}
+            the SOL balance on every funded &amp; locked CRYPTOCARD. Tax proceeds swap to{' '}
             <span className="font-semibold">$CRYPTOCARDS</span> and are sent to a public burn
             wallet.
           </p>
@@ -591,15 +501,78 @@ export function PublicDashboard() {
             threshold, permanently reducing circulating supply.
           </p>
           {enrichedMetrics && (
-            <div className="mt-2 rounded-md bg-rose-500/10 border border-rose-500/40 px-2 py-1.5">
-              <div className="text-[8px] uppercase tracking-wide text-rose-200 mb-0.5">
-                Estimated protocol tax (lifetime)
+            <>
+              <div className="mt-2 rounded-md bg-rose-500/10 border border-rose-500/40 px-2 py-1.5">
+                <div className="text-[8px] uppercase tracking-wide text-rose-200 mb-0.5">
+                  Estimated protocol tax (lifetime)
+                </div>
+                <div className="text-[10px] font-semibold text-rose-100">
+                  {(enrichedMetrics.protocol_burns_sol ?? 0).toFixed(6)} SOL • $
+                  {(enrichedMetrics.burnsFiat ?? 0).toFixed(2)} USD
+                </div>
               </div>
-              <div className="text-[10px] font-semibold text-rose-100">
-                {Number(enrichedMetrics.protocol_burns_sol ?? 0).toFixed(6)} SOL • $
-                {Number(enrichedMetrics.burnsFiat ?? 0).toFixed(2)} USD
+
+              <div className="mt-2 rounded-md bg-card/70 border border-border/50 px-2 py-1.5 space-y-1.5">
+                <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
+                  Protocol wallets
+                </div>
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-[9px] text-muted-foreground">Fee wallet</span>
+                    <div className="flex items-center gap-1">
+                      <a
+                        href="https://solscan.io/account/31qHCz3moBBbbCgwaHfHkHjy5y6e4A1Y1HDtQRsa5Ms2"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-[9px] font-mono text-primary hover:text-primary/80"
+                      >
+                        31qH…Ms2
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleCopy(
+                            '31qHCz3moBBbbCgwaHfHkHjy5y6e4A1Y1HDtQRsa5Ms2',
+                            'Fee wallet'
+                          )
+                        }
+                        className="inline-flex h-4 w-4 items-center justify-center rounded bg-background/60 border border-border/40 hover:border-primary/60"
+                      >
+                        <Copy className="w-3 h-3 text-muted-foreground" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-[9px] text-muted-foreground">Burn wallet</span>
+                    <div className="flex items-center gap-1">
+                      <a
+                        href="https://solscan.io/account/A3mpAVduHM9QyRgH1NSZp5ANnbPr2Z5vkXtc8EgDaZBF"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-[9px] font-mono text-primary hover:text-primary/80"
+                      >
+                        A3mp…ZBF
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleCopy(
+                            'A3mpAVduHM9QyRgH1NSZp5ANnbPr2Z5vkXtc8EgDaZBF',
+                            'Burn wallet'
+                          )
+                        }
+                        className="inline-flex h-4 w-4 items-center justify-center rounded bg-background/60 border border-border/40 hover:border-primary/60"
+                      >
+                        <Copy className="w-3 h-3 text-muted-foreground" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
-            </div>
+            </>
           )}
         </div>
       </div>
