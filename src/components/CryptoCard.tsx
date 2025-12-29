@@ -1,0 +1,190 @@
+import { useState } from 'react';
+import { cn } from '@/lib/utils';
+import { CardData } from '@/types/card';
+
+interface CryptoCardProps {
+  data: CardData | null;
+  locked: boolean;
+  onScratch?: () => void;
+  message?: string;
+  image?: string;
+  font?: string;
+  tokenSymbol?: string;
+  tokenAmount?: string;
+  solValue?: string;
+  fiatValue?: string;
+  fiatCurrency?: string;
+  expiryDate?: string;
+  hasExpiry?: boolean;
+  isClaimMode?: boolean;
+  // NEW: for claim flow, we can show the CVV the user typed
+  claimCvv?: string;
+}
+
+export function CryptoCard({
+  data,
+  locked,
+  onScratch,
+  message = 'Your message here',
+  image = 'https://picsum.photos/300/190?random=1',
+  font = 'Inter',
+  tokenSymbol = 'TOKEN',
+  tokenAmount = '0',
+  solValue = '0.0000',
+  fiatValue = '0.00',
+  fiatCurrency = 'USD',
+  expiryDate,
+  hasExpiry = false,
+  isClaimMode = false,
+  claimCvv,
+}: CryptoCardProps) {
+  const [flipped, setFlipped] = useState(false);
+  const [scratched, setScratch] = useState(false);
+
+  const cardId = data?.cardId || '0000-0000';
+
+  // In claim mode, prefer the CVV the user typed into the modal.
+  // Otherwise fall back to data.cvv or masked.
+  const cvv =
+    (isClaimMode && claimCvv && claimCvv.trim()) ||
+    data?.cvv ||
+    '*****';
+
+  const displayImage = data?.image || image;
+  const displayMessage = data?.message || message;
+  const displayFont = data?.font || font;
+  const displayToken = data?.tokenSymbol || tokenSymbol;
+  const displayTokenAmount = data?.tokenAmount || tokenAmount;
+  const displaySolValue = data?.solValue || solValue;
+  const displayFiatValue = data?.fiatValue || fiatValue;
+  const displayExpiry =
+    hasExpiry && expiryDate
+      ? expiryDate
+      : data?.hasExpiry && data.expiryDate
+      ? data.expiryDate
+      : null;
+
+  // CVV can only be scratched in claim mode when card is locked
+  const canScratch = isClaimMode && locked;
+
+  const handleScratch = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (canScratch) {
+      setScratch(true);
+      onScratch?.();
+    }
+  };
+
+  return (
+    <div className="flex justify-center mb-3">
+      <div
+        onClick={() => setFlipped(!flipped)}
+        className="relative w-[280px] h-[175px] cursor-pointer perspective-1000"
+        style={{ perspective: '1000px' }}
+      >
+        <div
+          className={cn(
+            'relative w-full h-full transition-transform duration-700',
+            flipped && 'rotate-y-180'
+          )}
+          style={{
+            transformStyle: 'preserve-3d',
+            transform: flipped ? 'rotateY(180deg)' : 'rotateY(0deg)',
+          }}
+        >
+          {/* Front Face */}
+          <div
+            className={cn(
+              'absolute inset-0 rounded-xl overflow-hidden bg-card border border-border/50 transition-opacity duration-700',
+              flipped && 'opacity-0'
+            )}
+            style={{ backfaceVisibility: 'hidden' }}
+          >
+            <img
+              src={displayImage}
+              alt="Card background"
+              className="absolute inset-0 w-full h-full object-cover opacity-55"
+            />
+            <div className="absolute inset-0 p-3 flex flex-col justify-between z-10">
+              <div className="flex justify-between items-start">
+                <div>
+                  <span className="text-[8px] text-muted-foreground uppercase font-semibold">
+                    {displayToken}
+                  </span>
+                  <div className="text-lg font-black text-accent leading-tight">
+                    {displayTokenAmount}
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="text-[10px] text-muted-foreground">
+                    ≈ {displaySolValue} SOL
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">
+                    ≈ ${displayFiatValue} {fiatCurrency}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex justify-between items-center text-[7px] opacity-70">
+                <span className="uppercase font-semibold">
+                  {displayExpiry || 'NO EXPIRATION DATE'}
+                </span>
+                <span className="uppercase">ID: {cardId}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Back Face */}
+          <div
+            className={cn(
+              'absolute inset-0 rounded-xl overflow-hidden bg-card border border-border/50 transition-opacity duration-700',
+              !flipped && 'opacity-0'
+            )}
+            style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}
+          >
+            <img
+              src={displayImage}
+              alt="Card background"
+              className="absolute inset-0 w-full h-full object-cover opacity-55"
+            />
+            <div className="absolute inset-0 p-2 flex flex-col items-center justify-center z-10">
+              <span
+                className="text-sm font-semibold text-center max-w-[80%] break-words"
+                style={{ fontFamily: displayFont }}
+              >
+                {displayMessage}
+              </span>
+
+              <div className="absolute bottom-2 right-2 flex items-center gap-1">
+                {/* CVV Scratch Area - Only functional in claim mode */}
+                <div
+                  onClick={handleScratch}
+                  className={cn(
+                    'px-2 py-1 rounded text-[9px] font-mono font-black tracking-wider border border-border/50 transition-all',
+                    scratched
+                      ? 'bg-foreground text-background cursor-default'
+                      : 'bg-gradient-to-r from-muted to-card',
+                    canScratch
+                      ? 'cursor-pointer hover:brightness-110'
+                      : 'opacity-60 cursor-not-allowed'
+                  )}
+                  title={
+                    canScratch
+                      ? 'Click to scratch and reveal CVV'
+                      : 'CVV can only be scratched when claiming'
+                  }
+                >
+                  {scratched ? cvv : isClaimMode ? 'SCRATCH' : '•••••'}
+                </div>
+              </div>
+
+              <span className="absolute bottom-2 left-2 text-[6px] uppercase opacity-60">
+                ID: {cardId}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
