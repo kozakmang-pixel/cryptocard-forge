@@ -38,6 +38,15 @@ interface CardBalanceResponse {
   rpc?: string;
 }
 
+type TimelineType = 'created' | 'funded' | 'locked' | 'claimed' | 'refunded';
+
+interface TimelineEvent {
+  type: TimelineType;
+  label: string;
+  detail: string;
+  at: string | null;
+}
+
 export function AuditSection() {
   const { t } = useLanguage();
 
@@ -168,23 +177,27 @@ export function AuditSection() {
     };
   }, [card, balance, solPrice]);
 
-  const timeline = useMemo(() => {
+  const timeline: TimelineEvent[] = useMemo(() => {
     if (!card || !derived) return [];
 
-    const events: {
-      label: string;
-      detail: string;
-      at: string | null;
-    }[] = [];
+    const events: TimelineEvent[] = [];
 
+    // Created
     events.push({
+      type: 'created',
       label: 'Created',
-      detail: 'CRYPTOCARD created on-chain with unique deposit wallet.',
+      detail: 'CRYPTOCARD created with a unique on-chain deposit wallet.',
       at: card.created_at || null,
     });
 
-    if (card.funded) {
+    // Funded: show if card was ever funded / locked / claimed / refunded and has amount
+    const hasFundingHistory =
+      (card.funded || card.locked || card.claimed || card.refunded) &&
+      derived.tokenAmount > 0;
+
+    if (hasFundingHistory) {
       events.push({
+        type: 'funded',
         label: 'Funded',
         detail: `On-chain funding detected: ${derived.tokenAmount.toFixed(
           6
@@ -197,6 +210,7 @@ export function AuditSection() {
 
     if (card.locked) {
       events.push({
+        type: 'locked',
         label: 'Locked',
         detail: 'Card locked for claiming. Funding amount is now fixed for the recipient.',
         at: card.updated_at || card.created_at || null,
@@ -205,6 +219,7 @@ export function AuditSection() {
 
     if (card.claimed) {
       events.push({
+        type: 'claimed',
         label: 'Claimed',
         detail: `Final claimed amount: ${derived.tokenAmount.toFixed(
           6
@@ -217,6 +232,7 @@ export function AuditSection() {
 
     if (card.refunded) {
       events.push({
+        type: 'refunded',
         label: 'Refunded',
         detail: 'Funds were returned to the original creator wallet.',
         at: card.updated_at || null,
@@ -225,6 +241,23 @@ export function AuditSection() {
 
     return events;
   }, [card, derived]);
+
+  const dotClassForType = (type: TimelineType) => {
+    switch (type) {
+      case 'created':
+        return 'bg-primary shadow-[0_0_0_3px_rgba(59,130,246,0.25)]';
+      case 'funded':
+        return 'bg-emerald-400 shadow-[0_0_0_3px_rgba(16,185,129,0.25)]';
+      case 'locked':
+        return 'bg-amber-400 shadow-[0_0_0_3px_rgba(245,158,11,0.25)]';
+      case 'claimed':
+        return 'bg-purple-400 shadow-[0_0_0_3px_rgba(168,85,247,0.25)]';
+      case 'refunded':
+        return 'bg-rose-400 shadow-[0_0_0_3px_rgba(244,63,94,0.25)]';
+      default:
+        return 'bg-primary shadow-[0_0_0_3px_rgba(59,130,246,0.25)]';
+    }
+  };
 
   return (
     <section className="glass-card rounded-xl p-3 mt-5 shadow-card hover:shadow-card-hover transition-all">
@@ -394,6 +427,7 @@ export function AuditSection() {
                 )}
               </div>
 
+              {/* Current deposit wallet live balance */}
               <div className="text-[9px] mb-1">
                 {balance ? (
                   <>
@@ -401,16 +435,33 @@ export function AuditSection() {
                       {balance.sol.toFixed(6)} SOL
                     </span>{' '}
                     ({balance.lamports} lamports)
+                    {card.claimed && balance.sol === 0 && (
+                      <span className="block text-[8px] text-muted-foreground mt-0.5">
+                        Deposit wallet is empty after claim – funds were moved to the recipient.
+                      </span>
+                    )}
                   </>
                 ) : (
                   <span className="text-muted-foreground">
-                    No live balance data available for this card.
+                    No live deposit balance available for this card.
                   </span>
                 )}
               </div>
 
+              {/* Card amount snapshot (token / SOL / fiat) */}
+              <div className="mt-1">
+                <div className="text-[8px] uppercase tracking-wide text-muted-foreground mb-0.5">
+                  Card amount (snapshot)
+                </div>
+                <div className="text-[9px] font-semibold">
+                  {derived.tokenAmount.toFixed(6)} TOKEN •{' '}
+                  {derived.onChainSol.toFixed(6)} SOL •{' '}
+                  {derived.currency} {derived.fiat.toFixed(2)}
+                </div>
+              </div>
+
               {derived.onChainAddress && (
-                <div className="mt-1">
+                <div className="mt-2">
                   <div className="text-[8px] uppercase tracking-wide text-muted-foreground mb-0.5">
                     Deposit wallet
                   </div>
@@ -451,7 +502,12 @@ export function AuditSection() {
               <ol className="relative border-l border-border/40 pl-3 mt-1 space-y-2">
                 {timeline.map((evt, idx) => (
                   <li key={idx} className="relative pl-2">
-                    <span className="absolute -left-[9px] top-1 w-2 h-2 rounded-full bg-primary shadow-[0_0_0_3px_rgba(59,130,246,0.25)]" />
+                    <span
+                      className={
+                        'absolute -left-[9px] top-1 w-2 h-2 rounded-full ' +
+                        dotClassForType(evt.type)
+                      }
+                    />
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-[9px] font-semibold uppercase tracking-wide">
                         {evt.label}
