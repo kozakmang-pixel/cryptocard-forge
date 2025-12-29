@@ -107,7 +107,8 @@ async function notifyTelegram(message) {
 }
 
 // --- SOL price helper (server-side) ---
-// Caches LAST REAL price from a provider; uses 130 only as final fallback
+// Multi-provider: Coingecko → Binance → CoinPaprika
+// Caches LAST REAL price; uses 130 only as a final fallback
 
 let cachedSolPriceUsd = null;
 let cachedSolPriceAt = 0;
@@ -115,6 +116,67 @@ let cachedSolPriceIsReal = false;
 
 const SOL_PRICE_TTL_MS = 60_000; // 1 minute
 const FALLBACK_SOL_PRICE_USD = 130;
+
+async function fetchSolFromCoingecko() {
+  const fetch = (await import('node-fetch')).default;
+  const url =
+    'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd';
+  const resp = await fetch(url, {
+    headers: {
+      'User-Agent': 'CRYPTOCARDS-backend/1.0',
+      Accept: 'application/json',
+    },
+  });
+  if (!resp.ok) {
+    throw new Error(`Coingecko status ${resp.status}`);
+  }
+  const body = await resp.json();
+  const price = body?.solana?.usd;
+  if (typeof price !== 'number' || price <= 0) {
+    throw new Error('Coingecko missing solana.usd');
+  }
+  return price;
+}
+
+async function fetchSolFromBinance() {
+  const fetch = (await import('node-fetch')).default;
+  const url = 'https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT';
+  const resp = await fetch(url, {
+    headers: {
+      'User-Agent': 'CRYPTOCARDS-backend/1.0',
+      Accept: 'application/json',
+    },
+  });
+  if (!resp.ok) {
+    throw new Error(`Binance status ${resp.status}`);
+  }
+  const body = await resp.json();
+  const price = parseFloat(body?.price);
+  if (!Number.isFinite(price) || price <= 0) {
+    throw new Error('Binance missing/invalid price');
+  }
+  return price;
+}
+
+async function fetchSolFromCoinPaprika() {
+  const fetch = (await import('node-fetch')).default;
+  const url = 'https://api.coinpaprika.com/v1/tickers/sol-solana';
+  const resp = await fetch(url, {
+    headers: {
+      'User-Agent': 'CRYPTOCARDS-backend/1.0',
+      Accept: 'application/json',
+    },
+  });
+  if (!resp.ok) {
+    throw new Error(`CoinPaprika status ${resp.status}`);
+  }
+  const body = await resp.json();
+  const price = body?.quotes?.USD?.price;
+  if (typeof price !== 'number' || price <= 0) {
+    throw new Error('CoinPaprika missing quotes.USD.price');
+  }
+  return price;
+}
 
 async function getSolPriceUsd() {
   const now = Date.now();
@@ -129,40 +191,29 @@ async function getSolPriceUsd() {
     return cachedSolPriceUsd;
   }
 
+  const providers = [
+    { name: 'Coingecko', fn: fetchSolFromCoingecko },
+    { name: 'Binance', fn: fetchSolFromBinance },
+    { name: 'CoinPaprika', fn: fetchSolFromCoinPaprika },
+  ];
+
   let lastError = null;
 
-  try {
-    const fetch = (await import('node-fetch')).default;
-    const url =
-      'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd';
-    const resp = await fetch(url, {
-      headers: {
-        'User-Agent': 'CRYPTOCARDS-backend/1.0',
-        Accept: 'application/json',
-      },
-    });
-
-    if (!resp.ok) {
-      console.error(`getSolPriceUsd error: coingecko status ${resp.status}`);
-      lastError = new Error(`coingecko status ${resp.status}`);
-    } else {
-      const body = await resp.json();
-      const price = body?.solana?.usd;
-      if (typeof price === 'number' && price > 0) {
-        cachedSolPriceUsd = price;
-        cachedSolPriceAt = now;
-        cachedSolPriceIsReal = true;
-        console.log(`getSolPriceUsd: fresh price from coingecko = ${price}`);
-        return price;
-      }
-      lastError = new Error('coingecko missing solana.usd');
+  for (const p of providers) {
+    try {
+      const price = await p.fn();
+      cachedSolPriceUsd = price;
+      cachedSolPriceAt = now;
+      cachedSolPriceIsReal = true;
+      console.log(`getSolPriceUsd: fresh price from ${p.name} = ${price}`);
+      return price;
+    } catch (e) {
+      lastError = e;
+      console.error(`getSolPriceUsd: ${p.name} failed:`, e.message || e);
     }
-  } catch (e) {
-    console.error('getSolPriceUsd exception from coingecko:', e);
-    lastError = e;
   }
 
-  // If providers failed but we have a REAL cached price, keep using it
+  // If providers failed but we have a REAL cached price (even if a bit stale), keep using it
   if (cachedSolPriceIsReal && cachedSolPriceUsd !== null) {
     console.warn(
       `getSolPriceUsd: providers failed, using cached REAL value ${cachedSolPriceUsd} Last error: ${lastError}`
@@ -177,7 +228,7 @@ async function getSolPriceUsd() {
   return FALLBACK_SOL_PRICE_USD;
 }
 
-// Small helper route (optional, for frontend banners etc.)
+// Small helper route (for PriceBanner + public dashboard)
 app.get('/api/sol-price', async (_req, res) => {
   try {
     const price = await getSolPriceUsd();
@@ -725,7 +776,7 @@ app.post('/lock-card', async (req, res) => {
   }
 });
 
-// SIMPLE STATS (can be used by public dashboard)
+// SIMPLE STATS (for public dashboards that still hit /stats)
 app.get('/stats', async (_req, res) => {
   try {
     const { data, error } = await supabase.from('cards').select('amount_fiat, refunded');
@@ -738,7 +789,7 @@ app.get('/stats', async (_req, res) => {
     let totalFunded = 0;
     let totalBurned = 0;
 
-    for (const row of (data || [])) {
+    for (const row of data || []) {
       const amt = row.amount_fiat || 0;
       totalFunded += amt;
       if (row.refunded) {
