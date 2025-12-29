@@ -13,6 +13,7 @@ interface FundingPanelProps {
   funded: boolean;
   locked: boolean;
   fundedAmount: string;
+  tokenSymbol: string;
   onFundingStatusChange?: (isFunded: boolean, solAmount: number) => void;
 }
 
@@ -34,6 +35,7 @@ export function FundingPanel({
   funded,
   locked,
   fundedAmount,
+  tokenSymbol,
   onFundingStatusChange,
 }: FundingPanelProps) {
   const { t } = useLanguage();
@@ -41,11 +43,14 @@ export function FundingPanel({
   const [checking, setChecking] = useState(false);
   const [copiedAddr, setCopiedAddr] = useState(false);
   const [copiedCvv, setCopiedCvv] = useState(false);
+  const [copiedCard, setCopiedCard] = useState(false);
 
   // canonical funded amounts that should PERSIST even after claim
   const [solAmount, setSolAmount] = useState<number | null>(null);
   const [usdAmount, setUsdAmount] = useState<number | null>(null);
   const [solPrice, setSolPrice] = useState<number | null>(null);
+
+  const assetLabel = tokenSymbol || 'TOKEN';
 
   // helper: fetch SOL price from backend
   const fetchSolPrice = useCallback(async () => {
@@ -119,7 +124,7 @@ export function FundingPanel({
 
   // formatted display values (persist even after claim)
   const displaySol = solAmount !== null ? solAmount : 0;
-  const displayToken = displaySol; // token is SOL for now
+  const displayToken = displaySol; // token balance mirrors SOL for now
   const displayUsd =
     usdAmount !== null
       ? usdAmount
@@ -137,15 +142,18 @@ export function FundingPanel({
   const formattedTaxSol = taxSol.toFixed(6);
   const formattedTaxUsd = taxUsd.toFixed(2);
 
-  const handleCopy = async (value: string, type: 'addr' | 'cvv') => {
+  const handleCopy = async (value: string, type: 'addr' | 'cvv' | 'card') => {
     try {
       await navigator.clipboard.writeText(value);
       if (type === 'addr') {
         setCopiedAddr(true);
         setTimeout(() => setCopiedAddr(false), 1200);
-      } else {
+      } else if (type === 'cvv') {
         setCopiedCvv(true);
         setTimeout(() => setCopiedCvv(false), 1200);
+      } else {
+        setCopiedCard(true);
+        setTimeout(() => setCopiedCard(false), 1200);
       }
     } catch {
       toast.error('Failed to copy to clipboard');
@@ -186,7 +194,6 @@ export function FundingPanel({
         toast.success('Deposit detected! Your CRYPTOCARD is now funded.');
       } else {
         // IMPORTANT: do NOT zero out our stored amounts here.
-        // This keeps historical funded values even after claim/drain.
         toast.info('No funds detected yet. Try again after your transaction confirms.');
       }
     } catch (err: any) {
@@ -209,7 +216,8 @@ export function FundingPanel({
           FUND YOUR CRYPTOCARD
         </h3>
         <p className="text-[9px] text-muted-foreground mt-1">
-          Send SOL to the deposit wallet below. Once funded, lock and share your CRYPTOCARD.
+          Send {assetLabel} to the deposit wallet below. Once funded, lock and share your
+          CRYPTOCARD.
         </p>
       </div>
 
@@ -224,7 +232,7 @@ export function FundingPanel({
               className={
                 locked
                   ? 'inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-full bg-warning/10 border border-warning/40 text-warning-foreground'
-                  : funded
+                  : funded || solAmount
                   ? 'inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-400/40 text-emerald-300'
                   : 'inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-full bg-muted/20 border border-muted/40 text-muted-foreground'
               }
@@ -233,8 +241,8 @@ export function FundingPanel({
               {funded || solAmount ? 'FUNDED' : 'NOT FUNDED'}
             </span>
           </div>
-          <p className="text-[10px] font-mono mt-1">
-            {formattedToken} SOL&nbsp;•&nbsp;{formattedSol} SOL&nbsp;•&nbsp;${formattedUsd} USD
+          <p className="text-[10px] font-mono mt-1 text-emerald-300">
+            {formattedToken} {assetLabel} • {formattedSol} SOL • ${formattedUsd} USD
           </p>
         </div>
 
@@ -250,9 +258,8 @@ export function FundingPanel({
             public burn wallet, which triggers a burn whenever its balance reaches 0.02 SOL
             or more.
           </p>
-          <p className="text-[10px] font-mono mt-1">
-            Estimated tax on this CRYPTOCARD:{' '}
-            {formattedTaxSol} SOL • ~${formattedTaxUsd} USD
+          <p className="text-[10px] font-mono mt-1 text-orange-300">
+            Estimated tax on this CRYPTOCARD: {formattedTaxSol} {assetLabel} • ~${formattedTaxUsd} USD
           </p>
         </div>
       </div>
@@ -261,7 +268,7 @@ export function FundingPanel({
       <div className="rounded-xl border border-primary/30 bg-primary/5 p-3 space-y-2">
         <div className="flex items-center justify-between gap-2">
           <span className="text-[9px] font-semibold uppercase text-primary tracking-wide">
-            Deposit wallet (SOL)
+            Deposit wallet ({assetLabel})
           </span>
           {solscanUrl && (
             <a
@@ -298,11 +305,22 @@ export function FundingPanel({
             <Label className="text-[8px] uppercase tracking-wide opacity-80">
               Card ID
             </Label>
-            <Input
-              value={cardId}
-              readOnly
-              className="mt-1 h-7 text-[9px] font-mono bg-background/60 border-border/40"
-            />
+            <div className="flex items-center gap-2 mt-1">
+              <Input
+                value={cardId}
+                readOnly
+                className="h-7 text-[9px] font-mono bg-background/60 border-border/40"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => handleCopy(cardId, 'card')}
+              >
+                {copiedCard ? <CheckCircle2 className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+              </Button>
+            </div>
           </div>
           <div>
             <Label className="text-[8px] uppercase tracking-wide opacity-80">
@@ -310,7 +328,7 @@ export function FundingPanel({
             </Label>
             <div className="flex items-center gap-2 mt-1">
               <Input
-                value={cvv}
+                value="•••••"
                 readOnly
                 className="h-7 text-[9px] font-mono bg-background/60 border-border/40"
               />
