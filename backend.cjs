@@ -7,8 +7,6 @@ const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
-const nacl = require('tweetnacl');
-const bs58 = require('bs58');
 const { createClient } = require('@supabase/supabase-js');
 const web3 = require('@solana/web3.js');
 
@@ -19,24 +17,15 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://cryptocards.fun';
 
-// Helius used for SOL price
-const HELIUS_API_KEY = process.env.HELIUS_API_KEY || '';
-
-// SOL RPC (can be Helius mainnet URL or default cluster API)
-const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || web3.clusterApiUrl('mainnet-beta');
-
-// Fallback SOL price + simple 1-minute cache
-const FALLBACK_SOL_PRICE_USD = 130;
-const SOL_PRICE_TTL_MS = 60_000; // 1 minute
-let cachedSolPriceUsd = null;
-let cachedSolPriceUpdatedAt = 0;
-
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   console.error('Missing SUPABASE_URL or SUPABASE_SERVICE_KEY in .env');
   process.exit(1);
 }
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+
+// Solana connection (for real deposit addresses / balances)
+const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || web3.clusterApiUrl('mainnet-beta');
 const solanaConnection = new web3.Connection(SOLANA_RPC_URL, 'confirmed');
 
 // --- Express setup ---
@@ -49,9 +38,7 @@ app.use(express.json());
 const distPath = path.join(__dirname, 'dist');
 app.use(express.static(distPath));
 
-// ----------------------
-// Utility helpers
-// ----------------------
+// ---------- UTILITIES ----------
 
 function sha256(str) {
   return crypto.createHash('sha256').update(str).digest('hex');
@@ -119,92 +106,6 @@ async function notifyTelegram(message) {
   }
 }
 
-/**
- * Fetch current SOL→USD price using Helius `getAssetBatch` on WSOL mint.
- * - Caches results for 60 seconds
- * - Falls back to last good value, then to FALLBACK_SOL_PRICE_USD
- */
-async function getSolPriceUsd() {
-  const now = Date.now();
-
-  // Use fresh cache if available
-  if (
-    cachedSolPriceUsd !== null &&
-    now - cachedSolPriceUpdatedAt < SOL_PRICE_TTL_MS
-  ) {
-    return cachedSolPriceUsd;
-  }
-
-  let lastError = null;
-
-  // 1) Try Helius if configured
-  if (HELIUS_API_KEY) {
-    try {
-      const fetch = (await import('node-fetch')).default;
-
-      const resp = await fetch(
-        `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            jsonrpc: '2.0',
-            id: 'sol-price',
-            method: 'getAssetBatch',
-            params: {
-              // Wrapped SOL mint
-              ids: ['So11111111111111111111111111111111111111112'],
-            },
-          }),
-        }
-      );
-
-      if (!resp.ok) {
-        throw new Error(`Helius HTTP ${resp.status}`);
-      }
-
-      const json = await resp.json();
-      const asset = json?.result?.[0];
-      const priceInfo = asset?.token_info?.price_info;
-      const price = priceInfo?.price_per_token;
-
-      if (typeof price === 'number' && price > 0) {
-        cachedSolPriceUsd = price;
-        cachedSolPriceUpdatedAt = now;
-        return price;
-      } else {
-        lastError = new Error('Helius missing price_per_token');
-        console.warn(
-          'getSolPriceUsd: Helius response missing valid price_per_token',
-          JSON.stringify(json)
-        );
-      }
-    } catch (err) {
-      lastError = err;
-      console.warn('getSolPriceUsd: Helius error', err);
-    }
-  }
-
-  // 2) Fallback: use cached value or constant
-  const fallback =
-    cachedSolPriceUsd !== null ? cachedSolPriceUsd : FALLBACK_SOL_PRICE_USD;
-
-  console.warn(
-    'getSolPriceUsd: providers failed, using cached value',
-    fallback,
-    'Last error:',
-    lastError ? lastError.message || String(lastError) : 'none'
-  );
-
-  cachedSolPriceUsd = fallback;
-  cachedSolPriceUpdatedAt = now;
-  return fallback;
-}
-
-/**
- * Helper: get authenticated Supabase user from Authorization header.
- * - Silences noisy "bad_jwt / token expired" logs
- */
 async function getUserFromRequest(req) {
   const authHeader = req.headers['authorization'] || '';
   const parts = authHeader.split(' ');
@@ -215,13 +116,12 @@ async function getUserFromRequest(req) {
   try {
     const { data, error } = await supabase.auth.getUser(token);
     if (error) {
-      // Supabase uses 403 / "bad_jwt" for expired / invalid tokens.
-      // We don't want to spam logs for that case.
-      if (error.code === 'bad_jwt' || error.status === 403) {
-        return null;
+      // This can happen when JWT is expired; no need to spam logs as "hard" errors
+      if (error.code === 'bad_jwt') {
+        console.warn('getUserFromRequest: expired or invalid JWT');
+      } else {
+        console.error('getUserFromRequest error:', error);
       }
-
-      console.error('getUserFromRequest error:', error);
       return null;
     }
     return data.user || null;
@@ -231,9 +131,64 @@ async function getUserFromRequest(req) {
   }
 }
 
-// ----------------------
-// AUTH ROUTES
-// ----------------------
+// ---------- SOL PRICE (SERVER-CACHED) ----------
+
+const FALLBACK_SOL_PRICE_USD = 130; // fallback so fiat is never 0
+
+let cachedSolPriceUsd = null;
+let cachedSolPriceAt = 0;
+
+async function getSolPriceUsd() {
+  const now = Date.now();
+  // Cache for 60 seconds
+  if (cachedSolPriceUsd && now - cachedSolPriceAt < 60_000) {
+    return cachedSolPriceUsd;
+  }
+
+  try {
+    const fetch = (await import('node-fetch')).default;
+    const res = await fetch(
+      'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd'
+    );
+    if (!res.ok) {
+      throw new Error(`coingecko status ${res.status}`);
+    }
+    const data = await res.json();
+    const price = data?.solana?.usd;
+    if (typeof price === 'number' && price > 0) {
+      cachedSolPriceUsd = price;
+      cachedSolPriceAt = now;
+      console.log('getSolPriceUsd: updated from coingecko =', price);
+      return price;
+    }
+    throw new Error('coingecko missing solana.usd');
+  } catch (err) {
+    console.error('getSolPriceUsd error:', err.message || err);
+  }
+
+  if (cachedSolPriceUsd) {
+    console.log('getSolPriceUsd: using cached value =', cachedSolPriceUsd);
+    return cachedSolPriceUsd;
+  }
+
+  console.log('getSolPriceUsd: using fallback =', FALLBACK_SOL_PRICE_USD);
+  cachedSolPriceUsd = FALLBACK_SOL_PRICE_USD;
+  cachedSolPriceAt = now;
+  return cachedSolPriceUsd;
+}
+
+// Simple public endpoint for frontend
+app.get('/sol-price', async (_req, res) => {
+  try {
+    const price = await getSolPriceUsd();
+    res.json({ price_usd: price });
+  } catch (err) {
+    console.error('/sol-price error:', err);
+    res.status(500).json({ error: 'Failed to fetch SOL price' });
+  }
+});
+
+// ---------- AUTH ROUTES ----------
 
 // REGISTER: username + password required, email OPTIONAL
 app.post('/auth/register', async (req, res) => {
@@ -250,16 +205,14 @@ app.post('/auth/register', async (req, res) => {
     if (!/^[a-zA-Z0-9_\-]{3,20}$/.test(trimmedUsername)) {
       return res.status(400).json({
         success: false,
-        error:
-          'Username must be 3-20 characters and contain only letters, numbers, underscores, or dashes.',
+        error: 'Username must be 3-20 characters and contain only letters, numbers, underscores, or dashes.',
       });
     }
 
-    const { data: existingUsers, error: existingError } =
-      await supabase.auth.admin.listUsers({
-        page: 1,
-        perPage: 1000,
-      });
+    const { data: existingUsers, error: existingError } = await supabase.auth.admin.listUsers({
+      page: 1,
+      perPage: 1000,
+    });
 
     if (existingError) {
       console.error('Error in /auth/register listUsers:', existingError);
@@ -271,12 +224,8 @@ app.post('/auth/register', async (req, res) => {
 
     const usernameTaken =
       existingUsers?.users?.some((u) => {
-        const metaUsername =
-          u.user_metadata?.username || u.email?.split('@')[0];
-        return (
-          metaUsername &&
-          metaUsername.toLowerCase() === trimmedUsername.toLowerCase()
-        );
+        const metaUsername = u.user_metadata?.username || u.email?.split('@')[0];
+        return metaUsername && metaUsername.toLowerCase() === trimmedUsername.toLowerCase();
       }) || false;
 
     if (usernameTaken) {
@@ -286,9 +235,7 @@ app.post('/auth/register', async (req, res) => {
       });
     }
 
-    const redirectTo = FRONTEND_URL
-      ? `${FRONTEND_URL.replace(/\/+$/, '')}/`
-      : undefined;
+    const redirectTo = FRONTEND_URL ? `${FRONTEND_URL.replace(/\/+$/, '')}/` : undefined;
 
     let user = null;
     let error = null;
@@ -311,17 +258,15 @@ app.post('/auth/register', async (req, res) => {
     } else {
       const syntheticEmail = `${trimmedUsername}+noemail@cryptocards.local`;
 
-      const { data, error: createError } = await supabase.auth.admin.createUser(
-        {
-          email: syntheticEmail,
-          password,
-          email_confirm: true,
-          user_metadata: {
-            username: trimmedUsername,
-            notification_email: null,
-          },
-        }
-      );
+      const { data, error: createError } = await supabase.auth.admin.createUser({
+        email: syntheticEmail,
+        password,
+        email_confirm: true,
+        user_metadata: {
+          username: trimmedUsername,
+          notification_email: null,
+        },
+      });
 
       error = createError;
       user = data?.user ?? null;
@@ -336,9 +281,7 @@ app.post('/auth/register', async (req, res) => {
     }
 
     await notifyTelegram(
-      `🆕 New user registered\n\nUsername: \`${trimmedUsername}\`\nEmail: \`${
-        email || 'N/A'
-      }\``
+      `🆕 New user registered\n\nUsername: \`${trimmedUsername}\`\nEmail: \`${email || 'N/A'}\``
     );
 
     return res.json({
@@ -370,11 +313,10 @@ app.post('/auth/login', async (req, res) => {
 
     const identifier = String(username).trim();
 
-    const { data: usersPage, error: listError } =
-      await supabase.auth.admin.listUsers({
-        page: 1,
-        perPage: 1000,
-      });
+    const { data: usersPage, error: listError } = await supabase.auth.admin.listUsers({
+      page: 1,
+      perPage: 1000,
+    });
 
     if (listError) {
       console.error('Error in /auth/login listUsers:', listError);
@@ -387,10 +329,7 @@ app.post('/auth/login', async (req, res) => {
     const matchedUser =
       usersPage?.users?.find((u) => {
         const uname = u.user_metadata?.username;
-        return (
-          typeof uname === 'string' &&
-          uname.toLowerCase() === identifier.toLowerCase()
-        );
+        return typeof uname === 'string' && uname.toLowerCase() === identifier.toLowerCase();
       }) || null;
 
     if (!matchedUser || !matchedUser.email) {
@@ -404,10 +343,7 @@ app.post('/auth/login', async (req, res) => {
 
     if (signIn.error || !signIn.data?.user || !signIn.data?.session) {
       const msg = signIn.error?.message || '';
-      if (
-        msg.toLowerCase().includes('confirm') &&
-        msg.toLowerCase().includes('email')
-      ) {
+      if (msg.toLowerCase().includes('confirm') && msg.toLowerCase().includes('email')) {
         return res.status(403).json({
           success: false,
           error: 'Please confirm your email before logging in.',
@@ -530,10 +466,7 @@ app.post('/auth/email-change-complete', async (req, res) => {
     const { data, error } = await supabase.auth.admin.getUserById(user_id);
 
     if (error || !data.user) {
-      console.error(
-        'Error in /auth/email-change-complete getUserById:',
-        error
-      );
+      console.error('Error in /auth/email-change-complete getUserById:', error);
       return res.status(400).json({
         success: false,
         error: 'User not found',
@@ -548,10 +481,12 @@ app.post('/auth/email-change-complete', async (req, res) => {
       notification_email: new_email,
     };
 
-    const { data: updateData, error: updateError } =
-      await supabase.auth.admin.updateUserById(user_id, {
+    const { data: updateData, error: updateError } = await supabase.auth.admin.updateUserById(
+      user_id,
+      {
         user_metadata: newMeta,
-      });
+      }
+    );
 
     if (updateError) {
       console.error('Error in /auth/email-change-complete update:', updateError);
@@ -609,20 +544,7 @@ app.post('/auth/forgot-password', async (req, res) => {
   }
 });
 
-// ----------------------
-// CARD + STATS ROUTES
-// ----------------------
-
-// SIMPLE SOL PRICE ENDPOINT for frontend
-app.get('/sol-price', async (_req, res) => {
-  try {
-    const priceUsd = await getSolPriceUsd();
-    res.json({ price_usd: priceUsd });
-  } catch (err) {
-    console.error('Error in /sol-price:', err);
-    res.status(500).json({ error: 'Failed to fetch SOL price' });
-  }
-});
+// ---------- CARD + STATS ROUTES ----------
 
 // CREATE CARD
 app.post('/create-card', async (req, res) => {
@@ -672,18 +594,14 @@ app.post('/create-card', async (req, res) => {
       creator_email: user ? user.email : null,
     };
 
-    const { error: insertError } = await supabase
-      .from('cards')
-      .insert(insertPayload);
+    const { error: insertError } = await supabase.from('cards').insert(insertPayload);
 
     if (insertError) {
       console.error('Supabase insert error /create-card:', insertError);
       throw insertError;
     }
 
-    const creatorLabel = user
-      ? maskIdentifier(user.email || user.id)
-      : 'anonymous';
+    const creatorLabel = user ? maskIdentifier(user.email || user.id) : 'anonymous';
 
     const tgLines = [
       '*🆕 New CRYPTOCARD Created*',
@@ -704,7 +622,7 @@ app.post('/create-card', async (req, res) => {
     });
   } catch (err) {
     console.error('Error in /create-card:', err);
-    res.status(500).json({ error: err.message || 'Internal server error' });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -731,7 +649,7 @@ app.get('/card-status/:publicId', async (req, res) => {
     res.json(data);
   } catch (err) {
     console.error('Error in /card-status:', err);
-    res.status(500).json({ error: err.message || 'Internal server error' });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -778,16 +696,14 @@ app.post('/lock-card', async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     console.error('Error in /lock-card:', err);
-    res.status(500).json({ error: err.message || 'Internal server error' });
+    res.status(500).json({ error: err.message });
   }
 });
 
-// SIMPLE STATS (used by some dashboards)
+// SIMPLE STATS (legacy)
 app.get('/stats', async (_req, res) => {
   try {
-    const { data, error } = await supabase
-      .from('cards')
-      .select('amount_fiat, refunded');
+    const { data, error } = await supabase.from('cards').select('amount_fiat, refunded');
 
     if (error) {
       console.error('Supabase /stats error:', error);
@@ -811,7 +727,7 @@ app.get('/stats', async (_req, res) => {
     });
   } catch (err) {
     console.error('Error in /stats:', err);
-    res.status(500).json({ error: err.message || 'Internal server error' });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -840,7 +756,7 @@ app.get('/my-cards', async (req, res) => {
     res.json(data || []);
   } catch (err) {
     console.error('Error in /my-cards:', err);
-    res.status(500).json({ error: err.message || 'Internal server error' });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -880,7 +796,7 @@ app.get('/card-balance/:publicId', async (req, res) => {
     });
   } catch (err) {
     console.error('Error in /card-balance:', err);
-    res.status(500).json({ error: err.message || 'Internal server error' });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -937,9 +853,7 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
     });
   } catch (err) {
     console.error('Error in /sync-card-funding:', err);
-    res
-      .status(500)
-      .json({ error: err.message || 'Internal server error' });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1041,8 +955,7 @@ app.post('/claim-card', async (req, res) => {
 
     // Leave a small buffer for fees
     const feeBufferLamports = 5000;
-    const lamportsToSend =
-      lamports > feeBufferLamports ? lamports - feeBufferLamports : 0;
+    const lamportsToSend = lamports > feeBufferLamports ? lamports - feeBufferLamports : 0;
 
     if (lamportsToSend <= 0) {
       return res.status(400).json({
@@ -1051,8 +964,7 @@ app.post('/claim-card', async (req, res) => {
       });
     }
 
-    const { blockhash, lastValidBlockHeight } =
-      await solanaConnection.getLatestBlockhash('finalized');
+    const { blockhash, lastValidBlockHeight } = await solanaConnection.getLatestBlockhash('finalized');
 
     const tx = new web3.Transaction({
       feePayer: depositPubkey,
@@ -1123,9 +1035,180 @@ app.post('/claim-card', async (req, res) => {
   }
 });
 
-// ----------------------
-// SPA fallback
-// ----------------------
+// ---------- CREATOR DASHBOARD DELETE ----------
+
+app.post('/delete-card', async (req, res) => {
+  try {
+    const user = await getUserFromRequest(req);
+    if (!user) {
+      return res.status(401).json({ error: 'Not authenticated' });
+    }
+
+    const { public_id } = req.body || {};
+    if (!public_id) {
+      return res.status(400).json({ error: 'public_id is required' });
+    }
+
+    const { data: card, error } = await supabase
+      .from('cards')
+      .select('public_id, creator_user_id')
+      .eq('public_id', public_id)
+      .maybeSingle();
+
+    if (error) {
+      console.error('/delete-card select error:', error);
+      throw error;
+    }
+
+    if (!card) {
+      return res.status(404).json({ error: 'Card not found' });
+    }
+
+    if (card.creator_user_id !== user.id) {
+      return res.status(403).json({ error: 'You do not own this card' });
+    }
+
+    const { error: updateError } = await supabase
+      .from('cards')
+      .update({
+        creator_user_id: null,
+        creator_email: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('public_id', public_id);
+
+    if (updateError) {
+      console.error('/delete-card update error:', updateError);
+      throw updateError;
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error in /delete-card:', err);
+    res.status(500).json({ error: err.message || 'Failed to delete card' });
+  }
+});
+
+// ---------- PUBLIC METRICS + ACTIVITY (NETWORK PANEL) ----------
+
+app.get('/public-metrics', async (_req, res) => {
+  try {
+    const price = await getSolPriceUsd();
+
+    const { data, error } = await supabase
+      .from('cards')
+      .select('funded, locked, claimed, refunded, token_amount, amount_fiat');
+
+    if (error) {
+      console.error('/public-metrics select error:', error);
+      throw error;
+    }
+
+    let totalCardsFunded = 0;
+    let totalVolumeFundedSol = 0;
+    let totalVolumeFundedFiat = 0;
+    let totalVolumeClaimedSol = 0;
+    let totalVolumeClaimedFiat = 0;
+    let protocolBurnsSol = 0;
+    let protocolBurnsFiat = 0;
+
+    for (const row of data || []) {
+      const sol = typeof row.token_amount === 'number' ? row.token_amount : 0;
+      const fiatDb =
+        typeof row.amount_fiat === 'number' && row.amount_fiat > 0
+          ? row.amount_fiat
+          : null;
+      const fiat = fiatDb !== null ? fiatDb : price * sol;
+
+      const isFunded = (row.funded || row.locked || row.claimed) && !row.refunded && sol > 0;
+
+      if (isFunded) {
+        totalCardsFunded += 1;
+        totalVolumeFundedSol += sol;
+        totalVolumeFundedFiat += fiat;
+      }
+
+      if (row.claimed && sol > 0) {
+        totalVolumeClaimedSol += sol;
+        totalVolumeClaimedFiat += fiat;
+      }
+
+      if (row.refunded && sol > 0) {
+        protocolBurnsSol += sol;
+        protocolBurnsFiat += fiat;
+      }
+    }
+
+    res.json({
+      total_cards_funded: totalCardsFunded,
+      total_volume_funded_sol: totalVolumeFundedSol,
+      total_volume_funded_fiat: totalVolumeFundedFiat,
+      total_volume_claimed_sol: totalVolumeClaimedSol,
+      total_volume_claimed_fiat: totalVolumeClaimedFiat,
+      protocol_burns_sol: protocolBurnsSol,
+      protocol_burns_fiat: protocolBurnsFiat,
+      burn_wallet: process.env.BURN_WALLET || null,
+      last_updated: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('Error in /public-metrics:', err);
+    res.status(500).json({ error: err.message || 'Failed to load public metrics' });
+  }
+});
+
+app.get('/public-activity', async (_req, res) => {
+  try {
+    const price = await getSolPriceUsd();
+
+    const { data, error } = await supabase
+      .from('cards')
+      .select('public_id, funded, locked, claimed, refunded, token_amount, amount_fiat, currency, created_at, updated_at')
+      .order('created_at', { ascending: false })
+      .limit(50);
+
+    if (error) {
+      console.error('/public-activity select error:', error);
+      throw error;
+    }
+
+    const events = (data || []).map((card) => {
+      const sol = typeof card.token_amount === 'number' ? card.token_amount : 0;
+      const fiatDb =
+        typeof card.amount_fiat === 'number' && card.amount_fiat > 0
+          ? card.amount_fiat
+          : null;
+      const fiat = fiatDb !== null ? fiatDb : price * sol;
+      const currency = card.currency || 'USD';
+
+      let type = 'CREATED';
+      if (card.claimed) type = 'CLAIMED';
+      else if (card.locked) type = 'LOCKED';
+      else if (card.funded || sol > 0) type = 'FUNDED';
+
+      const ts = card.claimed || card.locked
+        ? card.updated_at || card.created_at
+        : card.created_at;
+
+      return {
+        card_id: card.public_id,
+        type,
+        token_amount: sol,
+        sol_amount: sol,
+        fiat_value: fiat,
+        currency,
+        timestamp: ts,
+        tx_signature: null,
+      };
+    });
+
+    res.json({ events });
+  } catch (err) {
+    console.error('Error in /public-activity:', err);
+    res.status(500).json({ error: err.message || 'Failed to load public activity' });
+  }
+});
+
+// ---------- SPA FALLBACK ----------
 
 app.get('*', (_req, res) => {
   res.sendFile(path.join(distPath, 'index.html'));
