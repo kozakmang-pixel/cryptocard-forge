@@ -4,7 +4,15 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
 import { useLanguage } from '@/lib/languageStore';
-import { Copy, CheckCircle2, AlertCircle, ExternalLink, RefreshCcw } from 'lucide-react';
+import {
+  Copy,
+  CheckCircle2,
+  AlertCircle,
+  ExternalLink,
+  RefreshCcw,
+  Eye,
+  EyeOff,
+} from 'lucide-react';
 
 interface FundingPanelProps {
   cardId: string;
@@ -44,6 +52,7 @@ export function FundingPanel({
   const [copiedAddr, setCopiedAddr] = useState(false);
   const [copiedCvv, setCopiedCvv] = useState(false);
   const [copiedCard, setCopiedCard] = useState(false);
+  const [cvvVisible, setCvvVisible] = useState(false);
 
   // canonical funded amounts that should PERSIST even after claim
   const [solAmount, setSolAmount] = useState<number | null>(null);
@@ -138,7 +147,9 @@ export function FundingPanel({
 
   // tax: 1.5% of SOL balance, with fiat
   const taxSol = displaySol * 0.015;
+  const taxToken = taxSol; // mirror in token units for UI
   const taxUsd = displayUsd * 0.015;
+  const formattedTaxToken = taxToken.toFixed(6);
   const formattedTaxSol = taxSol.toFixed(6);
   const formattedTaxUsd = taxUsd.toFixed(2);
 
@@ -241,9 +252,17 @@ export function FundingPanel({
               {funded || solAmount ? 'FUNDED' : 'NOT FUNDED'}
             </span>
           </div>
-          <p className="text-[10px] font-mono mt-1 text-emerald-300">
-            {formattedToken} {assetLabel} • {formattedSol} SOL • ${formattedUsd} USD
-          </p>
+          <div className="mt-1 text-[10px] font-mono text-emerald-300">
+            <span className="block">
+              {formattedToken} {assetLabel}
+            </span>
+            <span className="block">
+              {formattedSol} SOL
+            </span>
+            <span className="block">
+              ${formattedUsd} USD
+            </span>
+          </div>
         </div>
 
         <div className="rounded-lg border border-border/40 bg-card/70 p-2.5 space-y-1">
@@ -259,7 +278,7 @@ export function FundingPanel({
             or more.
           </p>
           <p className="text-[10px] font-mono mt-1 text-orange-300">
-            Estimated tax on this CRYPTOCARD: {formattedTaxSol} {assetLabel} • ~${formattedTaxUsd} USD
+            Estimated tax on this CRYPTOCARD: {formattedTaxToken} {assetLabel} • {formattedTaxSol} SOL • ~${formattedTaxUsd} USD
           </p>
         </div>
       </div>
@@ -328,10 +347,19 @@ export function FundingPanel({
             </Label>
             <div className="flex items-center gap-2 mt-1">
               <Input
-                value="•••••"
+                value={cvvVisible ? cvv : '•••••'}
                 readOnly
                 className="h-7 text-[9px] font-mono bg-background/60 border-border/40"
               />
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => setCvvVisible((v) => !v)}
+              >
+                {cvvVisible ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+              </Button>
               <Button
                 type="button"
                 variant="outline"
