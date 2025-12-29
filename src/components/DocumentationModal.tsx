@@ -1,3 +1,5 @@
+// src/components/DocumentationModal.tsx
+
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -38,14 +40,15 @@ export function DocumentationModal({ open, onOpenChange }: DocumentationModalPro
                 <Book className="w-4 h-4" /> Overview
               </h3>
               <p className="text-muted-foreground">
-                CRYPTOCARDS is a platform for creating, sending, and claiming blockchain-powered
-                digital gift cards (&quot;CRYPTOCARD&quot;). A CRYPTOCARD allows a user to
-                pre-load cryptocurrency value or token credit and deliver it to another person using
-                a unique shareable link.
+                CRYPTOCARDS is a non-custodial platform for creating, funding, and claiming
+                blockchain-powered digital gift cards (&quot;CRYPTOCARDS&quot;) on Solana. Each
+                card represents a one-time claim on a funded on-chain balance, secured by a unique
+                card ID and CVV.
               </p>
               <p className="text-muted-foreground mt-2">
-                This documentation provides a high-level summary of how the system works, how users
-                are expected to interact with the service, and what to expect from the product.
+                This documentation provides a high-level overview of how CRYPTOCARDS operates, how
+                users are expected to interact with the Service, and what to keep in mind when
+                using it in production or live environments such as streams.
               </p>
             </section>
 
@@ -63,11 +66,13 @@ export function DocumentationModal({ open, onOpenChange }: DocumentationModalPro
                   </h4>
                   <ul className="text-muted-foreground space-y-1">
                     <li>
-                      • A user enters card details such as amount, currency, message, expiry, and
-                      theme.
+                      • Choose a token, artwork (image or GIF), message, and optional expiry date.
                     </li>
                     <li>
-                      • The platform generates a secure deposit address and a unique public ID.
+                      • The platform generates a secure deposit address and a unique public card ID.
+                    </li>
+                    <li>
+                      • A private CVV is created to protect the claim process.
                     </li>
                   </ul>
                 </div>
@@ -78,9 +83,12 @@ export function DocumentationModal({ open, onOpenChange }: DocumentationModalPro
                     <Wallet className="w-4 h-4" /> Fund the Card
                   </h4>
                   <ul className="text-muted-foreground space-y-1">
-                    <li>• The sender transfers crypto to the assigned deposit address.</li>
-                    <li>• Once confirmed, the card is marked as funded.</li>
-                    <li>• The card can be funded multiple times until you manually lock it.</li>
+                    <li>• Send tokens to the deposit address shown in the funding panel.</li>
+                    <li>• The on-chain balance is read directly from Solana.</li>
+                    <li>
+                      • A card can be funded multiple times until you decide to lock it
+                      permanently.
+                    </li>
                   </ul>
                 </div>
 
@@ -91,11 +99,15 @@ export function DocumentationModal({ open, onOpenChange }: DocumentationModalPro
                   </h4>
                   <ul className="text-muted-foreground space-y-1">
                     <li>
-                      • Once you are satisfied with your amount, currency, message, expiry, and
-                      theme - you can then lock your card.
+                      • When you are satisfied with the funded amount and design, lock the
+                      CRYPTOCARD.
                     </li>
-                    <li>• A shareable link containing the public card ID is generated.</li>
-                    <li>• A CVV is provided for security.</li>
+                    <li>
+                      • Locking prevents further deposits and finalizes the card for claiming.
+                    </li>
+                    <li>
+                      • You can then share the card ID and claim instructions with the recipient.
+                    </li>
                   </ul>
                 </div>
 
@@ -106,10 +118,16 @@ export function DocumentationModal({ open, onOpenChange }: DocumentationModalPro
                   </h4>
                   <ul className="text-muted-foreground space-y-1">
                     <li>
-                      • A recipient enters in a card ID, destination wallet address and security
-                      CVV.
+                      • The recipient enters the card ID, destination wallet address, and CVV in
+                        the claim panel.
                     </li>
-                    <li>• Once validated, the card balance is transferred.</li>
+                    <li>
+                      • After validation, the card&apos;s balance is transferred on-chain to the
+                        destination wallet.
+                    </li>
+                    <li>
+                      • Once successfully claimed, the card cannot be used again.
+                    </li>
                   </ul>
                 </div>
               </div>
@@ -118,17 +136,22 @@ export function DocumentationModal({ open, onOpenChange }: DocumentationModalPro
             {/* Expiration / Refund / Burn Logic */}
             <section>
               <h3 className="text-primary font-bold text-base mb-2 flex items-center gap-2">
-                <Clock className="w-4 h-4" /> Expiration / Refund Logic / Burn Logic
+                <Clock className="w-4 h-4" /> Expiration, Refund, &amp; Burn Logic
               </h3>
               <p className="text-muted-foreground mb-2">
-                If the card expires before it is claimed, the sender may be able to reclaim funds
-                if supported.
+                Expiry options and refund logic may evolve over time. Where supported, expired
+                cards can be earmarked for refund to the original funder or directed to protocol
+                burns, depending on configuration.
               </p>
               <p className="text-muted-foreground">
-                All card creations are subject to a 1.5% tax fee on the Solana value of the card.
-                The 1.5% tax fee is used to buy $CRYPTOCARDS and burn the token, reducing supply and
-                benefitting the ecosystem. The tax fees are collected in our public burn wallet
-                (&nbsp;
+                Each funded and locked CRYPTOCARD is subject to a{' '}
+                <span className="font-semibold">1.5% protocol tax</span> on its SOL value. This tax
+                is allocated to a public burn wallet and used to purchase $CRYPTOCARDS for
+                permanent burns, reducing circulating supply and supporting the long-term economics
+                of the ecosystem.
+              </p>
+              <p className="text-muted-foreground mt-2">
+                The current public burn wallet is:{' '}
                 <a
                   href="https://solscan.io/account/A3mpAVduHM9QyRgH1NSZp5ANnbPr2Z5vkXtc8EgDaZBF"
                   target="_blank"
@@ -137,55 +160,78 @@ export function DocumentationModal({ open, onOpenChange }: DocumentationModalPro
                 >
                   A3mpAVduHM9QyRgH1NSZp5ANnbPr2Z5vkXtc8EgDaZBF
                 </a>
-                ). The wallet will automatically purchase $CRYPTOCARDS every time the balance of the
-                public wallet is 0.05 SOL or greater.
+                . When the wallet balance reaches a configured SOL threshold, automated buyback and
+                burn events may be triggered.
               </p>
             </section>
 
             {/* Accounts & Authentication */}
             <section>
               <h3 className="text-primary font-bold text-base mb-2 flex items-center gap-2">
-                <User className="w-4 h-4" /> 👤 Accounts &amp; Authentication
+                <User className="w-4 h-4" /> Accounts &amp; Authentication
               </h3>
               <ul className="text-muted-foreground space-y-1">
-                <li>• Users may create optional accounts to track created cards.</li>
-                <li>• Email is optional but may be needed for recovery or notifications.</li>
-                <li>• Authentication tokens are stored securely in-browser.</li>
+                <li>• Users may optionally create an account to track created CRYPTOCARDS.</li>
+                <li>
+                  • Email is optional but recommended for password reset, notifications, and
+                    enhanced account recovery.
+                </li>
+                <li>
+                  • Authentication tokens are stored client-side (for example, in local storage)
+                    and should be protected by the user&apos;s device security.
+                </li>
               </ul>
             </section>
 
             {/* Security Expectations */}
             <section>
               <h3 className="text-primary font-bold text-base mb-2 flex items-center gap-2">
-                <Shield className="w-4 h-4" /> 🛡 Security Expectations
+                <Shield className="w-4 h-4" /> Security Expectations
               </h3>
               <ul className="text-muted-foreground space-y-1">
                 <li>
-                  • Users remain fully responsible for secure handling of card links and CVV codes.
+                  • Users are responsible for keeping card IDs, CVVs, and claim links private,
+                    especially when streaming or sharing screens.
                 </li>
-                <li>• Card links should only be shared directly with the intended recipient.</li>
-                <li>• The platform cannot guarantee recovery of funds if credentials are leaked.</li>
+                <li>
+                  • CRYPTOCARDS does not control recipient wallets or private keys and cannot
+                    reverse on-chain transactions.
+                </li>
+                <li>
+                  • Always verify destination addresses before claiming or sending funds.
+                </li>
               </ul>
             </section>
 
             {/* Limitations / Disclaimers */}
             <section>
               <h3 className="text-warning font-bold text-base mb-2 flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4" /> ⚠ Limitations / Disclaimers
+                <AlertTriangle className="w-4 h-4" /> Limitations &amp; Disclaimers
               </h3>
               <p className="text-muted-foreground">
-                CRYPTOCARDS is provided &quot;as-is&quot; and is not a bank, custody service, or
-                licensed financial institution. Blockchain transactions are irreversible — support
-                cannot unwind or reverse lost funds.
+                CRYPTOCARDS is a software interface to on-chain activity and is provided
+                &quot;as is&quot; without warranties of any kind. It is not a bank, broker,
+                custodian, or licensed financial institution. All blockchain transactions are
+                irreversible, and support cannot unwind or recover funds sent to incorrect or
+                compromised addresses.
+              </p>
+              <p className="text-muted-foreground mt-2">
+                Use of the Service is at your own risk. You should evaluate your own risk tolerance
+                and, where appropriate, consult legal, tax, or financial professionals before
+                transacting in digital assets.
               </p>
             </section>
 
             {/* Support */}
             <section>
               <h3 className="text-primary font-bold text-base mb-2 flex items-center gap-2">
-                <HelpCircle className="w-4 h-4" /> 🆘 Support
+                <HelpCircle className="w-4 h-4" /> Support
               </h3>
               <p className="text-muted-foreground">
+                For operational questions, incident reports, or general feedback, you can reach us
+                at:
+              </p>
+              <p className="text-muted-foreground mt-1">
                 <span className="font-semibold">Email:</span> cryptocards@linuxmail.org
               </p>
               <p className="text-muted-foreground">
