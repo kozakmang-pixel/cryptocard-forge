@@ -127,49 +127,6 @@ async function getUserFromRequest(req) {
   }
 }
 
-// Small helper to fetch SOL price on backend
-let cachedSolPrice = null;
-let cachedSolPriceAt = 0;
-async function getSolPriceUsd() {
-  const now = Date.now();
-  if (cachedSolPrice && now - cachedSolPriceAt < 60_000) {
-    return cachedSolPrice;
-  }
-
-  try {
-    const fetch = (await import('node-fetch')).default;
-    const res = await fetch(
-      'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd'
-    );
-    if (!res.ok) throw new Error('Bad response from coingecko');
-    const data = await res.json();
-    const price = data?.solana?.usd;
-    if (typeof price === 'number' && price > 0) {
-      cachedSolPrice = price;
-      cachedSolPriceAt = now;
-      return price;
-    }
-  } catch (err) {
-    console.error('getSolPriceUsd error:', err);
-  }
-  return null;
-}
-
-// ----- PUBLIC SOL PRICE ROUTE (frontend uses this to avoid CORS) -----
-
-app.get('/sol-price', async (_req, res) => {
-  try {
-    const price = await getSolPriceUsd();
-    if (!price) {
-      return res.status(503).json({ error: 'Failed to fetch price' });
-    }
-    res.json({ price_usd: price });
-  } catch (err) {
-    console.error('/sol-price error', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
 // ----- AUTH ROUTES -----
 
 // REGISTER: username + password required, email OPTIONAL
@@ -187,8 +144,7 @@ app.post('/auth/register', async (req, res) => {
     if (!/^[a-zA-Z0-9_\-]{3,20}$/.test(trimmedUsername)) {
       return res.status(400).json({
         success: false,
-        error:
-          'Username must be 3-20 characters and contain only letters, numbers, underscores, or dashes.',
+        error: 'Username must be 3-20 characters and contain only letters, numbers, underscores, or dashes.',
       });
     }
 
@@ -683,6 +639,79 @@ app.post('/lock-card', async (req, res) => {
   }
 });
 
+// Small helper to fetch SOL price on backend
+let cachedSolPrice = null;
+let cachedSolPriceAt = 0;
+
+/**
+ * Returns a single SOL/USD price number, or null if both providers fail.
+ * Uses a 60s cache to avoid hammering APIs / hitting rate limits.
+ */
+async function getSolPriceUsd() {
+  const now = Date.now();
+  if (cachedSolPrice && now - cachedSolPriceAt < 60_000) {
+    return cachedSolPrice;
+  }
+
+  async function fetchJson(url, label) {
+    try {
+      const fetch = (await import('node-fetch')).default;
+      const res = await fetch(url, { timeout: 8000 });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        console.error(`getSolPriceUsd ${label} HTTP ${res.status}: ${text.slice(0, 200)}`);
+        return null;
+      }
+      return await res.json();
+    } catch (err) {
+      console.error(`getSolPriceUsd ${label} error:`, err);
+      return null;
+    }
+  }
+
+  try {
+    // Primary: CoinGecko
+    const cg = await fetchJson(
+      'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd',
+      'coingecko'
+    );
+    let price = cg?.solana?.usd;
+    if (typeof price === 'number' && price > 0 && Number.isFinite(price)) {
+      cachedSolPrice = price;
+      cachedSolPriceAt = now;
+      return price;
+    }
+
+    // Fallback: Jupiter price API
+    const jup = await fetchJson('https://price.jup.ag/v6/price?ids=SOL', 'jupiter');
+    price = jup?.data?.SOL?.price;
+    if (typeof price === 'number' && price > 0 && Number.isFinite(price)) {
+      cachedSolPrice = price;
+      cachedSolPriceAt = now;
+      return price;
+    }
+
+    console.error('getSolPriceUsd: all providers failed, returning null');
+  } catch (err) {
+    console.error('getSolPriceUsd fatal error:', err);
+  }
+  return null;
+}
+
+// ----- PUBLIC SOL PRICE ROUTE -----
+app.get('/sol-price', async (_req, res) => {
+  try {
+    const priceUsd = await getSolPriceUsd();
+    if (typeof priceUsd !== 'number' || !Number.isFinite(priceUsd)) {
+      return res.status(503).json({ error: 'SOL price unavailable' });
+    }
+    res.json({ price_usd: priceUsd });
+  } catch (err) {
+    console.error('Error in /sol-price:', err);
+    res.status(500).json({ error: 'Failed to load SOL price' });
+  }
+});
+
 // MY CARDS (for UserDashboard)
 app.get('/my-cards', async (req, res) => {
   try {
@@ -759,7 +788,7 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
 
     const { data: card, error } = await supabase
       .from('cards')
-      .select('deposit_address, funded, token_amount, currency, amount_fiat, refunded')
+      .select('deposit_address, funded, token_amount, currency, amount_fiat')
       .eq('public_id', publicId)
       .maybeSingle();
 
@@ -782,21 +811,11 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
 
     const isFunded = lamports > 0;
 
-    const solPrice = await getSolPriceUsd();
-    const amountFiat =
-      solPrice && sol > 0
-        ? sol * solPrice
-        : card.amount_fiat != null
-        ? card.amount_fiat
-        : null;
-
     const { error: updateError } = await supabase
       .from('cards')
       .update({
         funded: isFunded,
         token_amount: sol,
-        amount_fiat: amountFiat,
-        currency: 'SOL',
         updated_at: new Date().toISOString(),
       })
       .eq('public_id', publicId);
@@ -926,9 +945,7 @@ app.post('/claim-card', async (req, res) => {
       });
     }
 
-    const { blockhash, lastValidBlockHeight } = await solanaConnection.getLatestBlockhash(
-      'finalized'
-    );
+    const { blockhash, lastValidBlockHeight } = await solanaConnection.getLatestBlockhash('finalized');
 
     const tx = new web3.Transaction({
       feePayer: depositPubkey,
@@ -954,8 +971,6 @@ app.post('/claim-card', async (req, res) => {
     );
 
     const solSent = lamportsToSend / web3.LAMPORTS_PER_SOL;
-    const solPrice = await getSolPriceUsd();
-    const amountFiat = solPrice && solSent > 0 ? solSent * solPrice : card.amount_fiat || null;
 
     const { error: updateError } = await supabase
       .from('cards')
@@ -963,8 +978,6 @@ app.post('/claim-card', async (req, res) => {
         claimed: true,
         funded: false,
         token_amount: solSent,
-        amount_fiat: amountFiat,
-        currency: 'SOL',
         updated_at: new Date().toISOString(),
       })
       .eq('public_id', public_id);
@@ -1003,93 +1016,76 @@ app.post('/claim-card', async (req, res) => {
   }
 });
 
-// PUBLIC DASHBOARD STATS (for Network Activity & Burns + recent activity)
+// PUBLIC DASHBOARD: aggregated stats + recent activity
 app.get('/public-dashboard', async (_req, res) => {
   try {
-    const { data, error } = await supabase
+    // Fetch all cards (you can later optimize with views or narrower selects)
+    const { data: cards, error } = await supabase
       .from('cards')
-      .select(
-        'id, public_id, created_at, funded, claimed, refunded, token_amount, amount_fiat, currency'
-      )
-      .order('created_at', { ascending: false });
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(500);
 
     if (error) {
       console.error('Supabase /public-dashboard error:', error);
       throw error;
     }
 
-    const rows = data || [];
-    const solPrice = (await getSolPriceUsd()) || 0;
+    const rows = cards || [];
 
-    let totalCardsFunded = 0;
-    let totalVolumeSol = 0;
-    let totalVolumeUsd = 0;
+    let totalFundedCount = 0;
+    let totalFundedSol = 0;
+    let totalFundedFiat = 0;
+
     let totalClaimedSol = 0;
-    let totalClaimedUsd = 0;
+    let totalClaimedFiat = 0;
+
+    let totalBurnFiat = 0; // Placeholder if you later track burns separately
+
+    const recent = [];
 
     for (const row of rows) {
-      const amt = typeof row.token_amount === 'number' ? row.token_amount : 0;
-      if (amt <= 0 || row.refunded) continue;
+      const solAmount = typeof row.token_amount === 'number' ? row.token_amount : 0;
+      const fiatAmount = typeof row.amount_fiat === 'number' ? row.amount_fiat : 0;
 
-      const fiat =
-        row.amount_fiat != null && row.amount_fiat > 0
-          ? row.amount_fiat
-          : solPrice > 0
-          ? amt * solPrice
-          : 0;
+      const isFundedNow = !!row.funded && solAmount > 0;
+      const isClaimedNow = !!row.claimed;
 
-      // Any card with token_amount > 0 counts as "funded"
-      totalCardsFunded += 1;
-      totalVolumeSol += amt;
-      totalVolumeUsd += fiat;
-
-      if (row.claimed) {
-        totalClaimedSol += amt;
-        totalClaimedUsd += fiat;
+      if (isFundedNow) {
+        totalFundedCount += 1;
+        totalFundedSol += solAmount;
+        totalFundedFiat += fiatAmount;
       }
+
+      if (isClaimedNow) {
+        totalClaimedSol += solAmount;
+        totalClaimedFiat += fiatAmount;
+      }
+
+      // Build recent activity list (we'll trim to 25 on frontend)
+      recent.push({
+        public_id: row.public_id,
+        created_at: row.created_at,
+        funded: !!row.funded,
+        locked: !!row.locked,
+        claimed: !!row.claimed,
+        token_amount: solAmount,
+        amount_fiat: fiatAmount,
+        currency: row.currency || 'USD',
+      });
     }
 
-    // 1.5% protocol tax estimates
-    const taxRate = 0.015;
-    const totalBurnsSol = totalVolumeSol * taxRate;
-    const totalBurnsUsd = totalVolumeUsd * taxRate;
-
-    // Recent events: approximate from cards (FUNDED / CLAIMED)
-    const recentEvents = rows
-      .filter((row) => {
-        const amt = typeof row.token_amount === 'number' ? row.token_amount : 0;
-        return amt > 0 && !row.refunded;
-      })
-      .slice(0, 50)
-      .map((row) => {
-        const amt = typeof row.token_amount === 'number' ? row.token_amount : 0;
-        const fiat =
-          row.amount_fiat != null && row.amount_fiat > 0
-            ? row.amount_fiat
-            : solPrice > 0
-            ? amt * solPrice
-            : 0;
-
-        return {
-          id: row.id,
-          public_id: row.public_id,
-          created_at: row.created_at,
-          event_type: row.claimed ? 'CLAIMED' : row.funded ? 'FUNDED' : 'CREATED',
-          token_amount: amt,
-          currency: row.currency || 'SOL',
-          amount_fiat: fiat,
-        };
-      });
-
     res.json({
-      total_cards_funded: totalCardsFunded,
-      total_volume_sol: totalVolumeSol,
-      total_volume_usd: totalVolumeUsd,
-      total_claimed_sol: totalClaimedSol,
-      total_claimed_usd: totalClaimedUsd,
-      total_burns_sol: totalBurnsSol,
-      total_burns_usd: totalBurnsUsd,
-      recent_events: recentEvents,
+      totals: {
+        total_cards_funded: totalFundedCount,
+        total_volume_funded_sol: totalFundedSol,
+        total_volume_funded_fiat: totalFundedFiat,
+        total_volume_claimed_sol: totalClaimedSol,
+        total_volume_claimed_fiat: totalClaimedFiat,
+        total_burn_fiat: totalBurnFiat,
+      },
+      recent_activity: recent,
+      last_updated: new Date().toISOString(),
     });
   } catch (err) {
     console.error('Error in /public-dashboard:', err);
