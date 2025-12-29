@@ -36,17 +36,19 @@ const solanaConnection = new web3.Connection(SOLANA_RPC_URL, 'confirmed');
 // --- SOL price helpers (multi-provider + cache) ---
 
 const FALLBACK_SOL_PRICE_USD = 130;
-const SOL_PRICE_TTL_MS = 60_000;
+// cache TTL: 2 minutes
+const SOL_PRICE_TTL_MS = 120_000;
 
 let lastSolPriceUsd = null;
 let lastSolPriceFetchedAt = 0;
 
 /**
- * Get SOL price in USD with:
- * - Coingecko
+ * Get SOL price in USD with multiple providers + 2 min in-memory cache.
+ * Providers:
  * - Binance
  * - CryptoCompare
- * plus 60s in-memory cache and a 130 USD fallback.
+ * - CoinPaprika
+ * - Coingecko
  */
 async function getSolPriceUsd() {
   const now = Date.now();
@@ -58,7 +60,55 @@ async function getSolPriceUsd() {
   const fetch = (await import('node-fetch')).default;
   let lastError = null;
 
-  // 1) Coingecko
+  // Binance
+  async function fromBinance() {
+    const url = 'https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT';
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.error('getSolPriceUsd error: binance status', res.status);
+      throw new Error(`binance status ${res.status}`);
+    }
+    const body = await res.json();
+    const price = parseFloat(body?.price);
+    if (!price || !Number.isFinite(price)) {
+      throw new Error('binance missing or invalid price');
+    }
+    return price;
+  }
+
+  // CryptoCompare
+  async function fromCryptoCompare() {
+    const url = 'https://min-api.cryptocompare.com/data/price?fsym=SOL&tsyms=USD';
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.error('getSolPriceUsd error: cryptocompare status', res.status);
+      throw new Error(`cryptocompare status ${res.status}`);
+    }
+    const body = await res.json();
+    const price = body?.USD;
+    if (typeof price !== 'number' || !Number.isFinite(price)) {
+      throw new Error('cryptocompare missing or invalid price');
+    }
+    return price;
+  }
+
+  // CoinPaprika
+  async function fromCoinPaprika() {
+    const url = 'https://api.coinpaprika.com/v1/tickers/sol-solana';
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.error('getSolPriceUsd error: coinpaprika status', res.status);
+      throw new Error(`coinpaprika status ${res.status}`);
+    }
+    const body = await res.json();
+    const price = body?.quotes?.USD?.price;
+    if (typeof price !== 'number' || !Number.isFinite(price)) {
+      throw new Error('coinpaprika missing or invalid price');
+    }
+    return price;
+  }
+
+  // Coingecko (last resort)
   async function fromCoingecko() {
     const url =
       'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd';
@@ -75,39 +125,7 @@ async function getSolPriceUsd() {
     return price;
   }
 
-  // 2) Binance
-  async function fromBinance() {
-    const url = 'https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT';
-    const res = await fetch(url);
-    if (!res.ok) {
-      console.error('getSolPriceUsd error: binance status', res.status);
-      throw new Error(`binance status ${res.status}`);
-    }
-    const body = await res.json();
-    const price = parseFloat(body?.price);
-    if (!price || !Number.isFinite(price)) {
-      throw new Error('binance missing or invalid price');
-    }
-    return price;
-  }
-
-  // 3) CryptoCompare
-  async function fromCryptoCompare() {
-    const url = 'https://min-api.cryptocompare.com/data/price?fsym=SOL&tsyms=USD';
-    const res = await fetch(url);
-    if (!res.ok) {
-      console.error('getSolPriceUsd error: cryptocompare status', res.status);
-      throw new Error(`cryptocompare status ${res.status}`);
-    }
-    const body = await res.json();
-    const price = body?.USD;
-    if (typeof price !== 'number' || !Number.isFinite(price)) {
-      throw new Error('cryptocompare missing or invalid price');
-    }
-    return price;
-  }
-
-  const providers = [fromCoingecko, fromBinance, fromCryptoCompare];
+  const providers = [fromBinance, fromCryptoCompare, fromCoinPaprika, fromCoingecko];
 
   for (const provider of providers) {
     try {
@@ -628,7 +646,7 @@ app.post('/create-card', async (req, res) => {
     const cvv = generateCVV();
     const deposit_secret = generateDepositSecret();
     const deposit_address = generateDepositAddress(deposit_secret);
-    const now = new Date().toISOString();
+    a const now = new Date().toISOString();
 
     const insertPayload = {
       public_id,
