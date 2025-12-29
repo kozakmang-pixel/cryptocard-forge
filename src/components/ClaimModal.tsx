@@ -65,20 +65,24 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
     try {
       const status = await apiService.getCardStatus(trimmed);
 
-      // Optional: basic guardrails
       if (!status.funded) {
-        toast.error(t('claim.notFunded') ?? 'This card is not funded yet.');
+        toast.error(t('claim.notFunded') ?? 'This CRYPTOCARD is not funded yet.');
       }
       if (!status.locked) {
-        toast.error(t('claim.notLocked') ?? 'This card must be locked before claiming.');
+        toast.error(t('claim.notLocked') ?? 'This CRYPTOCARD must be locked before claiming.');
       }
 
       setPulledCard(status as any);
-      toast.success(t('claim.cardLocated') ?? 'CRYPTOCARD located. Review details carefully before claiming.');
+      // Hard-coded professional copy so no more "claim.card found"
+      toast.success('CRYPTOCARD located. Review details carefully before claiming.');
     } catch (err: any) {
       console.error('Failed to load card status', err);
       setPulledCard(null);
-      toast.error(err?.message || t('claim.notFound') || 'Card not found. Check the Card ID.');
+      toast.error(
+        err?.message ||
+          t('claim.notFound') ||
+          'CRYPTOCARD not found. Please double-check the Card ID.'
+      );
     } finally {
       setLoading(false);
     }
@@ -86,11 +90,11 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
 
   const handleClaim = async () => {
     if (!pulledCard) {
-      toast.error(t('claim.pullFirst') ?? 'Pull a card first');
+      toast.error(t('claim.pullFirst') ?? 'Pull a CRYPTOCARD first');
       return;
     }
     if (!walletAddress.trim()) {
-      toast.error(t('claim.walletRequired') ?? 'Please enter a wallet address');
+      toast.error(t('claim.walletRequired') ?? 'Please enter a destination wallet');
       return;
     }
     if (!cvv.trim()) {
@@ -99,11 +103,11 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
     }
 
     if (!pulledCard.locked) {
-      toast.error(t('claim.notLocked') ?? 'This card must be locked before claiming.');
+      toast.error(t('claim.notLocked') ?? 'This CRYPTOCARD must be locked before claiming.');
       return;
     }
     if (!pulledCard.funded) {
-      toast.error(t('claim.notFunded') ?? 'This card is not funded yet.');
+      toast.error(t('claim.notFunded') ?? 'This CRYPTOCARD is not funded yet.');
       return;
     }
 
@@ -120,27 +124,32 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
         throw new Error(result?.error || 'Claim failed');
       }
 
-      const sig = result.signature;
-      const amountSol =
-        typeof result.amount_sol === 'number' ? result.amount_sol : 0;
-      const amountFiat =
-        typeof result.amount_fiat === 'number' ? result.amount_fiat : 0;
+      const amountSol = typeof result.amount_sol === 'number' ? result.amount_sol : 0;
+      const amountFiat = typeof result.amount_fiat === 'number' ? result.amount_fiat : 0;
 
       const shortDest = result.destination_wallet
         ? `${result.destination_wallet.slice(0, 4)}...${result.destination_wallet.slice(-4)}`
         : '';
 
-      // In v1 the "token" IS SOL, so we intentionally show SOL twice (token + native)
+      const signature = result.signature;
+
+      // V1 behavior: token == SOL
+      const tokenSymbol = 'SOL';
+
+      // Hard-coded professional copy so we never see "claim.sent" etc.
       toast.success(
-        `${t('claim.claimCompleteTitle') ?? 'Claim complete'}\n` +
-          `${amountSol.toFixed(6)} SOL • ${amountSol.toFixed(6)} SOL • $${amountFiat.toFixed(
+        [
+          'Claim complete',
+          `${amountSol.toFixed(6)} ${tokenSymbol} • ${amountSol.toFixed(6)} SOL • $${amountFiat.toFixed(
             2
-          )} USD ${t('claim.sentTo') ?? 'has been sent to:'} ${shortDest}` +
-          (sig ? `\nTx: ${sig.slice(0, 8)}...` : '')
+          )} USD has been sent to: ${shortDest}`,
+          signature ? `Tx: ${signature.slice(0, 8)}...` : '',
+        ]
+          .filter(Boolean)
+          .join('\n')
       );
 
-      // Keep the modal open so the user can still see the card,
-      // but update the local state to reflect claimed = true, funded = false.
+      // Keep modal open, but update local card state to reflect claimed
       setPulledCard((prev) =>
         prev
           ? ({
@@ -156,7 +165,11 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
       setLoading(false);
     } catch (err: any) {
       console.error('Claim failed', err);
-      toast.error(err?.message || t('claim.claimError') || 'Failed to claim this card');
+      toast.error(
+        err?.message ||
+          t('claim.claimError') ||
+          'Failed to claim this CRYPTOCARD. Please try again.'
+      );
       setLoading(false);
     }
   };
@@ -171,18 +184,15 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
 
     // For v1 we treat "token" as SOL on all loaded cards
     const solAmount = tokenAmount;
-
     const amountFiat =
       typeof anyCard.amount_fiat === 'number' ? anyCard.amount_fiat : 0;
 
     const createdAt: string = anyCard.created_at || new Date().toISOString();
 
-    // Always label the token as SOL for now (v1)
     const tokenSymbol = 'SOL';
 
     return {
       cardId: pulledCard.public_id,
-      // Backend never returns real CVV (good). We show placeholder on the preview.
       cvv: '•••••',
       depositAddress: anyCard.deposit_address || '',
       image: anyCard.template_url || '',
@@ -202,7 +212,7 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
     };
   }, [pulledCard]);
 
-  // Simple derived amounts for summary line under the card
+  // Triple summary just below the preview: TOKEN • SOL • FIAT
   const summaryTriple = useMemo(() => {
     if (!pulledCard) {
       return {
@@ -273,11 +283,12 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
                 }}
               />
 
-              {/* Card summary triple: TOKEN • SOL • FIAT */}
+              {/* Clean triple line: TOKEN • SOL • FIAT */}
               <div className="text-[9px] space-y-1 mt-1">
                 <div>
                   <span className="font-semibold">
-                    {t('claim.balance') ?? 'On-chain balance'}{' '}
+                    {/* Hard-coded so we never see "claim.balance" */}
+                    On-chain balance{' '}
                   </span>
                   <span>
                     {summaryTriple.tokenAmount.toFixed(6)} SOL •{' '}
@@ -288,11 +299,10 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
                 </div>
               </div>
 
+              {/* Status line with hard-coded labels */}
               <div className="text-[9px] space-y-1 mt-1">
                 <div>
-                  <span className="font-semibold">
-                    {t('claim.status')}{' '}
-                  </span>
+                  <span className="font-semibold">Status </span>
                   <span
                     className={
                       pulledCard.claimed
@@ -303,10 +313,10 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
                     }
                   >
                     {pulledCard.claimed
-                      ? t('claim.claimed') ?? 'Claimed'
+                      ? 'Claimed'
                       : pulledCard.locked
-                      ? t('claim.locked') ?? 'Locked'
-                      : t('claim.unlocked') ?? 'Unlocked'}
+                      ? 'Locked'
+                      : 'Unlocked'}
                   </span>
                 </div>
               </div>
