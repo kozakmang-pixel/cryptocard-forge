@@ -11,6 +11,7 @@ import {
   LogOut,
   CreditCard,
   Trash2,
+  Copy,
 } from 'lucide-react';
 
 interface UserInfo {
@@ -224,6 +225,15 @@ export function UserDashboard({
     }
   };
 
+  const handleCopyCardId = async (publicId: string) => {
+    try {
+      await navigator.clipboard.writeText(publicId);
+      toast.success('Card ID copied to clipboard');
+    } catch {
+      toast.error('Failed to copy Card ID');
+    }
+  };
+
   return (
     <section className="glass-card rounded-xl p-3 mt-5 shadow-card hover:shadow-card-hover transition-all">
       {/* Header */}
@@ -376,7 +386,7 @@ export function UserDashboard({
         )}
 
         {visibleCards.map((card) => {
-          const tokenSymbol = 'TOKEN'; // Logical token label; for SOL-only cards this mirrors SOL
+          const tokenSymbol = 'TOKEN';
           const solDisplay = card.sol ?? 0;
           const fiatDisplay = card.fiat ?? 0;
           const currency = card.currency || 'USD';
@@ -409,8 +419,17 @@ export function UserDashboard({
                   <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
                     Card ID
                   </div>
-                  <div className="text-[11px] font-mono font-semibold">
-                    {card.public_id}
+                  <div className="flex items-center gap-1">
+                    <div className="text-[11px] font-mono font-semibold">
+                      {card.public_id}
+                    </div>
+                    <button
+                      type="button"
+                      className="inline-flex items-center justify-center rounded bg-background/60 border border-border/40 hover:border-primary/60 px-1 h-4"
+                      onClick={() => handleCopyCardId(card.public_id)}
+                    >
+                      <Copy className="w-3 h-3 text-muted-foreground" />
+                    </button>
                   </div>
                 </div>
                 <div className="flex flex-col items-end gap-1">
