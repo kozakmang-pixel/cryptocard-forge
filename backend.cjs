@@ -646,7 +646,7 @@ app.post('/create-card', async (req, res) => {
     const cvv = generateCVV();
     const deposit_secret = generateDepositSecret();
     const deposit_address = generateDepositAddress(deposit_secret);
-    a const now = new Date().toISOString();
+    const now = new Date().toISOString();
 
     const insertPayload = {
       public_id,
