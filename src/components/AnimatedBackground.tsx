@@ -5,306 +5,223 @@ export function AnimatedBackground() {
   return (
     <>
       <style>{`
-        /* Slow camera drift / parallax */
-        @keyframes ccPlexusDriftFar {
-          0% { transform: translate3d(-3%, -2%, 0) scale(1.02); }
-          50% { transform: translate3d(2%, 3%, 0) scale(1.05); }
-          100% { transform: translate3d(-1%, 1%, 0) scale(1.02); }
+        /* ====== ANIMATION KEYFRAMES ====== */
+
+        /* Slow aurora drift */
+        @keyframes ccAuroraDriftA {
+          0%   { transform: translate3d(-10%, -5%, 0) rotate(-2deg) scale(1.05); }
+          50%  { transform: translate3d(6%, 4%, 0) rotate(1deg) scale(1.08); }
+          100% { transform: translate3d(-4%, 2%, 0) rotate(-1deg) scale(1.03); }
         }
 
-        @keyframes ccPlexusDriftMid {
-          0% { transform: translate3d(2%, 1%, 0) scale(1); }
-          50% { transform: translate3d(-2%, -3%, 0) scale(1.03); }
-          100% { transform: translate3d(3%, 2%, 0) scale(1.01); }
+        @keyframes ccAuroraDriftB {
+          0%   { transform: translate3d(8%, 6%, 0) rotate(3deg) scale(1.05); }
+          50%  { transform: translate3d(-6%, -4%, 0) rotate(-1deg) scale(1.09); }
+          100% { transform: translate3d(3%, -2%, 0) rotate(2deg) scale(1.04); }
         }
 
-        @keyframes ccPlexusDriftNear {
-          0% { transform: translate3d(0, 0, 0) scale(1.02); }
-          50% { transform: translate3d(-1%, -2%, 0) scale(1.06); }
-          100% { transform: translate3d(1%, 1%, 0) scale(1.03); }
+        /* Faint moving diagonal “scanline” grid */
+        @keyframes ccGridSlide {
+          0%   { transform: translate3d(-10%, 0, 0); opacity: 0.28; }
+          50%  { transform: translate3d(0%, -5%, 0); opacity: 0.38; }
+          100% { transform: translate3d(10%, 0, 0); opacity: 0.28; }
         }
 
-        /* Node pulsing (bright points) */
-        @keyframes ccPlexusNodePulse {
-          0%   { opacity: 0.25; r: 1.8; }
-          50%  { opacity: 1;    r: 3.4; }
-          100% { opacity: 0.3;  r: 1.8; }
+        /* Tiny spark pulses on intersections */
+        @keyframes ccSparkPulse {
+          0%   { opacity: 0.25; transform: scale(0.7); }
+          50%  { opacity: 1;    transform: scale(1.2); }
+          100% { opacity: 0.25; transform: scale(0.8); }
         }
 
-        /* Big background glow blobs */
-        @keyframes ccPlexusBokehDrift {
-          0%   { transform: translate3d(-6%, 0, 0) scale(1); }
-          50%  { transform: translate3d(6%, -4%, 0) scale(1.05); }
-          100% { transform: translate3d(-3%, 3%, 0) scale(1.02); }
+        /* Noise shimmer */
+        @keyframes ccNoiseDrift {
+          0%   { transform: translate3d(0, 0, 0); opacity: 0.12; }
+          50%  { transform: translate3d(-2%, 2%, 0); opacity: 0.18; }
+          100% { transform: translate3d(1%, -2%, 0); opacity: 0.12; }
         }
 
-        .cc-plex-line-far {
-          stroke: rgba(56, 189, 248, 0.22);
-          stroke-width: 0.6;
+        /* ====== CUSTOM CLASSES ====== */
+
+        .cc-bg-root {
+          position: fixed;
+          inset: 0;
+          z-index: 0;
+          overflow: hidden;
+          pointer-events: none;
+        }
+
+        .cc-bg-base {
+          position: absolute;
+          inset: 0;
+          background:
+            radial-gradient(circle at 15% 0%, rgba(15,23,42,0.8) 0, transparent 55%),
+            radial-gradient(circle at 85% 0%, rgba(15,23,42,0.85) 0, transparent 55%),
+            radial-gradient(circle at 50% 110%, rgba(15,23,42,1) 0, #020617 65%);
+        }
+
+        .cc-bg-aurora-a {
+          position: absolute;
+          inset: -20%;
+          background:
+            radial-gradient(circle at 10% 20%, rgba(45,212,191,0.32) 0, transparent 55%),
+            radial-gradient(circle at 60% 0%, rgba(56,189,248,0.38) 0, transparent 60%),
+            radial-gradient(circle at 90% 40%, rgba(129,140,248,0.30) 0, transparent 60%);
+          filter: blur(38px);
+          opacity: 0.9;
+          mix-blend-mode: screen;
+          animation: ccAuroraDriftA 42s ease-in-out infinite alternate;
+        }
+
+        .cc-bg-aurora-b {
+          position: absolute;
+          inset: -25%;
+          background:
+            radial-gradient(circle at 0% 80%, rgba(8,47,73,0.9) 0, transparent 60%),
+            radial-gradient(circle at 70% 90%, rgba(56,189,248,0.22) 0, transparent 65%),
+            radial-gradient(circle at 40% 40%, rgba(59,130,246,0.28) 0, transparent 55%);
+          filter: blur(42px);
+          opacity: 0.85;
+          mix-blend-mode: screen;
+          animation: ccAuroraDriftB 48s ease-in-out infinite alternate;
+        }
+
+        .cc-bg-grid-wrap {
+          position: absolute;
+          inset: -10%;
+          opacity: 0.35;
+          mix-blend-mode: screen;
+          animation: ccGridSlide 50s linear infinite alternate;
+        }
+
+        .cc-bg-grid-line {
+          stroke: rgba(56,189,248,0.22);
+          stroke-width: 0.7;
           stroke-linecap: round;
-          stroke-linejoin: round;
-          filter: drop-shadow(0 0 4px rgba(56, 189, 248, 0.4));
-        }
-
-        .cc-plex-line-mid {
-          stroke: rgba(34, 211, 238, 0.45);
-          stroke-width: 0.8;
-          stroke-linecap: round;
-          stroke-linejoin: round;
           filter:
-            drop-shadow(0 0 6px rgba(34, 211, 238, 0.7))
-            drop-shadow(0 0 10px rgba(45, 212, 191, 0.8));
+            drop-shadow(0 0 6px rgba(34,211,238,0.4))
+            drop-shadow(0 0 14px rgba(45,212,191,0.55));
         }
 
-        .cc-plex-line-near {
-          stroke: rgba(125, 211, 252, 0.75);
-          stroke-width: 1;
-          stroke-linecap: round;
-          stroke-linejoin: round;
+        .cc-bg-grid-line-strong {
+          stroke: rgba(56,189,248,0.55);
+          stroke-width: 0.9;
+        }
+
+        .cc-bg-node {
+          fill: rgba(191,219,254,0.95);
           filter:
-            drop-shadow(0 0 8px rgba(125, 211, 252, 0.9))
-            drop-shadow(0 0 16px rgba(56, 189, 248, 0.9));
+            drop-shadow(0 0 4px rgba(191,219,254,0.95))
+            drop-shadow(0 0 12px rgba(59,130,246,0.9));
+          animation: ccSparkPulse 6s ease-in-out infinite;
         }
 
-        .cc-plex-node {
-          fill: rgba(191, 219, 254, 0.95);
-          filter:
-            drop-shadow(0 0 4px rgba(191, 219, 254, 1))
-            drop-shadow(0 0 14px rgba(59, 130, 246, 0.9));
-          animation: ccPlexusNodePulse 4.8s ease-in-out infinite;
+        .cc-bg-node-b { animation-duration: 7.5s; animation-delay: 1.4s; }
+        .cc-bg-node-c { animation-duration: 9s;   animation-delay: 2.3s; }
+
+        .cc-bg-noise {
+          position: absolute;
+          inset: -10%;
+          background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 160 160' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.2' numOctaves='2' stitchTiles='noStitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.35'/%3E%3C/svg%3E");
+          mix-blend-mode: soft-light;
+          opacity: 0.14;
+          animation: ccNoiseDrift 40s linear infinite alternate;
         }
 
-        .cc-plex-node-b {
-          animation-duration: 5.6s;
-          animation-delay: 1.2s;
-        }
-
-        .cc-plex-node-c {
-          animation-duration: 6.4s;
-          animation-delay: 2.1s;
+        .cc-bg-vignette {
+          position: absolute;
+          inset: 0;
+          background:
+            radial-gradient(circle at 50% 0%, rgba(15,23,42,0.0) 0, rgba(15,23,42,0.3) 45%, rgba(2,6,23,0.96) 100%);
         }
       `}</style>
 
-      <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden">
-        {/* Deep teal base */}
-        <div
-          className="absolute inset-0"
-          style={{
-            background:
-              'radial-gradient(circle at 50% 0%, #020617 0, #020617 40%, #020617 100%)',
-          }}
-        />
+      <div className="cc-bg-root">
+        {/* Base deep space */}
+        <div className="cc-bg-base" />
 
-        {/* Soft bokeh glows behind the network */}
-        <div
-          className="absolute inset-[-20%]"
-          style={{
-            backgroundImage:
-              'radial-gradient(circle at 20% 15%, rgba(56,189,248,0.65) 0, transparent 55%),' +
-              'radial-gradient(circle at 70% 10%, rgba(34,211,238,0.7) 0, transparent 60%),' +
-              'radial-gradient(circle at 35% 70%, rgba(59,130,246,0.65) 0, transparent 55%),' +
-              'radial-gradient(circle at 85% 75%, rgba(45,212,191,0.55) 0, transparent 60%)',
-            filter: 'blur(30px)',
-            opacity: 0.9,
-            mixBlendMode: 'screen',
-            animation: 'ccPlexusBokehDrift 40s ease-in-out infinite alternate',
-          }}
-        />
+        {/* Neon aurora layers */}
+        <div className="cc-bg-aurora-a" />
+        <div className="cc-bg-aurora-b" />
 
-        {/* FAR layer – faint background mesh */}
-        <div
-          className="absolute inset-0"
-          style={{ animation: 'ccPlexusDriftFar 60s linear infinite alternate' }}
-        >
+        {/* Geometric plexus grid */}
+        <div className="cc-bg-grid-wrap">
           <svg
             viewBox="0 0 1600 900"
             preserveAspectRatio="xMidYMid slice"
             className="w-full h-full"
           >
             <g>
+              {/* Main diagonal bands */}
               <polyline
-                className="cc-plex-line-far"
-                points="0,180 180,120 360,200 540,130 720,210 900,150 1080,210 1260,140 1440,210 1600,160"
+                className="cc-bg-grid-line cc-bg-grid-line-strong"
+                points="0,260 260,210 520,260 780,210 1040,260 1300,210 1600,260"
               />
               <polyline
-                className="cc-plex-line-far"
-                points="0,260 200,230 380,290 560,240 740,310 920,250 1100,320 1280,270 1480,320 1600,280"
+                className="cc-bg-grid-line cc-bg-grid-line-strong"
+                points="0,420 220,380 440,430 660,390 880,440 1100,400 1320,450 1600,410"
               />
               <polyline
-                className="cc-plex-line-far"
-                points="0,340 190,330 380,360 570,340 760,380 950,340 1140,390 1330,350 1520,400 1600,380"
+                className="cc-bg-grid-line cc-bg-grid-line-strong"
+                points="0,600 260,560 520,610 780,570 1040,620 1300,580 1600,630"
+              />
+
+              {/* Cross-link triangles for a more "crypto" geometric feel */}
+              <polyline
+                className="cc-bg-grid-line"
+                points="220,380 360,290 520,260 660,290 780,210 940,260 1100,210 1240,300 1320,450"
               />
               <polyline
-                className="cc-plex-line-far"
-                points="0,520 200,500 380,540 560,510 740,560 920,520 1100,570 1280,530 1480,580 1600,560"
+                className="cc-bg-grid-line"
+                points="260,560 360,430 520,390 660,430 820,390 980,430 1140,400 1300,450 1440,600"
               />
               <polyline
-                className="cc-plex-line-far"
-                points="0,620 200,610 390,640 580,620 770,660 960,620 1150,670 1340,640 1520,690 1600,670"
+                className="cc-bg-grid-line"
+                points="100,700 260,560 440,610 620,560 800,610 980,570 1160,620 1340,580 1500,640"
               />
+            </g>
+
+            {/* Spark nodes on key intersections */}
+            <g>
+              <circle className="cc-bg-node" cx="260" cy="210" r="2.7" />
+              <circle className="cc-bg-node cc-bg-node-b" cx="520" cy="260" r="2.7" />
+              <circle className="cc-bg-node cc-bg-node-c" cx="780" cy="210" r="2.7" />
+              <circle className="cc-bg-node" cx="1040" cy="260" r="2.7" />
+              <circle className="cc-bg-node cc-bg-node-b" cx="1300" cy="210" r="2.7" />
+
+              <circle className="cc-bg-node" cx="220" cy="380" r="2.5" />
+              <circle className="cc-bg-node cc-bg-node-b" cx="440" cy="430" r="2.5" />
+              <circle className="cc-bg-node cc-bg-node-c" cx="660" cy="390" r="2.5" />
+              <circle className="cc-bg-node" cx="880" cy="440" r="2.5" />
+              <circle className="cc-bg-node cc-bg-node-b" cx="1100" cy="400" r="2.5" />
+              <circle className="cc-bg-node cc-bg-node-c" cx="1320" cy="450" r="2.5" />
+
+              <circle className="cc-bg-node" cx="260" cy="560" r="2.5" />
+              <circle className="cc-bg-node cc-bg-node-b" cx="520" cy="610" r="2.5" />
+              <circle className="cc-bg-node cc-bg-node-c" cx="780" cy="570" r="2.5" />
+              <circle className="cc-bg-node" cx="1040" cy="620" r="2.5" />
+              <circle className="cc-bg-node cc-bg-node-b" cx="1300" cy="580" r="2.5" />
+
+              <circle className="cc-bg-node cc-bg-node-c" cx="360" cy="290" r="2.3" />
+              <circle className="cc-bg-node" cx="660" cy="290" r="2.3" />
+              <circle className="cc-bg-node cc-bg-node-b" cx="940" cy="260" r="2.3" />
+              <circle className="cc-bg-node cc-bg-node-c" cx="1240" cy="300" r="2.3" />
+
+              <circle className="cc-bg-node" cx="360" cy="430" r="2.3" />
+              <circle className="cc-bg-node cc-bg-node-b" cx="820" cy="390" r="2.3" />
+              <circle className="cc-bg-node cc-bg-node-c" cx="980" cy="430" r="2.3" />
+              <circle className="cc-bg-node" cx="1140" cy="400" r="2.3" />
+
+              <circle className="cc-bg-node cc-bg-node-b" cx="440" cy="610" r="2.3" />
+              <circle className="cc-bg-node cc-bg-node-c" cx="800" cy="610" r="2.3" />
+              <circle className="cc-bg-node" cx="1160" cy="620" r="2.3" />
             </g>
           </svg>
         </div>
 
-        {/* MID layer – main plexus web like your GIF */}
-        <div
-          className="absolute inset-0"
-          style={{ animation: 'ccPlexusDriftMid 50s ease-in-out infinite alternate' }}
-        >
-          <svg
-            viewBox="0 0 1600 900"
-            preserveAspectRatio="xMidYMid slice"
-            className="w-full h-full"
-          >
-            <g>
-              {/* Central dense cluster */}
-              <polyline
-                className="cc-plex-line-mid"
-                points="600,380 720,320 840,360 960,310 1080,360 960,420 840,400 720,440 600,380"
-              />
-              <polyline
-                className="cc-plex-line-mid"
-                points="720,320 780,250 900,260 960,310 1020,260 1140,300 1080,360"
-              />
-              <polyline
-                className="cc-plex-line-mid"
-                points="720,440 780,500 900,520 1020,480 1080,430 1140,480 1080,540 960,560 840,540 720,500 660,450 600,380"
-              />
-              <polyline
-                className="cc-plex-line-mid"
-                points="540,330 600,380 540,430 460,460 380,430 340,360 420,320 540,330"
-              />
-              <polyline
-                className="cc-plex-line-mid"
-                points="1080,360 1200,330 1300,360 1360,420 1300,480 1200,510 1140,480 1080,430"
-              />
-
-              {/* Additional crossing webs to fill screen */}
-              <polyline
-                className="cc-plex-line-mid"
-                points="160,260 260,220 360,260 460,220 560,260 660,220 760,260 860,230 960,260"
-              />
-              <polyline
-                className="cc-plex-line-mid"
-                points="260,220 300,160 420,150 520,170 560,220"
-              />
-              <polyline
-                className="cc-plex-line-mid"
-                points="220,480 340,450 460,480 580,460 700,500 820,470 940,510 1060,480 1180,520"
-              />
-              <polyline
-                className="cc-plex-line-mid"
-                points="300,640 420,610 540,650 660,620 780,660 900,630 1020,670 1140,640 1260,680 1380,650"
-              />
-            </g>
-
-            {/* Nodes in mid layer */}
-            <g>
-              {/* Central cluster nodes */}
-              <circle className="cc-plex-node" cx="720" cy="320" r="2.6" />
-              <circle className="cc-plex-node cc-plex-node-b" cx="840" cy="360" r="2.6" />
-              <circle className="cc-plex-node cc-plex-node-c" cx="960" cy="310" r="2.6" />
-              <circle className="cc-plex-node" cx="1080" cy="360" r="2.6" />
-              <circle className="cc-plex-node cc-plex-node-b" cx="960" cy="420" r="2.6" />
-              <circle className="cc-plex-node cc-plex-node-c" cx="840" cy="400" r="2.6" />
-              <circle className="cc-plex-node" cx="720" cy="440" r="2.6" />
-              <circle className="cc-plex-node cc-plex-node-b" cx="780" cy="500" r="2.6" />
-              <circle className="cc-plex-node cc-plex-node-c" cx="900" cy="520" r="2.6" />
-              <circle className="cc-plex-node" cx="1020" cy="480" r="2.6" />
-              <circle className="cc-plex-node cc-plex-node-b" cx="1080" cy="430" r="2.6" />
-              <circle className="cc-plex-node cc-plex-node-c" cx="1140" cy="480" r="2.6" />
-              <circle className="cc-plex-node" cx="600" cy="380" r="2.6" />
-              <circle className="cc-plex-node cc-plex-node-b" cx="540" cy="330" r="2.6" />
-              <circle className="cc-plex-node cc-plex-node-c" cx="460" cy="460" r="2.6" />
-              <circle className="cc-plex-node" cx="340" cy="360" r="2.6" />
-              <circle className="cc-plex-node cc-plex-node-b" cx="1200" cy="330" r="2.6" />
-              <circle className="cc-plex-node cc-plex-node-c" cx="1300" cy="360" r="2.6" />
-              <circle className="cc-plex-node" cx="1360" cy="420" r="2.6" />
-
-              {/* Spread-out nodes to match GIF density */}
-              <circle className="cc-plex-node" cx="260" cy="220" r="2.1" />
-              <circle className="cc-plex-node cc-plex-node-b" cx="360" cy="260" r="2.1" />
-              <circle className="cc-plex-node cc-plex-node-c" cx="460" cy="220" r="2.1" />
-              <circle className="cc-plex-node" cx="560" cy="260" r="2.1" />
-              <circle className="cc-plex-node cc-plex-node-b" cx="660" cy="220" r="2.1" />
-              <circle className="cc-plex-node cc-plex-node-c" cx="760" cy="260" r="2.1" />
-              <circle className="cc-plex-node" cx="860" cy="230" r="2.1" />
-              <circle className="cc-plex-node cc-plex-node-b" cx="220" cy="480" r="2.1" />
-              <circle className="cc-plex-node cc-plex-node-c" cx="340" cy="450" r="2.1" />
-              <circle className="cc-plex-node" cx="460" cy="480" r="2.1" />
-              <circle className="cc-plex-node cc-plex-node-b" cx="580" cy="460" r="2.1" />
-              <circle className="cc-plex-node cc-plex-node-c" cx="700" cy="500" r="2.1" />
-              <circle className="cc-plex-node" cx="820" cy="470" r="2.1" />
-              <circle className="cc-plex-node cc-plex-node-b" cx="940" cy="510" r="2.1" />
-              <circle className="cc-plex-node cc-plex-node-c" cx="1060" cy="480" r="2.1" />
-              <circle className="cc-plex-node" cx="1180" cy="520" r="2.1" />
-              <circle className="cc-plex-node cc-plex-node-b" cx="300" cy="640" r="2.1" />
-              <circle className="cc-plex-node cc-plex-node-c" cx="420" cy="610" r="2.1" />
-              <circle className="cc-plex-node" cx="540" cy="650" r="2.1" />
-              <circle className="cc-plex-node cc-plex-node-b" cx="660" cy="620" r="2.1" />
-              <circle className="cc-plex-node cc-plex-node-c" cx="780" cy="660" r="2.1" />
-              <circle className="cc-plex-node" cx="900" cy="630" r="2.1" />
-              <circle className="cc-plex-node cc-plex-node-b" cx="1020" cy="670" r="2.1" />
-              <circle className="cc-plex-node cc-plex-node-c" cx="1140" cy="640" r="2.1" />
-              <circle className="cc-plex-node" cx="1260" cy="680" r="2.1" />
-            </g>
-          </svg>
-        </div>
-
-        {/* NEAR layer – a few sharper lines in front to sell the depth */}
-        <div
-          className="absolute inset-0"
-          style={{ animation: 'ccPlexusDriftNear 55s ease-in-out infinite alternate' }}
-        >
-          <svg
-            viewBox="0 0 1600 900"
-            preserveAspectRatio="xMidYMid slice"
-            className="w-full h-full"
-          >
-            <g>
-              <polyline
-                className="cc-plex-line-near"
-                points="200,520 380,580 560,540 740,590 920,560 1100,600 1280,570 1460,620"
-              />
-              <polyline
-                className="cc-plex-line-near"
-                points="260,420 420,460 580,420 740,450 900,430 1060,460 1220,440 1380,470"
-              />
-              <polyline
-                className="cc-plex-line-near"
-                points="300,300 480,340 660,310 840,340 1020,320 1200,350 1380,330"
-              />
-            </g>
-
-            <g>
-              <circle className="cc-plex-node" cx="260" cy="420" r="2.8" />
-              <circle className="cc-plex-node cc-plex-node-b" cx="420" cy="460" r="2.8" />
-              <circle className="cc-plex-node cc-plex-node-c" cx="580" cy="420" r="2.8" />
-              <circle className="cc-plex-node" cx="740" cy="450" r="2.8" />
-              <circle className="cc-plex-node cc-plex-node-b" cx="900" cy="430" r="2.8" />
-              <circle className="cc-plex-node cc-plex-node-c" cx="1060" cy="460" r="2.8" />
-              <circle className="cc-plex-node" cx="1220" cy="440" r="2.8" />
-
-              <circle className="cc-plex-node cc-plex-node-b" cx="200" cy="520" r="3" />
-              <circle className="cc-plex-node cc-plex-node-c" cx="380" cy="580" r="3" />
-              <circle className="cc-plex-node" cx="560" cy="540" r="3" />
-              <circle className="cc-plex-node cc-plex-node-b" cx="740" cy="590" r="3" />
-              <circle className="cc-plex-node cc-plex-node-c" cx="920" cy="560" r="3" />
-              <circle className="cc-plex-node" cx="1100" cy="600" r="3" />
-              <circle className="cc-plex-node cc-plex-node-b" cx="1280" cy="570" r="3" />
-              <circle className="cc-plex-node cc-plex-node-c" cx="1460" cy="620" r="3" />
-            </g>
-          </svg>
-        </div>
-
-        {/* Dark vignette so foreground UI stays readable */}
-        <div
-          className="absolute inset-0"
-          style={{
-            background:
-              'radial-gradient(circle at 50% 10%, rgba(15,23,42,0.0) 0, rgba(15,23,42,0.2) 40%, rgba(3,7,18,0.95) 100%)',
-          }}
-        />
+        {/* Soft noise & vignette for a polished look */}
+        <div className="cc-bg-noise" />
+        <div className="cc-bg-vignette" />
       </div>
     </>
   );
