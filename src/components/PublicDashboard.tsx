@@ -8,7 +8,6 @@ import {
   RefreshCcw,
   Flame,
   Globe2,
-  ExternalLink,
   Copy,
   ArrowUpRight,
 } from 'lucide-react';
@@ -68,7 +67,9 @@ function formatShortTime(iso?: string | null) {
 }
 
 export function PublicDashboard() {
-  const { t } = useLanguage();
+  // We keep language hook for consistency with the rest of the app,
+  // even though we don't use t() here yet.
+  const { t } = useLanguage(); // eslint-disable-line @typescript-eslint/no-unused-vars
 
   const [metrics, setMetrics] = useState<PublicMetrics | null>(null);
   const [activity, setActivity] = useState<PublicActivityEvent[]>([]);
@@ -78,10 +79,25 @@ export function PublicDashboard() {
   const fetchSolPrice = async () => {
     try {
       const res = await fetch('/sol-price');
-      if (!res.ok) return;
-      const data: SolPriceResponse = await res.json();
-      const price = typeof data.price_usd === 'number' ? data.price_usd : data.sol_price_usd;
-      if (typeof price === 'number') {
+      if (!res.ok) {
+        console.warn('PublicDashboard: /sol-price not OK', res.status);
+        return;
+      }
+      const data: SolPriceResponse & Record<string, any> = await res.json();
+
+      // Support multiple backend shapes:
+      // { price_usd } OR { sol_price_usd } OR { price: { usd } }
+      let price: number | null = null;
+
+      if (typeof data.price_usd === 'number') {
+        price = data.price_usd;
+      } else if (typeof data.sol_price_usd === 'number') {
+        price = data.sol_price_usd;
+      } else if (data.price && typeof data.price.usd === 'number') {
+        price = data.price.usd;
+      }
+
+      if (price && price > 0) {
         setSolPrice(price);
       }
     } catch (err) {
@@ -92,51 +108,107 @@ export function PublicDashboard() {
   const fetchMetricsAndActivity = async () => {
     setLoading(true);
     try {
-      // Metrics
+      // ---- METRICS ----
       try {
         const res = await fetch('/public-metrics');
         if (res.ok) {
-          const data = (await res.json()) as Partial<PublicMetrics>;
+          const raw = await res.json();
+          const data = raw || {};
+
+          const normalize = (v: any): number =>
+            typeof v === 'number' ? v : typeof v === 'string' ? Number(v) || 0 : 0;
+
           setMetrics({
-            total_cards_funded: data.total_cards_funded ?? 0,
-            total_volume_funded_sol: data.total_volume_funded_sol ?? 0,
-            total_volume_funded_fiat: data.total_volume_funded_fiat ?? 0,
-            total_volume_claimed_sol: data.total_volume_claimed_sol ?? 0,
-            total_volume_claimed_fiat: data.total_volume_claimed_fiat ?? 0,
-            protocol_burns_sol: data.protocol_burns_sol ?? 0,
-            protocol_burns_fiat: data.protocol_burns_fiat ?? 0,
-            burn_wallet: data.burn_wallet,
-            last_updated: data.last_updated,
+            total_cards_funded: normalize(data.total_cards_funded),
+            total_volume_funded_sol: normalize(data.total_volume_funded_sol),
+            total_volume_funded_fiat: normalize(data.total_volume_funded_fiat),
+            total_volume_claimed_sol: normalize(data.total_volume_claimed_sol),
+            total_volume_claimed_fiat: normalize(data.total_volume_claimed_fiat),
+            protocol_burns_sol: normalize(data.protocol_burns_sol),
+            protocol_burns_fiat: normalize(data.protocol_burns_fiat),
+            burn_wallet: data.burn_wallet || undefined,
+            last_updated: data.last_updated || undefined,
           });
         } else {
           console.warn('PublicDashboard: /public-metrics not OK, falling back to /stats');
+
           const statsRes = await fetch('/stats');
           if (statsRes.ok) {
             const stats = await statsRes.json();
+            const normalize = (v: any): number =>
+              typeof v === 'number' ? v : typeof v === 'string' ? Number(v) || 0 : 0;
+
             setMetrics({
-              total_cards_funded: stats.total_cards_funded ?? 0,
-              total_volume_funded_sol: stats.total_volume_funded_sol ?? 0,
-              total_volume_funded_fiat: stats.total_volume_funded_fiat ?? 0,
-              total_volume_claimed_sol: stats.total_volume_claimed_sol ?? 0,
-              total_volume_claimed_fiat: stats.total_volume_claimed_fiat ?? 0,
-              protocol_burns_sol: stats.protocol_burns_sol ?? stats.total_burned ?? 0,
-              protocol_burns_fiat: stats.protocol_burns_fiat ?? stats.total_burned_fiat ?? 0,
-              burn_wallet: stats.burn_wallet,
-              last_updated: stats.last_updated,
+              total_cards_funded: normalize(stats.total_cards_funded),
+              total_volume_funded_sol: normalize(stats.total_volume_funded_sol),
+              total_volume_funded_fiat: normalize(stats.total_volume_funded_fiat ?? stats.total_funded),
+              total_volume_claimed_sol: normalize(stats.total_volume_claimed_sol),
+              total_volume_claimed_fiat: normalize(stats.total_volume_claimed_fiat),
+              protocol_burns_sol: normalize(stats.protocol_burns_sol ?? stats.total_burned),
+              protocol_burns_fiat: normalize(stats.protocol_burns_fiat ?? stats.total_burned_fiat),
+              burn_wallet: stats.burn_wallet || undefined,
+              last_updated: stats.last_updated || undefined,
             });
+          } else {
+            console.warn('PublicDashboard: /stats not OK', statsRes.status);
           }
         }
       } catch (err) {
         console.error('PublicDashboard: metrics fetch failed', err);
       }
 
-      // Activity
+      // ---- ACTIVITY ----
       try {
         const res = await fetch('/public-activity');
         if (res.ok) {
-          const data = await res.json();
-          const events = Array.isArray(data?.events) ? data.events : Array.isArray(data) ? data : [];
-          setActivity(events as PublicActivityEvent[]);
+          const raw = await res.json();
+
+          // Support either:
+          // { events: [...] } OR just [...]
+          const events = Array.isArray(raw?.events)
+            ? raw.events
+            : Array.isArray(raw)
+            ? raw
+            : [];
+
+          const normalized = (events as any[]).map((e) => ({
+            id: e.id ?? undefined,
+            card_id: String(e.card_id ?? e.public_id ?? 'UNKNOWN'),
+            type: (e.type as ActivityType) ?? 'CREATED',
+            token_amount:
+              typeof e.token_amount === 'number'
+                ? e.token_amount
+                : typeof e.token_amount === 'string'
+                ? Number(e.token_amount) || null
+                : null,
+            sol_amount:
+              typeof e.sol_amount === 'number'
+                ? e.sol_amount
+                : typeof e.sol_amount === 'string'
+                ? Number(e.sol_amount) || null
+                : typeof e.amount_sol === 'number'
+                ? e.amount_sol
+                : typeof e.amount_sol === 'string'
+                ? Number(e.amount_sol) || null
+                : null,
+            fiat_value:
+              typeof e.fiat_value === 'number'
+                ? e.fiat_value
+                : typeof e.fiat_value === 'string'
+                ? Number(e.fiat_value) || null
+                : typeof e.amount_fiat === 'number'
+                ? e.amount_fiat
+                : typeof e.amount_fiat === 'string'
+                ? Number(e.amount_fiat) || null
+                : null,
+            currency: e.currency ?? e.fiat_currency ?? 'USD',
+            timestamp: e.timestamp ?? e.created_at ?? new Date().toISOString(),
+            tx_signature: e.tx_signature ?? e.signature ?? null,
+          }));
+
+          setActivity(normalized);
+        } else {
+          console.warn('PublicDashboard: /public-activity not OK', res.status);
         }
       } catch (err) {
         console.error('PublicDashboard: activity fetch failed', err);
@@ -263,7 +335,7 @@ export function PublicDashboard() {
 
       {/* Top controls */}
       <div className="flex items-center justify-between gap-2 mb-3">
-        <div className="flex items-center gap-2 text-[8px] text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-2 text-[8px] text-muted-foreground">
           <Globe2 className="w-3 h-3 text-primary" />
           {enrichedMetrics?.last_updated && (
             <span>
@@ -274,11 +346,16 @@ export function PublicDashboard() {
             </span>
           )}
           {solPrice !== null && (
-            <span className="ml-2">
+            <span>
               SOL:{' '}
               <span className="font-semibold">
                 ${solPrice.toFixed(2)} USD
               </span>
+            </span>
+          )}
+          {solPrice === null && (
+            <span className="opacity-70">
+              SOL price unavailable (using on-chain / cached values)
             </span>
           )}
         </div>
@@ -320,10 +397,10 @@ export function PublicDashboard() {
             Total volume funded
           </div>
           <div className="text-[11px] font-black text-emerald-400 leading-tight">
-            {(enrichedMetrics?.total_volume_funded_sol ?? 0).toFixed(4)} SOL
+            {Number(enrichedMetrics?.total_volume_funded_sol ?? 0).toFixed(4)} SOL
           </div>
           <div className="text-[8px] text-muted-foreground">
-            ≈ ${(enrichedMetrics?.fundedFiat ?? 0).toFixed(2)} USD
+            ≈ ${Number(enrichedMetrics?.fundedFiat ?? 0).toFixed(2)} USD
           </div>
         </div>
 
@@ -332,10 +409,10 @@ export function PublicDashboard() {
             Total value claimed
           </div>
           <div className="text-[11px] font-black text-purple-400 leading-tight">
-            {(enrichedMetrics?.total_volume_claimed_sol ?? 0).toFixed(4)} SOL
+            {Number(enrichedMetrics?.total_volume_claimed_sol ?? 0).toFixed(4)} SOL
           </div>
           <div className="text-[8px] text-muted-foreground">
-            ≈ ${(enrichedMetrics?.claimedFiat ?? 0).toFixed(2)} USD
+            ≈ ${Number(enrichedMetrics?.claimedFiat ?? 0).toFixed(2)} USD
           </div>
         </div>
 
@@ -347,10 +424,10 @@ export function PublicDashboard() {
             </span>
           </div>
           <div className="text-[11px] font-black text-rose-400 leading-tight">
-            {(enrichedMetrics?.protocol_burns_sol ?? 0).toFixed(4)} SOL
+            {Number(enrichedMetrics?.protocol_burns_sol ?? 0).toFixed(4)} SOL
           </div>
           <div className="text-[8px] text-muted-foreground mb-0.5">
-            ≈ ${(enrichedMetrics?.burnsFiat ?? 0).toFixed(2)} USD
+            ≈ ${Number(enrichedMetrics?.burnsFiat ?? 0).toFixed(2)} USD
           </div>
           {enrichedMetrics?.burn_wallet && (
             <button
@@ -391,11 +468,14 @@ export function PublicDashboard() {
           {topTenEvents.length > 0 && (
             <div className="mt-1 max-h-56 overflow-y-auto space-y-1.5">
               {topTenEvents.map((evt, idx) => {
-                const sol = evt.sol_amount ?? 0;
-                const token = evt.token_amount ?? sol;
+                const sol = typeof evt.sol_amount === 'number' ? evt.sol_amount : 0;
+                const token =
+                  typeof evt.token_amount === 'number'
+                    ? evt.token_amount
+                    : sol;
                 const price = solPrice && solPrice > 0 ? solPrice : null;
                 const fiat =
-                  evt.fiat_value && evt.fiat_value > 0
+                  typeof evt.fiat_value === 'number' && evt.fiat_value > 0
                     ? evt.fiat_value
                     : price && sol > 0
                     ? sol * price
@@ -516,8 +596,8 @@ export function PublicDashboard() {
                 Estimated protocol tax (lifetime)
               </div>
               <div className="text-[10px] font-semibold text-rose-100">
-                {(enrichedMetrics.protocol_burns_sol ?? 0).toFixed(6)} SOL • $
-                {(enrichedMetrics.burnsFiat ?? 0).toFixed(2)} USD
+                {Number(enrichedMetrics.protocol_burns_sol ?? 0).toFixed(6)} SOL • $
+                {Number(enrichedMetrics.burnsFiat ?? 0).toFixed(2)} USD
               </div>
             </div>
           )}
