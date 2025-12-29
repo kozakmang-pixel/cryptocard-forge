@@ -61,6 +61,8 @@ export function CardDesigner({
     if (onTokenInfoChange) onTokenInfoChange(tokenInfo);
   }, [tokenInfo, onTokenInfoChange]);
 
+  const disabledSave = isCreating || cardCreated || locked;
+
   return (
     <div className="glass-card rounded-xl p-3 space-y-2 shadow-card hover:shadow-card-hover transition-all hover:-translate-y-0.5">
       {/* Token address */}
@@ -77,7 +79,7 @@ export function CardDesigner({
         {tokenLoading && (
           <div className="flex items-center gap-1 text-[8px] text-muted-foreground mt-1">
             <Loader2 className="w-3 h-3 animate-spin" />
-            <span>{t('designer.tokenLookup')}</span>
+            <span>Looking up token…</span>
           </div>
         )}
         {tokenInfo && (
@@ -110,7 +112,10 @@ export function CardDesigner({
         <Label className="text-[8px] uppercase tracking-wide opacity-80">
           {t('designer.font')}
         </Label>
-        <Select value={font} onValueChange={(v) => onFontChange(v as FontFamily)}>
+        <Select
+          value={font}
+          onValueChange={(v) => onFontChange(v as FontFamily)}
+        >
           <SelectTrigger className="mt-1 h-7 text-[8px] bg-card/60 border-border/30">
             <SelectValue />
           </SelectTrigger>
@@ -150,35 +155,42 @@ export function CardDesigner({
             className="h-7 text-[9px] bg-card/60 border-border/30"
           />
           <div className="text-[7px] text-warning p-1.5 bg-warning/10 border border-warning/30 rounded">
-            {t('designer.expiryWarning')}
+            If not claimed before expiry, funds return to the creator&apos;s wallet.
           </div>
         </>
       )}
 
-      {/* Image grid (7 tiles + 1 upload, implemented in ImageGrid) */}
+      {/* Artwork grid */}
       <ImageGrid
         selectedImage={selectedImage}
         onSelectImage={onImageSelect}
         onUpload={onImageUpload}
       />
 
-      {/* Save design & continue button (always visible, greys out after use) */}
+      {/* Save design & continue (now above info card, persists but greys out) */}
       <Button
+        type="button"
         onClick={onCreateCard}
-        disabled={isCreating || cardCreated || locked}
-        className="w-full h-8 text-[10px] font-black gradient-primary text-primary-foreground rounded-lg hover:brightness-110 transition-all disabled:opacity-60 disabled:cursor-not-allowed mt-3"
+        disabled={disabledSave}
+        className="w-full mt-3 h-8 text-[10px] font-black rounded-lg transition-all
+                   bg-gradient-to-r from-primary/90 via-accent/80 to-secondary/90
+                   text-primary-foreground disabled:opacity-50 disabled:cursor-not-allowed"
       >
-        {isCreating ? t('designer.creating') : t('designer.createButton')}
+        {isCreating
+          ? t('designer.creating')
+          : cardCreated
+          ? 'Design saved – proceed below'
+          : 'Save design & continue'}
       </Button>
 
       {/* How do CRYPTOCARDS work? */}
       <div className="bg-gradient-to-br from-primary/10 via-accent/5 to-secondary/10 border border-primary/30 rounded-xl p-4 mt-3 text-center">
-        <h4 className="text-sm font-black gradient-text text-center mb-2 uppercase tracking-wide">
-          {t('instructionstwo.title')}
+        <h4 className="text-sm font-bold text-primary text-center mb-2 uppercase tracking-wide">
+          How do CRYPTOCARDS work?
         </h4>
         <p className="text-[10px] text-foreground/90 mb-4 max-w-xs mx-auto">
-          {t('instructionstwo.subtitle') ||
-            'Create on-chain crypto gift cards with no wallet connection required. Perfect for giveaways, streams, and IRL gifting.'}
+          On-chain, non-custodial crypto gift cards with no wallet connection required.
+          Perfect for giveaways, streams, and real-world gifting.
         </p>
 
         <div className="space-y-2.5">
@@ -186,12 +198,13 @@ export function CardDesigner({
           <div className="p-2 bg-card/40 rounded-lg">
             <div className="flex flex-col items-center justify-center gap-1 mb-1">
               <span className="text-primary text-sm">🛡️</span>
-              <span className="text-[9px] font-bold text-center">
+              <span className="text-[9px] font-bold text-center uppercase tracking-wide">
                 On-chain &amp; verifiable
               </span>
             </div>
             <p className="text-[10px] text-foreground text-center max-w-xs mx-auto">
-              Every CRYPTOCARD is funded on-chain, publicly verifiable, and can only be used once.
+              Every CRYPTOCARD is funded on-chain, publicly auditable, and can only be
+              claimed once.
             </p>
           </div>
 
@@ -199,12 +212,13 @@ export function CardDesigner({
           <div className="p-2 bg-card/40 rounded-lg">
             <div className="flex flex-col items-center justify-center gap-1 mb-1">
               <span className="text-warning text-sm">🔥</span>
-              <span className="text-[9px] font-bold text-center">
+              <span className="text-[9px] font-bold text-center uppercase tracking-wide">
                 Protocol tax → buybacks
               </span>
             </div>
             <p className="text-[10px] text-foreground text-center max-w-xs mx-auto">
-              A transparent protocol tax powers $CRYPTOCARDS buybacks and permanent on-chain burns.
+              A transparent protocol tax powers $CRYPTOCARDS buybacks and permanent burn
+              mechanics tied directly to on-chain activity.
             </p>
           </div>
 
@@ -212,12 +226,13 @@ export function CardDesigner({
           <div className="p-2 bg-card/40 rounded-lg">
             <div className="flex flex-col items-center justify-center gap-1 mb-1">
               <span className="text-accent text-sm">⚡</span>
-              <span className="text-[9px] font-bold text-center">
+              <span className="text-[9px] font-bold text-center uppercase tracking-wide">
                 Recycled fees
               </span>
             </div>
             <p className="text-[10px] text-foreground text-center max-w-xs mx-auto">
-              All fees are recycled back into the ecosystem to grow the protocol and reward long-term users.
+              All protocol fees are recycled back into the ecosystem to grow liquidity,
+              deepen burns, and reward long-term community support.
             </p>
           </div>
         </div>
