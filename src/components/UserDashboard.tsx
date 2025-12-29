@@ -175,19 +175,31 @@ export function UserDashboard({
           ? sol * solPrice
           : 0;
 
+      // "Funded" from a creator perspective:
+      // - explicitly funded, or
+      // - locked, or
+      // - claimed, or
+      // - any positive token_amount recorded.
+      const isFunded =
+        card.funded ||
+        card.locked ||
+        card.claimed ||
+        (typeof card.token_amount === 'number' && card.token_amount > 0);
+
       return {
         ...card,
         sol,
         fiat,
         currency,
+        isFunded,
       };
     });
   }, [cards, solPrice]);
 
-  const visibleCards = enrichedCards.slice(0, enrichedCards.length);
+  const visibleCards = enrichedCards; // all, scroll is handled by container
 
   const totalCreated = enrichedCards.length;
-  const totalFunded = enrichedCards.filter((c) => c.funded).length;
+  const totalFunded = enrichedCards.filter((c) => c.isFunded).length;
   const totalClaimed = enrichedCards.filter((c) => c.claimed).length;
 
   const handleDeleteCard = async (publicId: string) => {
@@ -356,17 +368,17 @@ export function UserDashboard({
           </div>
           <div className="text-[13px] font-black text-primary">{totalCreated}</div>
         </div>
-        <div className="rounded-lg bg-accent/5 border border-accent/30 px-2 py-1.5 text-center">
+        <div className="rounded-lg bg-emerald-500/5 border border-emerald-500/40 px-2 py-1.5 text-center">
           <div className="text-[8px] uppercase tracking-wide text-muted-foreground mb-0.5">
             Funded
           </div>
-          <div className="text-[13px] font-black text-accent">{totalFunded}</div>
+          <div className="text-[13px] font-black text-emerald-400">{totalFunded}</div>
         </div>
-        <div className="rounded-lg bg-secondary/5 border border-secondary/30 px-2 py-1.5 text-center">
+        <div className="rounded-lg bg-purple-500/5 border border-purple-500/40 px-2 py-1.5 text-center">
           <div className="text-[8px] uppercase tracking-wide text-muted-foreground mb-0.5">
             Claimed
           </div>
-          <div className="text-[13px] font-black text-secondary">{totalClaimed}</div>
+          <div className="text-[13px] font-black text-purple-400">{totalClaimed}</div>
         </div>
       </div>
 
@@ -395,11 +407,11 @@ export function UserDashboard({
           let statusClass = 'bg-muted text-muted-foreground';
           let statusDetail = 'Waiting for deposit to funding address.';
 
-          if (card.funded && !card.locked && !card.claimed) {
+          if (card.isFunded && !card.locked && !card.claimed) {
             statusLabel = 'Funded';
             statusClass = 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/40';
             statusDetail = 'Funded on-chain, ready to lock your CRYPTOCARD.';
-          } else if (card.funded && card.locked && !card.claimed) {
+          } else if (card.isFunded && card.locked && !card.claimed) {
             statusLabel = 'Locked';
             statusClass = 'bg-amber-500/15 text-amber-400 border border-amber-500/40';
             statusDetail = 'Locked on-chain, ready for the recipient to claim.';
