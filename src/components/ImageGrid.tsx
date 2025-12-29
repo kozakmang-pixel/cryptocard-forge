@@ -1,7 +1,9 @@
+// src/components/ImageGrid.tsx
 import { useEffect, useMemo, useState } from 'react';
-import { ImageIcon, RefreshCw } from 'lucide-react';
-import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
+import { ImageIcon, Loader2, VideoIcon, Search } from 'lucide-react';
 
 interface ImageGridProps {
   selectedImage: string;
@@ -9,254 +11,267 @@ interface ImageGridProps {
   onUpload: (file: File) => void;
 }
 
-type GridItem = {
-  url: string;
-  label: string;
-  isGif?: boolean;
-};
+// Base static pool (used when there's no search query)
+const STATIC_IMAGE_URLS: string[] = Array.from({ length: 120 }, (_, i) => {
+  const seed = i + 1;
+  return `https://picsum.photos/seed/cc_bg_${seed}/600/380`;
+});
 
-/**
- * 7 preset tiles + 1 upload tile.
- * - "Images" mode: Unsplash crypto / Solana / neon art.
- * - "GIF mode": Real GIFs from Giphy with degen/crypto queries.
- */
+// Helper to pick N unique random items from an array
+function pickRandomUnique<T>(source: T[], count: number): T[] {
+  if (count >= source.length) return [...source];
+  const copy = [...source];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy.slice(0, count);
+}
+
 export function ImageGrid({ selectedImage, onSelectImage, onUpload }: ImageGridProps) {
-  const [mode, setMode] = useState<'images' | 'gifs'>('images');
-  const [refreshKey, setRefreshKey] = useState(0);
-  const [gifItems, setGifItems] = useState<GridItem[]>([]);
-  const [gifLoading, setGifLoading] = useState(false);
-  const [gifError, setGifError] = useState<string | null>(null);
+  const [showGifs, setShowGifs] = useState(false);
+  const [items, setItems] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [activeQuery, setActiveQuery] = useState(''); // last applied search term
 
   const giphyApiKey = import.meta.env.VITE_GIPHY_API_KEY as string | undefined;
 
-  // Static-ish Unsplash images for "Images" mode
-  const imageItems: GridItem[] = useMemo(() => {
-    const baseQueries = [
-      'solana,crypto,neon',
-      'blockchain,grid,futuristic',
-      'defi,neon,abstract',
-      'meme,crypto,solana',
-      'digital,cyberpunk,neon',
-      'trading,charts,crypto',
-      'network,glow,particles',
-    ];
+  // Core loader for images/GIFs
+  const loadItems = async (query?: string) => {
+    const term = (query ?? activeQuery ?? '').trim();
+    setLoading(true);
 
-    return baseQueries.map((q, index) => {
-      const url = `https://source.unsplash.com/600x400/?${encodeURIComponent(
-        q
-      )}&sig=${index}&v=${refreshKey}`;
-      return {
-        url,
-        label: 'Card artwork',
-        isGif: false,
-      };
-    });
-  }, [refreshKey]);
-
-  // Fetch real GIFs from Giphy for GIF mode
-  useEffect(() => {
-    if (mode !== 'gifs') return;
-    if (!giphyApiKey) {
-      setGifError('Missing GIPHY API key');
-      setGifItems([]);
-      return;
-    }
-
-    const fetchGifs = async () => {
-      setGifLoading(true);
-      setGifError(null);
-
-      try {
-        const queries = [
+    try {
+      if (showGifs && giphyApiKey) {
+        // GIF MODE – GIPHY search with term or degen defaults
+        const fallbackQueries = [
           'solana meme',
           'crypto degen',
-          'pumpfun meme',
-          'solana shitcoin',
-          'crypto casino',
-          'memecoin trading',
+          'pumpfun',
+          'memecoin',
+          'bitcoin laser eyes',
+          'trading meme',
+          'elon doge',
+          'crypto casino'
         ];
 
-        // Pick one random query each refresh for variety
-        const q = queries[Math.floor(Math.random() * queries.length)];
+        const searchTerm = term || fallbackQueries[Math.floor(Math.random() * fallbackQueries.length)];
 
-        const params = new URLSearchParams({
-          api_key: giphyApiKey,
-          q,
-          limit: '25',
-          rating: 'pg-13',
-          lang: 'en',
-        });
+        const res = await fetch(
+          `https://api.giphy.com/v1/gifs/search?api_key=${giphyApiKey}&q=${encodeURIComponent(
+            searchTerm
+          )}&limit=24&rating=pg-13`
+        );
 
-        const res = await fetch(`https://api.giphy.com/v1/gifs/search?${params.toString()}`);
-        if (!res.ok) {
-          throw new Error(`Giphy HTTP ${res.status}`);
+        if (!res.ok) throw new Error('Giphy request failed');
+        const data = await res.json();
+
+        const urls: string[] =
+          data?.data
+            ?.map(
+              (g: any) =>
+                g.images?.downsized_medium?.url ||
+                g.images?.fixed_width?.url ||
+                g.images?.original?.url
+            )
+            .filter(Boolean) || [];
+
+        if (!urls.length) {
+          // Fallback to static images if Giphy returns nothing
+          const base = term
+            ? Array.from({ length: 120 }, (_, i) => {
+                const seed = `${encodeURIComponent(term)}_${i + 1}`;
+                return `https://picsum.photos/seed/cc_bg_${seed}/600/380`;
+              })
+            : STATIC_IMAGE_URLS;
+
+          setItems(pickRandomUnique(base, 8));
+        } else {
+          setItems(pickRandomUnique(urls, 8));
         }
+      } else {
+        // IMAGE MODE – static pool, flavored by search term
+        const base = term
+          ? Array.from({ length: 120 }, (_, i) => {
+              const seed = `${encodeURIComponent(term)}_${i + 1}`;
+              return `https://picsum.photos/seed/cc_bg_${seed}/600/380`;
+            })
+          : STATIC_IMAGE_URLS;
 
-        const json = await res.json();
-        const data = Array.isArray(json.data) ? json.data : [];
-
-        if (!data.length) {
-          setGifItems([]);
-          setGifError('No GIFs returned');
-          setGifLoading(false);
-          return;
-        }
-
-        // Pick up to 7 GIFs
-        const picked = data.slice(0, 7).map((gif: any, idx: number) => {
-          const img =
-            gif.images?.downsized_medium?.url ||
-            gif.images?.downsized?.url ||
-            gif.images?.original?.url;
-
-          return {
-            url: img,
-            label: gif.title || 'Crypto meme GIF',
-            isGif: true,
-          } as GridItem;
-        });
-
-        setGifItems(picked);
-      } catch (err: any) {
-        console.error('Failed to load GIFs from Giphy', err);
-        setGifError(err?.message || 'Failed to load GIFs');
-        setGifItems([]);
-      } finally {
-        setGifLoading(false);
+        setItems(pickRandomUnique(base, 8));
       }
-    };
+    } catch (err) {
+      console.error('ImageGrid load error', err);
+      // Absolute fallback – always show *something*
+      setItems(pickRandomUnique(STATIC_IMAGE_URLS, 8));
+    } finally {
+      setLoading(false);
+    }
+  };
 
-    fetchGifs();
-  }, [mode, refreshKey, giphyApiKey]);
+  // Initial load
+  useEffect(() => {
+    loadItems('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const itemsToShow: GridItem[] = mode === 'images' ? imageItems : gifItems;
+  // Reload when switching between Images / GIFs, keeping active query
+  useEffect(() => {
+    loadItems('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showGifs]);
 
-  const handleUploadChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
+  // Ensure uploaded/selected image remains in view
+  const displayItems = useMemo(() => {
+    if (!selectedImage) return items;
+    if (!items.includes(selectedImage)) {
+      return [selectedImage, ...items.slice(0, 7)];
+    }
+    return items;
+  }, [items, selectedImage]);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
     if (!file) return;
     onUpload(file);
   };
 
-  return (
-    <div className="mt-2">
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-1">
-          <ImageIcon className="w-3 h-3 text-accent" />
-          <span className="text-[9px] font-semibold uppercase tracking-wide opacity-80">
-            Card artwork
-          </span>
-        </div>
+  const handleSearchSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const term = searchQuery.trim();
+    setActiveQuery(term);
+    loadItems(term);
+  };
 
-        <div className="flex items-center gap-2">
-          {/* Images / GIF toggle */}
-          <div className="inline-flex rounded-full bg-card/70 border border-border/40 p-0.5">
-            <button
-              type="button"
-              className={cn(
-                'px-2 h-5 text-[8px] rounded-full transition-all',
-                mode === 'images'
-                  ? 'bg-primary text-primary-foreground font-semibold shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground'
-              )}
-              onClick={() => setMode('images')}
-            >
-              Images
-            </button>
-            <button
-              type="button"
-              className={cn(
-                'px-2 h-5 text-[8px] rounded-full transition-all',
-                mode === 'gifs'
-                  ? 'bg-secondary text-secondary-foreground font-semibold shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground'
-              )}
-              onClick={() => setMode('gifs')}
-            >
-              GIF mode
-            </button>
+  const handleRefresh = () => {
+    loadItems('');
+  };
+
+  return (
+    <div className="mt-2 space-y-2">
+      {/* Top controls row: label + mode toggle + search + refresh + upload */}
+      <div className="flex flex-col gap-1.5">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <span className="text-[8px] uppercase tracking-wide opacity-80">
+              Artwork source
+            </span>
+            <div className="flex items-center gap-1">
+              <span className="text-[8px] opacity-70 flex items-center gap-1">
+                <ImageIcon className="w-3 h-3" /> Images
+              </span>
+              <Switch
+                checked={showGifs}
+                onCheckedChange={(val) => setShowGifs(val)}
+                className="scale-75"
+              />
+              <span className="text-[8px] opacity-70 flex items-center gap-1">
+                <VideoIcon className="w-3 h-3" /> GIFs
+              </span>
+            </div>
           </div>
 
-          <Button
-            type="button"
-            variant="outline"
-            size="icon"
-            className="h-6 w-6 border-border/40"
-            onClick={() => setRefreshKey((k) => k + 1)}
-          >
-            <RefreshCw className="w-3 h-3" />
-          </Button>
-        </div>
-      </div>
-
-      {mode === 'gifs' && gifError && (
-        <div className="mb-1 text-[8px] text-warning">
-          GIFs unavailable: {gifError}. Falling back to images.
-        </div>
-      )}
-
-      <div className="grid grid-cols-4 gap-1.5">
-        {/* 7 remote tiles (images or gifs) */}
-        {(itemsToShow.length ? itemsToShow : imageItems).slice(0, 7).map((item, index) => {
-          const isSelected = selectedImage === item.url;
-          return (
-            <button
-              key={`${mode}-${index}`}
+          <div className="flex items-center gap-1">
+            <Button
               type="button"
-              onClick={() => onSelectImage(item.url)}
-              className={cn(
-                'relative rounded-lg overflow-hidden border transition-all aspect-[3/2]',
-                isSelected
-                  ? 'border-accent ring-2 ring-accent/60'
-                  : 'border-border/40 hover:border-accent/60 hover:shadow-md'
-              )}
+              size="sm"
+              variant="outline"
+              className="h-7 px-2 text-[8px]"
+              onClick={handleRefresh}
+              disabled={loading}
             >
-              <img
-                src={item.url}
-                alt={item.label}
-                className="w-full h-full object-cover"
-                loading="lazy"
-              />
-              <div className="absolute left-1 bottom-1 px-1.5 py-0.5 rounded-full bg-black/55">
-                <span className="text-[7px] text-white/90 font-medium">
-                  {item.isGif ? 'GIF' : 'Art'}
-                </span>
-              </div>
-              {isSelected && (
-                <div className="absolute inset-0 bg-black/35 flex items-center justify-center">
-                  <span className="text-[8px] font-bold uppercase tracking-wide text-accent-foreground">
-                    Selected
-                  </span>
-                </div>
+              {loading ? (
+                <>
+                  <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                  Refresh
+                </>
+              ) : (
+                'Refresh'
               )}
-            </button>
-          );
-        })}
+            </Button>
 
-        {/* Upload tile */}
-        <label
-          className={cn(
-            'relative rounded-lg border border-dashed border-border/50 flex flex-col items-center justify-center text-center aspect-[3/2] cursor-pointer hover:border-accent/80 hover:bg-card/40 transition-all'
-          )}
+            <label className="relative inline-flex items-center">
+              <input
+                type="file"
+                accept="image/*,image/gif"
+                className="hidden"
+                onChange={handleFileChange}
+              />
+              <span className="cursor-pointer text-[8px] px-2 py-1 border border-border/40 rounded-md bg-card/80 hover:bg-card/60 transition-colors">
+                Upload
+              </span>
+            </label>
+          </div>
+        </div>
+
+        {/* Search bar */}
+        <form
+          onSubmit={handleSearchSubmit}
+          className="flex items-center gap-1 bg-card/60 border border-border/40 rounded-md px-2 py-1"
         >
+          <Search className="w-3 h-3 opacity-70 mr-1" />
           <input
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={handleUploadChange}
+            className="flex-1 bg-transparent outline-none text-[9px] placeholder:text-[8px] placeholder:opacity-60"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder={
+              showGifs
+                ? 'Search GIFs (e.g. solana, degen, pump)…'
+                : 'Search artwork vibe (e.g. cyberpunk, neon, galaxy)…'
+            }
           />
-          <ImageIcon className="w-4 h-4 mb-1 text-muted-foreground" />
-          <span className="text-[8px] font-semibold uppercase text-muted-foreground">
-            Upload
-          </span>
-          <span className="text-[7px] text-muted-foreground/80 mt-0.5 max-w-[90%]">
-            PNG / JPG / GIF
-          </span>
-        </label>
+          <Button
+            type="submit"
+            size="sm"
+            variant="ghost"
+            className="h-6 px-2 text-[8px]"
+            disabled={loading}
+          >
+            Go
+          </Button>
+        </form>
       </div>
 
-      {mode === 'gifs' && gifLoading && (
-        <div className="mt-1 text-[8px] text-muted-foreground">Loading crypto GIFs…</div>
-      )}
+      {/* Grid */}
+      <div className="grid grid-cols-4 gap-2">
+        {displayItems.map((url, idx) => (
+          <button
+            key={`${url}-${idx}`}
+            type="button"
+            onClick={() => onSelectImage(url)}
+            className={cn(
+              'relative rounded-lg overflow-hidden border aspect-[3/2] group',
+              selectedImage === url
+                ? 'border-accent ring-1 ring-accent/70'
+                : 'border-border/30 hover:border-accent/60 hover:shadow-md'
+            )}
+          >
+            <img
+              src={url}
+              alt="Background option"
+              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+              loading="lazy"
+            />
+            <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity" />
+            <div className="absolute bottom-1 left-1 right-1 flex items-center justify-between">
+              <span className="text-[7px] px-1.5 py-0.5 rounded-full bg-black/60 text-white/90 uppercase tracking-wide">
+                Background option
+              </span>
+              {selectedImage === url && (
+                <span className="text-[7px] px-1.5 py-0.5 rounded-full bg-accent text-black font-bold uppercase">
+                  Selected
+                </span>
+              )}
+            </div>
+          </button>
+        ))}
+      </div>
+
+      {/* Hint */}
+      <p className="text-[8px] text-muted-foreground mt-1">
+        Toggle between images and GIFs, search for a specific vibe, or upload your own artwork.
+      </p>
     </div>
   );
 }
