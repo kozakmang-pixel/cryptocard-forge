@@ -4,7 +4,14 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useLanguage } from '@/lib/languageStore';
 import { toast } from 'sonner';
-import { Loader2, RefreshCcw, Mail, LogOut, CreditCard } from 'lucide-react';
+import {
+  Loader2,
+  RefreshCcw,
+  Mail,
+  LogOut,
+  CreditCard,
+  Trash2,
+} from 'lucide-react';
 
 interface UserInfo {
   id: string;
@@ -176,11 +183,46 @@ export function UserDashboard({
     });
   }, [cards, solPrice]);
 
-  const visibleCards = enrichedCards.slice(0, enrichedCards.length); // all, but scroll container handles height
+  const visibleCards = enrichedCards.slice(0, enrichedCards.length);
 
   const totalCreated = enrichedCards.length;
   const totalFunded = enrichedCards.filter((c) => c.funded).length;
   const totalClaimed = enrichedCards.filter((c) => c.claimed).length;
+
+  const handleDeleteCard = async (publicId: string) => {
+    if (!token) {
+      toast.error('Not authenticated');
+      return;
+    }
+
+    const confirmed = window.confirm(
+      'Delete this CRYPTOCARD from your dashboard?\n\nThis will permanently remove its record from your creator dashboard. This cannot be undone.'
+    );
+    if (!confirmed) return;
+
+    try {
+      const res = await fetch('/delete-card', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ public_id: publicId }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok || data.error) {
+        throw new Error(data.error || 'Failed to delete card');
+      }
+
+      setCards((prev) => prev.filter((c) => c.public_id !== publicId));
+      toast.success('CRYPTOCARD removed from your dashboard.');
+    } catch (err: any) {
+      console.error('UserDashboard: delete card failed', err);
+      toast.error(err?.message || 'Failed to delete card');
+    }
+  };
 
   return (
     <section className="glass-card rounded-xl p-3 mt-5 shadow-card hover:shadow-card-hover transition-all">
@@ -261,7 +303,8 @@ export function UserDashboard({
           </div>
           {solPrice !== null && (
             <span className="text-[8px] text-muted-foreground">
-              Live SOL price: <span className="font-semibold">${solPrice.toFixed(2)} USD</span>
+              Live SOL price:{' '}
+              <span className="font-semibold">${solPrice.toFixed(2)} USD</span>
             </span>
           )}
         </div>
@@ -333,22 +376,27 @@ export function UserDashboard({
         )}
 
         {visibleCards.map((card) => {
-          const tokenSymbol = 'TOKEN'; // Logical token; for SOL-only cards this will mirror SOL
+          const tokenSymbol = 'TOKEN'; // Logical token label; for SOL-only cards this mirrors SOL
           const solDisplay = card.sol ?? 0;
           const fiatDisplay = card.fiat ?? 0;
           const currency = card.currency || 'USD';
 
           let statusLabel = 'Not funded';
           let statusClass = 'bg-muted text-muted-foreground';
-          if (card.funded && !card.claimed && !card.locked) {
+          let statusDetail = 'Waiting for deposit to funding address.';
+
+          if (card.funded && !card.locked && !card.claimed) {
             statusLabel = 'Funded';
             statusClass = 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/40';
+            statusDetail = 'Funded on-chain, ready to lock your CRYPTOCARD.';
           } else if (card.funded && card.locked && !card.claimed) {
             statusLabel = 'Locked';
             statusClass = 'bg-amber-500/15 text-amber-400 border border-amber-500/40';
+            statusDetail = 'Locked on-chain, ready for the recipient to claim.';
           } else if (card.claimed) {
             statusLabel = 'Claimed';
             statusClass = 'bg-purple-500/15 text-purple-400 border border-purple-500/40';
+            statusDetail = 'Funding and claim complete. This CRYPTOCARD has been redeemed.';
           }
 
           return (
@@ -356,7 +404,7 @@ export function UserDashboard({
               key={card.public_id}
               className="mb-2 last:mb-0 rounded-lg bg-card/70 border border-border/40 px-2 py-1.5"
             >
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex items-start justify-between gap-2">
                 <div>
                   <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
                     Card ID
@@ -365,13 +413,23 @@ export function UserDashboard({
                     {card.public_id}
                   </div>
                 </div>
-                <div className="text-right">
-                  <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
-                    Created
+                <div className="flex flex-col items-end gap-1">
+                  <div className="text-right">
+                    <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
+                      Created
+                    </div>
+                    <div className="text-[9px]">
+                      {formatDateTime(card.created_at)}
+                    </div>
                   </div>
-                  <div className="text-[9px]">
-                    {formatDateTime(card.created_at)}
-                  </div>
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 text-[8px] text-destructive/80 hover:text-destructive transition-colors"
+                    onClick={() => handleDeleteCard(card.public_id)}
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    Delete
+                  </button>
                 </div>
               </div>
 
@@ -411,12 +469,8 @@ export function UserDashboard({
                 >
                   {statusLabel.toUpperCase()}
                 </span>
-                <span className="text-[8px] text-muted-foreground">
-                  {card.funded
-                    ? card.claimed
-                      ? 'Funding + claim complete'
-                      : 'Funded on-chain, awaiting lock or claim'
-                    : 'Waiting for deposit to funding address'}
+                <span className="text-[8px] text-muted-foreground text-right">
+                  {statusDetail}
                 </span>
               </div>
             </div>
