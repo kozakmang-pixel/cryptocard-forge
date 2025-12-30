@@ -46,8 +46,34 @@ type ApiResponse<T> = {
   error?: string;
 };
 
+type FontFamily =
+  | 'Inter'
+  | 'Space Grotesk'
+  | 'DM Sans'
+  | 'Sora'
+  | 'Unbounded'
+  | 'Chakra Petch'
+  | 'Turret Road';
+
+type ClaimFormState = {
+  recipientEmail: string;
+  recipientName: string;
+  personalMessage: string;
+  tokenAddress: string;
+  tokenSymbol: string;
+  tokenName: string;
+  tokenAmount: string;
+  message: string;
+  font: FontFamily;
+  hasExpiry: boolean;
+  expiryDate: string;
+  selectedImage: string;
+  currency: string;
+};
+
 const DEBUG_API = false;
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://crypto-cards-backend.onrender.com';
+const BACKEND_URL =
+  import.meta.env.VITE_BACKEND_URL || 'https://crypto-cards-backend.onrender.com';
 
 const decodeApiMessage = (message: string | string[] | undefined) => {
   if (!message) return undefined;
@@ -59,8 +85,8 @@ const decodeApiMessage = (message: string | string[] | undefined) => {
   }
 };
 
-export function Index() {
-  const { language, setLanguage } = useLanguage();
+export default function Index() {
+  const { language, setLanguage, t } = useLanguage();
   const { toast } = useToast();
 
   const [selectedTier, setSelectedTier] = useState<CardTier>('basic');
@@ -90,9 +116,30 @@ export function Index() {
   const [discordModalOpen, setDiscordModalOpen] = useState(false);
 
   const [authToken, setAuthToken] = useState<string | null>(null);
-  const [authUser, setAuthUser] = useState<{ id: string; username: string; email?: string } | null>(null);
+  const [authUser, setAuthUser] = useState<{ id: string; username: string; email?: string } | null>(
+    null
+  );
 
   const [cardsRefreshKey, setCardsRefreshKey] = useState(0);
+
+  const [claimForm, setClaimForm] = useState<ClaimFormState>({
+    recipientEmail: '',
+    recipientName: '',
+    personalMessage: '',
+    tokenAddress: '',
+    tokenSymbol: 'TOKEN',
+    tokenName: '',
+    tokenAmount: '',
+    message: '',
+    font: 'Inter',
+    hasExpiry: false,
+    expiryDate: '',
+    selectedImage:
+      'https://images.unsplash.com/photo-1621416894569-0f39ed31d247?w=300&h=190&fit=crop',
+    currency: 'USD',
+  });
+
+  const [currency, setCurrency] = useState('USD');
 
   // Hydrate auth from localStorage
   useEffect(() => {
@@ -121,7 +168,7 @@ export function Index() {
     }
   }, [setLanguage]);
 
-  // Dismiss banners (if needed)
+  // Handle URL messages (from backend / Supabase redirects)
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
 
@@ -132,7 +179,7 @@ export function Index() {
       const decoded = decodeApiMessage(messageParam);
       if (decoded) {
         toast({
-          title: translations[language].toasts.successTitle,
+          title: t('toasts.successTitle'),
           description: decoded,
         });
       }
@@ -143,12 +190,12 @@ export function Index() {
       if (decoded) {
         toast({
           variant: 'destructive',
-          title: translations[language].toasts.errorTitle,
+          title: t('toasts.errorTitle'),
           description: decoded,
         });
       }
     }
-  }, [language, toast]);
+  }, [language, t, toast]);
 
   const tierPriceOptions: Record<CardTier, PriceOption[]> = {
     basic: [
@@ -214,7 +261,7 @@ export function Index() {
 
     setShareAmountDetails({
       amountSol: solAmount,
-      amountFiat,
+      amountFiat: fiatAmount,
       currencySymbol,
     });
   };
@@ -227,8 +274,8 @@ export function Index() {
     console.error(`Error in ${context}:`, error);
     toast({
       variant: 'destructive',
-      title: translations[language].toasts.errorTitle,
-      description: translations[language].toasts.genericError,
+      title: t('toasts.errorTitle'),
+      description: t('toasts.genericError'),
     });
   };
 
@@ -250,7 +297,7 @@ export function Index() {
         });
 
         if (!response.ok) {
-          let errorMessage = translations[language].toasts.failedFetchCards;
+          let errorMessage = t('toasts.failedFetchCards');
 
           try {
             const data = await response.json();
@@ -274,7 +321,7 @@ export function Index() {
           if (backendError) {
             throw new Error(backendError);
           } else {
-            throw new Error(translations[language].toasts.failedFetchCards);
+            throw new Error(t('toasts.failedFetchCards'));
           }
         }
 
@@ -282,18 +329,18 @@ export function Index() {
       } catch (error) {
         console.error('Error fetching linked cards:', error);
         const errorMessage =
-          error instanceof Error ? error.message : translations[language].toasts.failedFetchCards;
+          error instanceof Error ? error.message : t('toasts.failedFetchCards');
         setLinkedCardsError(errorMessage);
         toast({
           variant: 'destructive',
-          title: translations[language].toasts.errorTitle,
+          title: t('toasts.errorTitle'),
           description: errorMessage,
         });
       } finally {
         setIsLoadingLinkedCards(false);
       }
     },
-    [authToken, language, toast]
+    [authToken, t, toast]
   );
 
   useEffect(() => {
@@ -346,14 +393,14 @@ export function Index() {
       localStorage.setItem('auth_user', JSON.stringify(data.user));
 
       toast({
-        title: translations[language].toasts.loginSuccessTitle,
-        description: translations[language].toasts.loginSuccessDescription,
+        title: t('toasts.loginSuccessTitle'),
+        description: t('toasts.loginSuccessDescription'),
       });
 
       setCardsRefreshKey((prev) => prev + 1);
       fetchLinkedCards();
     },
-    [fetchLinkedCards, language, toast]
+    [fetchLinkedCards, t, toast]
   );
 
   const handleLogout = useCallback(() => {
@@ -363,27 +410,25 @@ export function Index() {
     localStorage.removeItem('auth_user');
 
     toast({
-      title: translations[language].toasts.logoutSuccessTitle,
-      description: translations[language].toasts.logoutSuccessDescription,
+      title: t('toasts.logoutSuccessTitle'),
+      description: t('toasts.logoutSuccessDescription'),
     });
 
     setLinkedCards([]);
-  }, [language, toast]);
+  }, [t, toast]);
 
   const handleCopyShareLink = async () => {
     try {
       await navigator.clipboard.writeText(shareUrl);
 
       toast({
-        title: translations[language].toasts.linkCopiedTitle,
-        description: translations[language].toasts.linkCopiedDescription,
+        title: t('toasts.linkCopiedTitle'),
+        description: t('toasts.linkCopiedDescription'),
       });
     } catch (error) {
       handleError(error as Error, 'handleCopyShareLink');
     }
   };
-
-  const t = (key: keyof (typeof translations)[typeof language]) => translations[language][key];
 
   const handleViewTerms = () => {
     setTermsStep('wallet');
@@ -533,7 +578,11 @@ export function Index() {
   const renderTierDescription = () => {
     const label = getTierLabel(selectedTier);
     const relativeValue =
-      selectedTier === 'basic' ? t('tiers.relative.basic') : selectedTier === 'premium' ? t('tiers.relative.premium') : t('tiers.relative.ultimate');
+      selectedTier === 'basic'
+        ? t('tiers.relative.basic')
+        : selectedTier === 'premium'
+        ? t('tiers.relative.premium')
+        : t('tiers.relative.ultimate');
 
     const description = t('tiers.description')
       .replace('{tier}', label as any)
@@ -574,15 +623,15 @@ export function Index() {
       .writeText(address)
       .then(() => {
         toast({
-          title: translations[language].toasts.addressCopiedTitle,
-          description: translations[language].toasts.addressCopiedDescription,
+          title: t('toasts.addressCopiedTitle'),
+          description: t('toasts.addressCopiedDescription'),
         });
       })
       .catch(() => {
         toast({
           variant: 'destructive',
-          title: translations[language].toasts.errorTitle,
-          description: translations[language].toasts.addressCopyFailed,
+          title: t('toasts.errorTitle'),
+          description: t('toasts.addressCopyFailed'),
         });
       });
   };
@@ -600,6 +649,7 @@ export function Index() {
 
   const handleCurrencyChange = (currency: string) => {
     setSelectedCurrency(currency);
+    setCurrency(currency);
   };
 
   const handleResetDesigner = () => {
@@ -617,7 +667,8 @@ export function Index() {
     fetchLinkedCards();
   };
 
-  const heroGradient = 'bg-[radial-gradient(circle_at_top,_rgba(34,197,94,0.22),_transparent_55%),radial-gradient(circle_at_bottom,_rgba(56,189,248,0.2),_transparent_60%)]';
+  const heroGradient =
+    'bg-[radial-gradient(circle_at_top,_rgba(34,197,94,0.22),_transparent_55%),radial-gradient(circle_at_bottom,_rgba(56,189,248,0.2),_transparent_60%)]';
 
   return (
     <div className="min-h-screen bg-background text-foreground relative overflow-hidden">
@@ -747,7 +798,9 @@ export function Index() {
                   onGiftMessageChange={handleGiftMessageChange}
                   onError={handleCardDesignerError}
                   onReset={handleResetDesigner}
-                  onToggleMode={handleToggleFundingMode}
+                  claimForm={claimForm}
+                  setClaimForm={setClaimForm}
+                  currency={currency}
                 />
 
                 <CryptoCard
@@ -757,7 +810,7 @@ export function Index() {
                   selectedCurrency={selectedCurrency}
                   giftMessage={giftMessage}
                   onError={handleCardDesignerError}
-                  onToggleMode={handleToggleFundingMode}
+                  claimForm={claimForm}
                 />
               </div>
             </div>
@@ -814,7 +867,9 @@ export function Index() {
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-4 text-[10px] md:text-xs">
                 <div className="rounded-2xl border border-border/60 bg-card/60 backdrop-blur-md p-3 shadow-[0_16px_40px_rgba(15,23,42,0.9)]">
-                  <h3 className="font-semibold text-foreground mb-1.5">{t('benefits.onChainTitle')}</h3>
+                  <h3 className="font-semibold text-foreground mb-1.5">
+                    {t('benefits.onChainTitle')}
+                  </h3>
                   <p className="text-muted-foreground mb-2">{t('benefits.onChainDescription')}</p>
                   <div className="inline-flex items-center gap-1 text-[9px] text-emerald-300">
                     <Shield className="w-3 h-3" />
@@ -858,7 +913,7 @@ export function Index() {
                   onShareCard={handleShareCard}
                   onError={handleFundingPanelError}
                   isSending={isSending}
-                  onToggleMode={handleToggleMode}
+                  claimForm={claimForm}
                 />
               </div>
 
@@ -987,11 +1042,12 @@ export function Index() {
               />
             </div>
             <div className="md:ml-2">
-              <h4 className="text-lg font-black tracking-[0.2em] text-foreground mb-1">
+              <h4 className="text-lg font-black tracking-[0.2em] bg-gradient-to-r from-emerald-300 via-cyan-300 to-blue-400 bg-clip-text text-transparent mb-1">
                 CRYPTOCARDS
               </h4>
               <p className="text-[9px] text-muted-foreground max-w-xs">
-                On-chain, non-custodial crypto gift cards. The future of digital gifting on Solana.
+                On-chain, non-custodial crypto gift cards. The future of digital gifting on
+                Solana.
               </p>
             </div>
           </div>
@@ -1025,9 +1081,7 @@ export function Index() {
 
           {/* Social Links */}
           <div className="text-center md:text-right">
-            <h5 className="text-[10px] font-bold uppercase text-foreground mb-3">
-              Community
-            </h5>
+            <h5 className="text-[10px] font-bold uppercase text-foreground mb-3">Community</h5>
             <div className="flex items-center justify-center md:justify-end gap-4">
               <a
                 href="https://x.com/i/communities/2004719020248105452"
@@ -1073,9 +1127,7 @@ export function Index() {
 
             {/* Right: creator credit */}
             <div className="flex justify-center md:justify-end">
-              <p className="text-[8px] text-muted-foreground">
-                {t('footer.creator')}
-              </p>
+              <p className="text-[8px] text-muted-foreground">{t('footer.creator')}</p>
             </div>
           </div>
         </div>
