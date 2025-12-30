@@ -29,19 +29,13 @@ interface CardStatus {
   template_url?: string | null;
   message?: string | null;
   expires_at?: string | null;
-  token_mint?: string | null;
 }
 
 interface CardBalanceResponse {
   deposit_address: string;
   lamports: number;
   sol: number;
-  funded: boolean;
-}
-
-interface SolPriceResponse {
-  price_usd?: number;
-  sol_price_usd?: number;
+  rpc?: string;
 }
 
 type TimelineType = 'created' | 'funded' | 'locked' | 'claimed' | 'refunded';
@@ -61,13 +55,12 @@ export function AuditSection() {
   const [card, setCard] = useState<CardStatus | null>(null);
   const [balance, setBalance] = useState<CardBalanceResponse | null>(null);
   const [solPrice, setSolPrice] = useState<number | null>(null);
-  const [tokenSymbol, setTokenSymbol] = useState<string>('TOKEN');
 
   const fetchSolPrice = async () => {
     try {
       const res = await fetch('/sol-price');
-      if (!res.ok) return;
-      const data: SolPriceResponse = await res.json();
+      if (!res.ok) throw new Error('Failed to fetch SOL price');
+      const data = await res.json();
       const price = typeof data.price_usd === 'number' ? data.price_usd : data.sol_price_usd;
       if (typeof price === 'number') {
         setSolPrice(price);
@@ -77,75 +70,46 @@ export function AuditSection() {
     }
   };
 
-  useEffect(() => {
-    const mint = card?.token_mint;
-    if (!mint || mint.length < 32) {
-      setTokenSymbol('TOKEN');
+  const handlePullAudit = async () => {
+    const trimmed = cardIdInput.trim();
+    if (!trimmed) {
+      toast.error('Please enter a Card ID.');
       return;
     }
 
-    let cancelled = false;
-
-    const fetchTokenSymbol = async () => {
-      try {
-        const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`);
-        if (!res.ok) {
-          if (!cancelled) setTokenSymbol('TOKEN');
-          return;
-        }
-        const data = await res.json();
-        let symbol: string | null = null;
-        const pairs: any = (data && (data.pairs || data.pair || data.data)) as any;
-        if (Array.isArray(pairs) && pairs.length > 0 && pairs[0].baseToken) {
-          symbol = pairs[0].baseToken.symbol || pairs[0].baseToken.name || null;
-        }
-        if (!cancelled) {
-          setTokenSymbol(symbol || 'TOKEN');
-        }
-      } catch {
-        if (!cancelled) setTokenSymbol('TOKEN');
-      }
-    };
-
-    fetchTokenSymbol();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [card?.token_mint]);
-
-  const fetchCardStatus = async (publicId: string) => {
     setLoading(true);
+    setCard(null);
+    setBalance(null);
+
     try {
-      const status = await apiService.getCardStatus(publicId);
+      const status = (await apiService.getCardStatus(trimmed)) as CardStatus;
       setCard(status);
 
       try {
-        if (status.deposit_address) {
-          const balanceRes = await fetch(
-            `/card-balance/${encodeURIComponent(status.deposit_address)}`
-          );
-          if (balanceRes.ok) {
-            const balanceData: CardBalanceResponse = await balanceRes.json();
-            setBalance(balanceData);
-          } else {
-            setBalance(null);
-          }
-        } else {
-          setBalance(null);
+        const res = await fetch(`/card-balance/${encodeURIComponent(trimmed)}`);
+        if (res.ok) {
+          const bal = (await res.json()) as CardBalanceResponse;
+          setBalance(bal);
         }
       } catch (err) {
-        console.error('AuditSection: balance fetch failed', err);
-        setBalance(null);
+        console.error('AuditSection: failed to fetch card-balance', err);
       }
+
+      toast.success('On-chain audit loaded.');
     } catch (err: any) {
-      console.error('AuditSection: getCardStatus failed', err);
-      toast.error(err?.message || 'Failed to load card status');
+      console.error('AuditSection: failed to load card status', err);
       setCard(null);
       setBalance(null);
+      toast.error(err?.message || 'Card not found. Check the Card ID.');
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleRefresh = () => {
+    if (!cardIdInput.trim()) return;
+    fetchSolPrice();
+    handlePullAudit();
   };
 
   useEffect(() => {
@@ -168,7 +132,7 @@ export function AuditSection() {
         : 0;
 
     const onChainSol = solFromBalance || solFromStatus;
-
+    const tokenAmount = solFromStatus || onChainSol;
     const currency = card.currency || 'USD';
 
     const fiatFromDb =
@@ -184,337 +148,391 @@ export function AuditSection() {
         : 0;
 
     const statusLabel = card.claimed
-      ? 'CLAIMED'
-      : card.refunded
-      ? 'REFUNDED'
+      ? 'Claimed'
       : card.locked
-      ? 'LOCKED'
+      ? 'Locked'
       : card.funded
-      ? 'FUNDED'
-      : onChainSol > 0
-      ? 'DEPOSITED'
-      : 'CREATED';
+      ? 'Funded'
+      : 'Not funded';
 
-    const timeline: TimelineEvent[] = [
-      {
-        type: 'created',
-        label: 'Card created',
-        detail: `Card created on ${new Date(card.created_at).toLocaleString()}`,
-        at: card.created_at,
-      },
-    ];
+    const statusColor =
+      card.claimed
+        ? 'bg-purple-500/15 text-purple-400 border border-purple-500/40'
+        : card.locked
+        ? 'bg-amber-500/15 text-amber-400 border border-amber-500/40'
+        : card.funded
+        ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/40'
+        : 'bg-muted text-muted-foreground';
 
-    if (card.funded || onChainSol > 0) {
-      timeline.push({
-        type: 'funded',
-        label: 'Funds detected',
-        detail: `Funding detected on-chain: ${onChainSol.toFixed(6)} SOL`,
-        at: card.updated_at,
-      });
-    }
-
-    if (card.locked) {
-      timeline.push({
-        type: 'locked',
-        label: 'Card locked',
-        detail: 'Card locked by creator (no more deposits).',
-        at: card.updated_at,
-      });
-    }
-
-    if (card.refunded) {
-      timeline.push({
-        type: 'refunded',
-        label: 'Refunded',
-        detail: 'Card was refunded back to the creator.',
-        at: card.updated_at,
-      });
-    }
-
-    if (card.claimed) {
-      timeline.push({
-        type: 'claimed',
-        label: 'Claimed',
-        detail: 'Recipient claimed the underlying funds.',
-        at: card.updated_at,
-      });
-    }
+    const onChainAddress = balance?.deposit_address || card.deposit_address || '';
 
     return {
+      tokenAmount,
       onChainSol,
       fiat,
       currency,
       statusLabel,
-      timeline,
+      statusColor,
+      onChainAddress,
     };
   }, [card, balance, solPrice]);
 
-  const handleAuditClick = () => {
-    const trimmed = cardIdInput.trim();
-    if (!trimmed) {
-      toast.error('Please enter a card ID first');
-      return;
-    }
-    fetchCardStatus(trimmed);
-  };
+  const timeline: TimelineEvent[] = useMemo(() => {
+    if (!card || !derived) return [];
 
-  const handleReset = () => {
-    setCardIdInput('');
-    setCard(null);
-    setBalance(null);
+    const events: TimelineEvent[] = [];
+
+    // Created
+    events.push({
+      type: 'created',
+      label: 'Created',
+      detail: 'CRYPTOCARD created with a unique on-chain deposit wallet.',
+      at: card.created_at || null,
+    });
+
+    // Funded: show if card was ever funded / locked / claimed / refunded and has amount
+    const hasFundingHistory =
+      (card.funded || card.locked || card.claimed || card.refunded) &&
+      derived.tokenAmount > 0;
+
+    if (hasFundingHistory) {
+      events.push({
+        type: 'funded',
+        label: 'Funded',
+        detail: `On-chain funding detected: ${derived.tokenAmount.toFixed(
+          6
+        )} TOKEN • ${derived.onChainSol.toFixed(6)} SOL • ${derived.currency} ${derived.fiat.toFixed(
+          2
+        )}.`,
+        at: card.updated_at || card.created_at || null,
+      });
+    }
+
+    if (card.locked) {
+      events.push({
+        type: 'locked',
+        label: 'Locked',
+        detail: 'Card locked for claiming. Funding amount is now fixed for the recipient.',
+        at: card.updated_at || card.created_at || null,
+      });
+    }
+
+    if (card.claimed) {
+      events.push({
+        type: 'claimed',
+        label: 'Claimed',
+        detail: `Final claimed amount: ${derived.tokenAmount.toFixed(
+          6
+        )} TOKEN • ${derived.onChainSol.toFixed(6)} SOL • ${derived.currency} ${derived.fiat.toFixed(
+          2
+        )}.`,
+        at: card.updated_at || null,
+      });
+    }
+
+    if (card.refunded) {
+      events.push({
+        type: 'refunded',
+        label: 'Refunded',
+        detail: 'Funds were returned to the original creator wallet.',
+        at: card.updated_at || null,
+      });
+    }
+
+    return events;
+  }, [card, derived]);
+
+  const dotClassForType = (type: TimelineType) => {
+    switch (type) {
+      case 'created':
+        return 'bg-primary shadow-[0_0_0_3px_rgba(59,130,246,0.25)]';
+      case 'funded':
+        return 'bg-emerald-400 shadow-[0_0_0_3px_rgba(16,185,129,0.25)]';
+      case 'locked':
+        return 'bg-amber-400 shadow-[0_0_0_3px_rgba(245,158,11,0.25)]';
+      case 'claimed':
+        return 'bg-purple-400 shadow-[0_0_0_3px_rgba(168,85,247,0.25)]';
+      case 'refunded':
+        return 'bg-rose-400 shadow-[0_0_0_3px_rgba(244,63,94,0.25)]';
+      default:
+        return 'bg-primary shadow-[0_0_0_3px_rgba(59,130,246,0.25)]';
+    }
   };
 
   return (
     <section className="glass-card rounded-xl p-3 mt-5 shadow-card hover:shadow-card-hover transition-all">
       {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-3">
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <Shield className="w-4 h-4 text-primary" />
-            <h2 className="text-xs font-black gradient-text tracking-[0.26em] uppercase">
-              {t('audit.title') || 'ON-CHAIN CARD AUDIT'}
-            </h2>
-          </div>
-          <p className="text-[9px] text-muted-foreground max-w-md">
-            {t('audit.description') ||
-              'Verify any CRYPTOCARD on Solana mainnet: check deposits, lock state, and claim status with transparent on-chain data.'}
-          </p>
-        </div>
+      <div className="flex flex-col items-center text-center mb-3">
+        <h2 className="text-xs font-black gradient-text tracking-[0.25em] uppercase">
+          ON-CHAIN AUDIT TRAIL
+        </h2>
+        <p className="text-[9px] text-muted-foreground mt-1 max-w-md">
+          Inspect the full lifecycle of any{' '}
+          <span className="font-semibold text-primary">CRYPTOCARD</span> by its public Card ID —
+          from funding to lock to claim.
+        </p>
+      </div>
 
-        {/* Input + buttons */}
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-          <div className="flex items-center gap-1 bg-card/60 border border-border/40 rounded-lg px-2 h-8 min-w-[220px]">
-            <Search className="w-3 h-3 text-muted-foreground" />
-            <Input
-              value={cardIdInput}
-              onChange={(e) => setCardIdInput(e.target.value)}
-              placeholder={t('audit.placeholder') || 'Paste a CRYPTOCARD ID (public_id)'}
-              className="h-7 text-[9px] border-none shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
-            />
-          </div>
+      {/* Search row */}
+      <div className="flex flex-col sm:flex-row gap-2 mb-3">
+        <div className="flex-1 flex items-center gap-2">
+          <Input
+            value={cardIdInput}
+            onChange={(e) => setCardIdInput(e.target.value.toUpperCase())}
+            placeholder="Enter Card ID (e.g. 1234-5678)"
+            className="h-8 text-[10px] bg-card/60 border-border/40 font-mono"
+          />
           <Button
-            onClick={handleAuditClick}
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 px-3 text-[9px] flex items-center gap-1"
+            onClick={handlePullAudit}
             disabled={loading}
-            className="h-8 text-[9px] font-semibold px-3 gradient-primary"
           >
             {loading ? (
               <>
-                <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                {t('audit.scanning') || 'Scanning...'}
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Loading
               </>
             ) : (
               <>
-                <Activity className="w-3 h-3 mr-1" />
-                {t('audit.button') || 'Audit card'}
+                <Search className="w-3 h-3" />
+                Pull audit
               </>
             )}
           </Button>
-          <Button
-            variant="outline"
-            onClick={handleReset}
-            className="h-8 text-[9px] font-semibold px-3"
-          >
-            <RefreshCcw className="w-3 h-3 mr-1" />
-            {t('audit.reset') || 'Clear'}
-          </Button>
         </div>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-8 px-2 text-[9px] flex items-center gap-1"
+          onClick={handleRefresh}
+          disabled={loading || !cardIdInput.trim()}
+        >
+          <RefreshCcw className="w-3 h-3" />
+          Refresh
+        </Button>
       </div>
 
-      {/* Content */}
-      {derived && card ? (
+      {!card && !loading && (
+        <div className="rounded-lg border border-dashed border-border/50 bg-background/40 p-3 text-center text-[9px] text-muted-foreground">
+          Enter a Card ID above and pull the on-chain audit to view its lifecycle.
+        </div>
+      )}
+
+      {card && derived && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          {/* Left: Snapshot */}
-          <div className="md:col-span-1 bg-card/60 border border-border/40 rounded-lg p-3 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[9px] font-semibold text-muted-foreground uppercase tracking-[0.16em]">
-                {t('audit.snapshot') || 'Card snapshot'}
-              </span>
-              <span className="inline-flex items-center gap-1 text-[8px] uppercase tracking-wide font-semibold px-2 py-0.5 rounded-full border border-primary/50 text-primary bg-primary/10">
-                {derived.statusLabel}
-              </span>
-            </div>
-
-            <div className="text-[8px] text-muted-foreground break-all">
-              <span className="font-semibold text-foreground">ID: </span>
-              {card.public_id}
-            </div>
-
-            {card.message && (
-              <div className="mt-2 text-[9px] text-muted-foreground bg-background/40 border border-border/40 rounded-md p-2">
-                <div className="text-[8px] uppercase tracking-wide font-semibold mb-1 text-foreground">
-                  {t('audit.message') || 'Gift message'}
-                </div>
-                <div className="text-[9px] whitespace-pre-wrap">{card.message}</div>
-              </div>
-            )}
-
-            <div className="mt-2 space-y-1 text-[8px] text-muted-foreground">
-              <div>
-                <span className="font-semibold text-foreground">
-                  {t('audit.createdAt') || 'Created:'}{' '}
-                </span>
-                {new Date(card.created_at).toLocaleString()}
-              </div>
-              <div>
-                <span className="font-semibold text-foreground">
-                  {t('audit.updatedAt') || 'Last update:'}{' '}
-                </span>
-                {new Date(card.updated_at).toLocaleString()}
-              </div>
-              {card.expires_at && (
-                <div>
-                  <span className="font-semibold text-foreground">
-                    {t('audit.expiresAt') || 'Expires:'}{' '}
-                  </span>
-                  {new Date(card.expires_at).toLocaleString()}
-                </div>
-              )}
-            </div>
-
-            {card.deposit_address && (
-              <div className="mt-2 text-[8px] text-muted-foreground break-all">
-                <span className="font-semibold text-foreground">
-                  {t('audit.deposit') || 'Deposit address:'}{' '}
-                </span>
-                <span>{card.deposit_address}</span>
-              </div>
-            )}
-
-            {solPrice && (
-              <div className="mt-2 text-[8px] text-muted-foreground">
-                <span className="font-semibold text-foreground">
-                  {t('audit.referencePrice') || 'Reference SOL/USD:'}{' '}
-                </span>
-                1 SOL ≈ {solPrice.toFixed(2)} USD
-              </div>
-            )}
-
-            {card.template_url && (
-              <div className="mt-2">
-                <div className="text-[8px] uppercase tracking-wide text-muted-foreground mb-1 font-semibold">
-                  {t('audit.cardPreview') || 'Card template preview'}
-                </div>
-                <div className="rounded-lg overflow-hidden border border-border/40 bg-background/30">
-                  <img
-                    src={card.template_url}
-                    alt="Card template"
-                    className="w-full h-auto object-cover"
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Middle: On-chain metrics */}
-          <div className="md:col-span-1 bg-card/60 border border-border/40 rounded-lg p-3 space-y-2">
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-[9px] font-semibold text-muted-foreground uppercase tracking-[0.16em]">
-                {t('audit.onChain') || 'On-chain metrics'}
-              </span>
-              <Shield className="w-3 h-3 text-primary" />
-            </div>
-
-            <div className="space-y-1">
-              <div className="flex items-baseline justify-between">
-                <span className="text-[8px] uppercase tracking-wide text-muted-foreground">
-                  Token amount
-                </span>
-                <span className="text-[10px] font-semibold">
-                  {derived.tokenAmount?.toFixed(6)} {tokenSymbol}
-                </span>
-              </div>
-
-              <div className="flex items-baseline justify-between">
-                <span className="text-[8px] uppercase tracking-wide text-muted-foreground">
-                  SOL amount
-                </span>
-                <span className="text-[10px] font-semibold">
-                  {derived.onChainSol.toFixed(6)} SOL
-                </span>
-              </div>
-
-              <div className="flex items-baseline justify-between mt-1">
-                <span className="text-[8px] uppercase tracking-wide text-muted-foreground">
-                  Fiat value
-                </span>
-                <span className="text-[10px] font-semibold">
-                  {derived.currency} {derived.fiat.toFixed(2)}
-                </span>
-              </div>
-            </div>
-
-            {balance && (
-              <div className="mt-2 text-[8px] text-muted-foreground bg-background/40 border border-border/40 rounded-md p-2">
-                <div className="text-[8px] uppercase tracking-wide font-semibold mb-1 text-foreground">
-                  {t('audit.rawBalance') || 'Raw on-chain balance'}
-                </div>
-                <div>Lamports: {balance.lamports}</div>
-                <div>SOL: {balance.sol.toFixed(9)}</div>
-                <div>
-                  {t('audit.fundedFlag') || 'Funding flag:'}{' '}
-                  <span className="font-semibold text-foreground">
-                    {balance.funded ? 'true' : 'false'}
+          {/* Left: summary */}
+          <div className="md:col-span-1 space-y-2">
+            <div className="rounded-lg border border-border/40 bg-background/60 p-2.5">
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="flex items-center gap-2">
+                  <Shield className="w-3 h-3 text-primary" />
+                  <span className="text-[9px] font-semibold uppercase tracking-wide">
+                    Summary
                   </span>
                 </div>
+                {solPrice !== null && (
+                  <span className="text-[8px] text-muted-foreground">
+                    SOL: ${solPrice.toFixed(2)} USD
+                  </span>
+                )}
               </div>
-            )}
 
-            <div className="mt-2 text-[8px] text-muted-foreground">
-              <div className="flex items-center gap-1">
-                <ExternalLink className="w-3 h-3" />
-                <a
-                  href="https://solscan.io"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="underline hover:text-primary transition-colors"
-                >
-                  {t('audit.solscan') || 'Open Solscan for deeper on-chain history'}
-                </a>
-              </div>
-            </div>
-          </div>
-
-          {/* Right: Timeline */}
-          <div className="md:col-span-1 bg-card/60 border border-border/40 rounded-lg p-3 space-y-2">
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-[9px] font-semibold text-muted-foreground uppercase tracking-[0.16em]">
-                {t('audit.timeline') || 'Lifecycle & events'}
-              </span>
-              <Activity className="w-3 h-3 text-primary" />
-            </div>
-
-            <div className="space-y-1.5 max-h-52 overflow-y-auto custom-scrollbar">
-              {derived.timeline.length === 0 ? (
-                <div className="text-[8px] text-muted-foreground">
-                  {t('audit.noEvents') || 'No events recorded yet.'}
+              <div className="mb-1">
+                <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
+                  Card ID
                 </div>
-              ) : (
-                derived.timeline.map((evt, idx) => (
-                  <div key={idx} className="flex items-start gap-2">
-                    <div className="mt-0.5">
-                      <div className="w-2 h-2 rounded-full bg-primary" />
-                    </div>
-                    <div className="flex-1">
-                      <div className="text-[9px] font-semibold text-foreground">
-                        {evt.label}
-                      </div>
-                      <div className="text-[8px] text-muted-foreground">{evt.detail}</div>
-                      {evt.at && (
-                        <div className="text-[8px] text-muted-foreground">
-                          {new Date(evt.at).toLocaleString()}
-                        </div>
-                      )}
-                    </div>
+                <div className="text-[11px] font-mono font-semibold">
+                  {card.public_id}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 mt-1 mb-2">
+                <div>
+                  <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
+                    Created
                   </div>
-                ))
+                  <div className="text-[9px]">
+                    {card.created_at
+                      ? new Date(card.created_at).toLocaleString()
+                      : '-'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
+                    Last update
+                  </div>
+                  <div className="text-[9px]">
+                    {card.updated_at
+                      ? new Date(card.updated_at).toLocaleString()
+                      : '-'}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mb-2">
+                <div className="text-[8px] uppercase tracking-wide text-muted-foreground mb-0.5">
+                  Status
+                </div>
+                <span
+                  className={
+                    'inline-flex items-center px-2 py-0.5 rounded-full text-[8px] font-semibold ' +
+                    derived.statusColor
+                  }
+                >
+                  {derived.statusLabel.toUpperCase()}
+                </span>
+              </div>
+
+              <div className="space-y-0.5">
+                <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
+                  Token amount
+                </div>
+                <div className="text-[10px] font-semibold">
+                  {derived.tokenAmount.toFixed(6)} TOKEN
+                </div>
+
+                <div className="mt-1 text-[8px] uppercase tracking-wide text-muted-foreground">
+                  SOL amount
+                </div>
+                <div className="text-[10px] font-semibold">
+                  {derived.onChainSol.toFixed(6)} SOL
+                </div>
+
+                <div className="mt-1 text-[8px] uppercase tracking-wide text-muted-foreground">
+                  Fiat value
+                </div>
+                <div className="text-[10px] font-semibold">
+                  {derived.currency} {derived.fiat.toFixed(2)}
+                </div>
+              </div>
+            </div>
+
+            {/* On-chain balance */}
+            <div className="rounded-lg border border-primary/30 bg-primary/5 p-2.5">
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="flex items-center gap-2">
+                  <Activity className="w-3 h-3 text-primary" />
+                  <span className="text-[9px] font-semibold uppercase tracking-wide">
+                    On-chain balance
+                  </span>
+                </div>
+                {balance?.rpc && (
+                  <span className="text-[8px] text-muted-foreground">
+                    RPC: {balance.rpc.includes('https') ? 'Custom' : 'Default'}
+                  </span>
+                )}
+              </div>
+
+              {/* Current deposit wallet live balance */}
+              <div className="text-[9px] mb-1">
+                {balance ? (
+                  <>
+                    <span className="font-semibold">
+                      {balance.sol.toFixed(6)} SOL
+                    </span>{' '}
+                    ({balance.lamports} lamports)
+                    {card.claimed && balance.sol === 0 && (
+                      <span className="block text-[8px] text-muted-foreground mt-0.5">
+                        Deposit wallet is empty after claim – funds were moved to the recipient.
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <span className="text-muted-foreground">
+                    No live deposit balance available for this card.
+                  </span>
+                )}
+              </div>
+
+              {/* Card amount snapshot (token / SOL / fiat) */}
+              <div className="mt-1">
+                <div className="text-[8px] uppercase tracking-wide text-muted-foreground mb-0.5">
+                  Card amount (snapshot)
+                </div>
+                <div className="text-[9px] font-semibold">
+                  {derived.tokenAmount.toFixed(6)} TOKEN •{' '}
+                  {derived.onChainSol.toFixed(6)} SOL •{' '}
+                  {derived.currency} {derived.fiat.toFixed(2)}
+                </div>
+              </div>
+
+              {derived.onChainAddress && (
+                <div className="mt-2">
+                  <div className="text-[8px] uppercase tracking-wide text-muted-foreground mb-0.5">
+                    Deposit wallet
+                  </div>
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-[9px] font-mono truncate">
+                      {derived.onChainAddress}
+                    </span>
+                    <a
+                      href={`https://solscan.io/account/${derived.onChainAddress}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-[8px] text-primary hover:text-primary/80"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      Solscan
+                    </a>
+                  </div>
+                </div>
               )}
             </div>
+          </div>
+
+          {/* Right: timeline */}
+          <div className="md:col-span-2 rounded-lg border border-border/40 bg-background/60 p-2.5">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[9px] font-semibold uppercase tracking-wide">
+                Lifecycle timeline
+              </span>
+            </div>
+
+            {timeline.length === 0 && (
+              <div className="text-[9px] text-muted-foreground">
+                No lifecycle events recorded yet for this CRYPTOCARD.
+              </div>
+            )}
+
+            {timeline.length > 0 && (
+              <ol className="relative border-l border-border/40 pl-3 mt-1 space-y-2">
+                {timeline.map((evt, idx) => (
+                  <li key={idx} className="relative pl-2">
+                    <span
+                      className={
+                        'absolute -left-[9px] top-1 w-2 h-2 rounded-full ' +
+                        dotClassForType(evt.type)
+                      }
+                    />
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[9px] font-semibold uppercase tracking-wide">
+                        {evt.label}
+                      </span>
+                      <span className="text-[8px] text-muted-foreground">
+                        {evt.at
+                          ? new Date(evt.at).toLocaleString()
+                          : '—'}
+                      </span>
+                    </div>
+                    <p className="text-[9px] text-muted-foreground mt-0.5">
+                      {evt.detail}
+                    </p>
+                  </li>
+                ))}
+              </ol>
+            )}
           </div>
         </div>
-      ) : (
-        <div className="mt-3 text-[9px] text-muted-foreground">
-          {t('audit.empty') ||
-            'Paste a CRYPTOCARD ID above and run an on-chain audit to see full details.'}
+      )}
+
+      {loading && (
+        <div className="mt-3 flex items-center justify-center text-[9px] text-muted-foreground">
+          <Loader2 className="w-3 h-3 mr-2 animate-spin" />
+          Loading on-chain audit…
         </div>
       )}
     </section>
