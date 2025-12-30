@@ -493,25 +493,95 @@ export default function Index() {
         <footer className="mt-8 pt-8 border-t border-border/30">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
             {/* Brand Section */}
-            <div className="flex flex-col items-center md:items-start">
-              <div className="flex items-center gap-3 mb-2">
-                {/* Logo badge approximating your CC icon */}
-                <div className="relative flex items-center justify-center w-9 h-9 rounded-full bg-gradient-to-br from-[#4cffdf] via-[#22d3ee] to-[#3b82f6] p-[2px]">
-                  <div className="w-full h-full rounded-full bg-[#050816] flex items-center justify-center border border-cyan-300/60">
-                    <span className="text-[9px] font-semibold tracking-[0.25em] text-cyan-100">
+            <div className="text-center md:text-left flex flex-col items-center md:items-start">
+              <div className="flex items-center gap-2 mb-2">
+                {/* Neon coin logo */}
+                <div className="w-9 h-9 rounded-full bg-[#050815] relative flex items-center justify-center shadow-[0_0_18px_rgba(64,232,255,0.35)]">
+                  <svg
+                    viewBox="0 0 64 64"
+                    className="w-8 h-8"
+                    aria-hidden="true"
+                  >
+                    <defs>
+                      <linearGradient id="ccFooterOuter" x1="0" y1="0" x2="1" y2="1">
+                        <stop offset="0%" stopColor="#3CFEB6" />
+                        <stop offset="100%" stopColor="#29A7FF" />
+                      </linearGradient>
+                      <linearGradient id="ccFooterInner" x1="0" y1="1" x2="1" y2="0">
+                        <stop offset="0%" stopColor="#9B5CFF" />
+                        <stop offset="100%" stopColor="#29A7FF" />
+                      </linearGradient>
+                    </defs>
+
+                    {/* Outer ring */}
+                    <circle
+                      cx="32"
+                      cy="32"
+                      r="30"
+                      fill="none"
+                      stroke="url(#ccFooterOuter)"
+                      strokeWidth="1.6"
+                      opacity="0.8"
+                    />
+                    {/* Middle ring */}
+                    <circle
+                      cx="32"
+                      cy="32"
+                      r="24"
+                      fill="none"
+                      stroke="url(#ccFooterInner)"
+                      strokeWidth="1.3"
+                      opacity="0.85"
+                    />
+                    {/* Inner hexagon network */}
+                    <polygon
+                      points="32 16 44 24 44 40 32 48 20 40 20 24"
+                      fill="none"
+                      stroke="url(#ccFooterOuter)"
+                      strokeWidth="1.4"
+                    />
+                    {/* Inner connecting lines */}
+                    <line x1="32" y1="16" x2="32" y2="48" stroke="#3CFEB6" strokeWidth="0.8" opacity="0.7" />
+                    <line x1="20" y1="24" x2="44" y2="40" stroke="#3CFEB6" strokeWidth="0.8" opacity="0.55" />
+                    <line x1="44" y1="24" x2="20" y2="40" stroke="#3CFEB6" strokeWidth="0.8" opacity="0.55" />
+
+                    {/* CC text */}
+                    <rect
+                      x="24"
+                      y="26"
+                      width="16"
+                      height="12"
+                      rx="4"
+                      ry="4"
+                      fill="rgba(3,10,24,0.9)"
+                      stroke="#29A7FF"
+                      strokeWidth="0.8"
+                    />
+                    <text
+                      x="32"
+                      y="34"
+                      textAnchor="middle"
+                      fontFamily="Orbitron, system-ui, sans-serif"
+                      fontSize="7"
+                      fill="#3CFEB6"
+                      letterSpacing="1.5"
+                    >
                       CC
-                    </span>
-                  </div>
+                    </text>
+                  </svg>
+                  {/* subtle inner glow */}
+                  <div className="absolute inset-0 rounded-full bg-[radial-gradient(circle_at_50%_50%,rgba(64,232,255,0.28),transparent_55%)] pointer-events-none" />
                 </div>
 
-                {/* Gradient brand text */}
-                <span className="text-[18px] font-black tracking-[0.28em] uppercase bg-gradient-to-r from-[#4cffdf] via-[#22d3ee] to-[#3b82f6] bg-clip-text text-transparent">
+                {/* Brand wordmark */}
+                <span className="text-[15px] font-black tracking-[0.35em] uppercase bg-gradient-to-r from-[#3CFEB6] via-[#29D4FF] to-[#297BFF] bg-clip-text text-transparent">
                   CRYPTOCARDS
                 </span>
               </div>
 
               <p className="text-[9px] text-muted-foreground max-w-xs">
-                On-chain, non-custodial crypto gift cards. The future of digital gifting on Solana.
+                On-chain, non-custodial crypto gift cards. The future of digital
+                gifting on Solana.
               </p>
             </div>
 
