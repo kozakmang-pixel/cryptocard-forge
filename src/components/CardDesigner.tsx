@@ -61,13 +61,15 @@ export function CardDesigner({
   onTokenInfoChange,
 }: CardDesignerProps) {
   const { t } = useLanguage();
-  const { loading, tokenInfo, fetchInfo } = useTokenLookup();
+  const { tokenInfo, loading } = useTokenLookup(tokenAddress);
 
   useEffect(() => {
-    if (tokenAddress) {
-      fetchInfo(tokenAddress);
+    if (tokenInfo) {
+      onTokenInfoChange({ symbol: tokenInfo.symbol, name: tokenInfo.name });
+    } else {
+      onTokenInfoChange(null);
     }
-  }, [tokenAddress, fetchInfo]);
+  }, [tokenInfo, onTokenInfoChange]);
 
   const disabledSave = isCreating || locked;
 
@@ -99,7 +101,7 @@ export function CardDesigner({
 
       {/* Message */}
       <Label className="text-[10px] font-bold uppercase text-muted-foreground mt-3 block">
-        {t('designer.message')}
+        {t('designer.messageLabel')}
       </Label>
       <Textarea
         placeholder={t('designer.messagePlaceholder')}
@@ -117,9 +119,13 @@ export function CardDesigner({
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          {FONT_OPTIONS.map((f) => (
-            <SelectItem key={f} value={f} className="text-[10px]">
-              {f}
+          {FONT_OPTIONS.map((option) => (
+            <SelectItem
+              key={option.value}
+              value={option.value}
+              className="text-[10px]"
+            >
+              {option.label}
             </SelectItem>
           ))}
         </SelectContent>
@@ -136,13 +142,22 @@ export function CardDesigner({
           className="data-[state=checked]:bg-primary"
         />
       </div>
+
       {hasExpiry && (
-        <Input
-          type="date"
-          value={expiryDate}
-          onChange={(e) => onExpiryDateChange(e.target.value)}
-          className="text-[10px] font-medium h-8 mt-1"
-        />
+        <div className="mt-2">
+          <Label className="text-[9px] font-medium text-muted-foreground block mb-1">
+            {t('designer.expiryDate')}
+          </Label>
+          <Input
+            type="date"
+            value={expiryDate}
+            onChange={(e) => onExpiryDateChange(e.target.value)}
+            className="h-8 text-[10px]"
+          />
+          <div className="mt-1 text-[9px] text-muted-foreground">
+            {t('designer.expiryHint')}
+          </div>
+        </div>
       )}
 
       {/* Artwork grid */}
@@ -152,14 +167,14 @@ export function CardDesigner({
         onUpload={onImageUpload}
       />
 
-      {/* SAVE DESIGN & CONTINUE */}
+      {/* Save design & continue */}
       <Button
         type="button"
         onClick={onCreateCard}
         disabled={disabledSave}
-        className="w-full mt-3 h-8 text-[10px] font-black rounded-lg transition-all
-            bg-gradient-to-r from-primary/90 via-accent/80 to-secondary/90
-            text-primary-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+        className="w-full mt-3 h-8 text-[10px] font-black uppercase tracking-wide
+                   bg-gradient-to-r from-primary/90 via-accent/80 to-secondary/90
+                   text-primary-foreground disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {isCreating
           ? t('designer.creating')
@@ -169,22 +184,130 @@ export function CardDesigner({
       </Button>
 
       {/* How do CRYPTOCARDS work? */}
-      <div className="bg-gradient-to-br from-primary/10 via-accent/5 to-secondary/5 p-3 rounded-xl mt-4 border border-border/50">
-        <h3 className="text-[10px] font-black uppercase text-primary text-center mb-2">
-          {t('designer.howItWorks')}
-        </h3>
-        <div className="text-[9px] text-foreground leading-relaxed space-y-1">
-          <p>{t('designer.how1')}</p>
-          <p>{t('designer.how2')}</p>
-          <p>{t('designer.how3')}</p>
-          <p>{t('designer.how4')}</p>
-        </div>
-      </div>
+      <div className="bg-gradient-to-br from-primary/10 via-accent/10 to-secondary/10 border border-primary/30 rounded-xl p-4 mt-3 text-center">
+        <h4 className="text-sm font-bold text-primary text-center mb-2 uppercase tracking-wide">
+          How do CRYPTOCARDS work?
+        </h4>
 
-      {/* Fee info */}
-      <div className="bg-card/50 border border-border/40 p-3 rounded-xl mt-4">
-        <div className="flex items-center justify-center gap-2 mb-2">
-          <div className="flex flex-col items-center">
+        <div className="grid grid-cols-2 gap-3 text-left mb-2">
+          <div className="space-y-1">
+            <div className="text-[11px] font-bold text-foreground flex items-center gap-1.5">
+              <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-primary/90 text-[10px] text-primary-foreground">
+                1
+              </span>
+              <span>{t('designer.infoStep1Title')}</span>
+            </div>
+            <p className="text-[10px] text-muted-foreground leading-snug">
+              {t('designer.infoStep1Body')}
+            </p>
+          </div>
+
+          <div className="space-y-1">
+            <div className="text-[11px] font-bold text-foreground flex items-center gap-1.5">
+              <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-primary/90 text-[10px] text-primary-foreground">
+                2
+              </span>
+              <span>{t('designer.infoStep2Title')}</span>
+            </div>
+            <p className="text-[10px] text-muted-foreground leading-snug">
+              {t('designer.infoStep2Body')}
+            </p>
+          </div>
+
+          <div className="space-y-1">
+            <div className="text-[11px] font-bold text-foreground flex items-center gap-1.5">
+              <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-primary/90 text-[10px] text-primary-foreground">
+                3
+              </span>
+              <span>{t('designer.infoStep3Title')}</span>
+            </div>
+            <p className="text-[10px] text-muted-foreground leading-snug">
+              {t('designer.infoStep3Body')}
+            </p>
+          </div>
+
+          <div className="space-y-1">
+            <div className="text-[11px] font-bold text-foreground flex items-center gap-1.5">
+              <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-primary/90 text-[10px] text-primary-foreground">
+                4
+              </span>
+              <span>{t('designer.infoStep4Title')}</span>
+            </div>
+            <p className="text-[10px] text-muted-foreground leading-snug">
+              {t('designer.infoStep4Body')}
+            </p>
+          </div>
+        </div>
+
+        {/* Token + expiry summary */}
+        <div className="grid grid-cols-2 gap-3 text-left mt-1">
+          <div>
+            <div className="text-[10px] font-bold text-muted-foreground uppercase mb-1">
+              Token
+            </div>
+            <div className="text-[11px] font-semibold text-foreground">
+              {tokenName || t('designer.tokenUnknown')}
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] font-bold text-muted-foreground uppercase mb-1">
+              Expiry
+            </div>
+            <div className="text-[11px] font-semibold text-foreground">
+              {hasExpiry
+                ? expiryDate || t('designer.expiryUnset')
+                : t('designer.noExpiry')}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3 text-[9px] text-muted-foreground leading-snug">
+          <div className="font-semibold text-foreground mb-1">
+            {t('designer.securityTitle')}
+          </div>
+          <p>{t('designer.securityBody')}</p>
+        </div>
+
+        <div className="mt-2 grid grid-cols-2 gap-2 text-left">
+          <div className="bg-background/80 border border-primary/30 rounded-lg p-2">
+            <div className="text-[10px] font-bold text-primary uppercase mb-1">
+              {t('designer.nonCustodialTitle')}
+            </div>
+            <p className="text-[9px] text-muted-foreground leading-snug">
+              {t('designer.nonCustodialBody')}
+            </p>
+          </div>
+          <div className="bg-background/80 border border-primary/30 rounded-lg p-2">
+            <div className="text-[10px] font-bold text-primary uppercase mb-1">
+              {t('designer.flexibleTitle')}
+            </div>
+            <p className="text-[9px] text-muted-foreground leading-snug">
+              {t('designer.flexibleBody')}
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-3 grid grid-cols-3 gap-2 text-left">
+          <div className="bg-background/80 border border-primary/30 rounded-lg p-2 flex flex-col items-center justify-center">
+            <div className="w-6 h-6 rounded-full bg-primary/15 flex items-center justify-center mb-1">
+              <span className="text-[11px] font-bold text-primary">$</span>
+            </div>
+            <span className="text-[9px] font-bold text-center uppercase tracking-wide">
+              No custody
+            </span>
+          </div>
+          <div className="bg-background/80 border border-primary/30 rounded-lg p-2 flex flex-col items-center justify-center">
+            <div className="w-6 h-6 rounded-full bg-primary/15 flex items-center justify-center mb-1">
+              <span className="text-[11px] font-bold text-primary">∞</span>
+            </div>
+            <span className="text-[9px] font-bold text-center uppercase tracking-wide">
+              Flexible claims
+            </span>
+          </div>
+          <div className="bg-background/80 border border-primary/30 rounded-lg p-2 flex flex-col items-center justify-center">
+            <div className="w-6 h-6 rounded-full bg-primary/15 flex items-center justify-center mb-1">
+              <span className="text-[11px] font-bold text-primary">%</span>
+            </div>
             <span className="text-[9px] font-bold text-center uppercase tracking-wide">
               Recycled fees
             </span>
@@ -198,4 +321,3 @@ export function CardDesigner({
     </div>
   );
 }
-
