@@ -6,7 +6,7 @@ const express = require('express');
 const path = require('path');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
-const fetch = require('node-fetch');
+// NOTE: we now rely on Node 22's built-in global fetch instead of node-fetch
 
 // --- Env + config ---
 
@@ -200,7 +200,7 @@ app.post('/cards', async (req, res) => {
       const fiatDisplay =
         typeof amount_fiat === 'number' && amount_fiat > 0
           ? `${amount_fiat.toFixed(2)} ${currency}`
-          : '0.00 USD';
+          : '0.00 USD`;
 
       const userLine = user
         ? `User: ${user.email || user.id}`
@@ -425,18 +425,32 @@ app.get('/user/cards', async (req, res) => {
 
 // Public dashboard metrics
 app.get('/public-metrics', async (_req, res) => {
+  const fallback = {
+    total_cards_funded: 0,
+    total_volume_funded_sol: 0,
+    total_volume_funded_fiat: 0,
+    total_volume_claimed_sol: 0,
+    total_volume_claimed_fiat: 0,
+    protocol_burns_sol: 0,
+    protocol_burns_fiat: 0,
+    burn_wallet: null,
+    last_updated: null,
+  };
+
   try {
     const { data, error } = await supabase.rpc('get_public_metrics');
 
     if (error) {
       console.error('Error calling get_public_metrics RPC:', error);
-      return res.status(500).json({ error: 'Failed to fetch public metrics' });
+      // If the RPC doesn't exist or fails, just return safe zeros so the UI still works
+      return res.json(fallback);
     }
 
-    res.json(data || {});
+    // If RPC returns null/empty, also fall back
+    res.json(data || fallback);
   } catch (err) {
     console.error('Error in /public-metrics route:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    res.json(fallback);
   }
 });
 
@@ -654,7 +668,7 @@ app.post('/auth/email-change-complete', async (req, res) => {
     }
 
     const updatedUser = data.user;
-    const meta = updatedUser.user_metadata || {};
+       const meta = updatedUser.user_metadata || {};
 
     const newMeta = {
       ...meta,
