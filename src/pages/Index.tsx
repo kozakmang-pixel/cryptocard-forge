@@ -14,11 +14,13 @@ import { LoginPanel } from '@/components/LoginPanel';
 import { UserDashboard } from '@/components/UserDashboard';
 import { AuditSection } from '@/components/AuditSection';
 import { PublicDashboard } from '@/components/PublicDashboard';
+import { ClaimModal } from '@/components/ClaimModal';
 import { TermsModal } from '@/components/TermsModal';
 import { ShareModal } from '@/components/ShareModal';
 import { PrivacyModal } from '@/components/PrivacyModal';
 import { DiscordModal } from '@/components/DiscordModal';
 import { DocumentationModal } from '@/components/DocumentationModal';
+import { DevPanel } from '@/components/DevPanel';
 import { useLanguage } from '@/lib/languageStore';
 import { translations } from '@/lib/translations';
 import { useToast } from '@/components/ui/use-toast';
@@ -28,11 +30,9 @@ import {
   ExternalLink,
   Copy,
   FileText,
-  BookOpen,
-  Bug,
   RefreshCw,
+  Bug,
 } from 'lucide-react';
-import { DevPanel } from '@/components/DevPanel';
 
 type CardTier = 'basic' | 'premium' | 'ultimate';
 
@@ -121,7 +121,7 @@ const decodeApiMessage = (message: string | string[] | undefined) => {
 const BUILDER_STATE_KEY = 'cryptocards_builder_state_v1';
 
 export default function Index() {
-  const { language, setLanguage } = useLanguage();
+  const { language, setLanguage, t } = useLanguage();
   const { toast } = useToast();
 
   const [selectedTier, setSelectedTier] = useState<CardTier>('basic');
@@ -150,6 +150,7 @@ export default function Index() {
   const [privacyModalOpen, setPrivacyModalOpen] = useState(false);
   const [discordModalOpen, setDiscordModalOpen] = useState(false);
   const [docsModalOpen, setDocsModalOpen] = useState(false);
+  const [claimModalOpen, setClaimModalOpen] = useState(false);
 
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [authUser, setAuthUser] = useState<{ id: string; username: string; email?: string } | null>(
@@ -291,7 +292,7 @@ export default function Index() {
       const decoded = decodeApiMessage(messageParam);
       if (decoded) {
         toast({
-          title: translations[language].toasts.successTitle,
+          title: t('toasts.successTitle'),
           description: decoded,
         });
       }
@@ -302,12 +303,12 @@ export default function Index() {
       if (decoded) {
         toast({
           variant: 'destructive',
-          title: translations[language].toasts.errorTitle,
+          title: t('toasts.errorTitle'),
           description: decoded,
         });
       }
     }
-  }, [language, toast]);
+  }, [language, t, toast]);
 
   const tierPriceOptions: Record<CardTier, PriceOption[]> = {
     basic: [
@@ -386,8 +387,8 @@ export default function Index() {
     console.error(`Error in ${context}:`, error);
     toast({
       variant: 'destructive',
-      title: translations[language].toasts.errorTitle,
-      description: translations[language].toasts.genericError,
+      title: t('toasts.errorTitle'),
+      description: t('toasts.genericError'),
     });
   };
 
@@ -409,7 +410,7 @@ export default function Index() {
         });
 
         if (!response.ok) {
-          let errorMessage = translations[language].toasts.failedFetchCards;
+          let errorMessage = t('toasts.failedFetchCards');
 
           try {
             const data = await response.json();
@@ -433,7 +434,7 @@ export default function Index() {
           if (backendError) {
             throw new Error(backendError);
           } else {
-            throw new Error(translations[language].toasts.failedFetchCards);
+            throw new Error(t('toasts.failedFetchCards'));
           }
         }
 
@@ -441,18 +442,18 @@ export default function Index() {
       } catch (error) {
         console.error('Error fetching linked cards:', error);
         const errorMessage =
-          error instanceof Error ? error.message : translations[language].toasts.failedFetchCards;
+          error instanceof Error ? error.message : t('toasts.failedFetchCards');
         setLinkedCardsError(errorMessage);
         toast({
           variant: 'destructive',
-          title: translations[language].toasts.errorTitle,
+          title: t('toasts.errorTitle'),
           description: errorMessage,
         });
       } finally {
         setIsLoadingLinkedCards(false);
       }
     },
-    [authToken, language, toast]
+    [authToken, t, toast]
   );
 
   useEffect(() => {
@@ -505,14 +506,14 @@ export default function Index() {
       localStorage.setItem('auth_user', JSON.stringify(data.user));
 
       toast({
-        title: translations[language].toasts.loginSuccessTitle,
-        description: translations[language].toasts.loginSuccessDescription,
+        title: t('toasts.loginSuccessTitle'),
+        description: t('toasts.loginSuccessDescription'),
       });
 
       setCardsRefreshKey((prev) => prev + 1);
       fetchLinkedCards();
     },
-    [fetchLinkedCards, language, toast]
+    [fetchLinkedCards, t, toast]
   );
 
   const handleLogout = useCallback(() => {
@@ -522,27 +523,25 @@ export default function Index() {
     localStorage.removeItem('auth_user');
 
     toast({
-      title: translations[language].toasts.logoutSuccessTitle,
-      description: translations[language].toasts.logoutSuccessDescription,
+      title: t('toasts.logoutSuccessTitle'),
+      description: t('toasts.logoutSuccessDescription'),
     });
 
     setLinkedCards([]);
-  }, [language, toast]);
+  }, [t, toast]);
 
   const handleCopyShareLink = async () => {
     try {
       await navigator.clipboard.writeText(shareUrl);
 
       toast({
-        title: translations[language].toasts.linkCopiedTitle,
-        description: translations[language].toasts.linkCopiedDescription,
+        title: t('toasts.linkCopiedTitle'),
+        description: t('toasts.linkCopiedDescription'),
       });
     } catch (error) {
       handleError(error as Error, 'handleCopyShareLink');
     }
   };
-
-  const t = (key: keyof (typeof translations)[typeof language]) => translations[language][key];
 
   const handleViewTerms = () => {
     setTermsStep('wallet');
@@ -737,15 +736,15 @@ export default function Index() {
       .writeText(address)
       .then(() => {
         toast({
-          title: translations[language].toasts.addressCopiedTitle,
-          description: translations[language].toasts.addressCopiedDescription,
+          title: t('toasts.addressCopiedTitle'),
+          description: t('toasts.addressCopiedDescription'),
         });
       })
       .catch(() => {
         toast({
           variant: 'destructive',
-          title: translations[language].toasts.errorTitle,
-          description: translations[language].toasts.addressCopyFailed,
+          title: t('toasts.errorTitle'),
+          description: t('toasts.addressCopyFailed'),
         });
       });
   };
@@ -803,6 +802,7 @@ export default function Index() {
     setPrivacyModalOpen(false);
     setDiscordModalOpen(false);
     setDocsModalOpen(false);
+    setClaimModalOpen(false);
     setAuthToken(null);
     setAuthUser(null);
     localStorage.removeItem('auth_token');
@@ -862,7 +862,12 @@ export default function Index() {
     });
   };
 
-  const handleSimulateFunding = (isFunded: boolean, fiat: string, sol: number, tokenSymbolF: string) => {
+  const handleSimulateFunding = (
+    isFunded: boolean,
+    fiat: string,
+    sol: number,
+    tokenSymbolF: string
+  ) => {
     setFunded(isFunded);
     setCardData((prev) =>
       prev
@@ -881,6 +886,10 @@ export default function Index() {
     setLocked(true);
     setCurrentStep(3);
     setCardData((prev) => (prev ? { ...prev, locked: true } : null));
+  };
+
+  const handleOpenClaimModal = () => {
+    setClaimModalOpen(true);
   };
 
   return (
@@ -909,7 +918,7 @@ export default function Index() {
       />
 
       <main className="relative z-10">
-        {/* hero + builder */}
+        {/* Hero + Builder */}
         <section
           className={`pt-10 pb-10 md:py-14 lg:py-16 px-4 md:px-8 max-w-6xl mx-auto ${heroGradient}`}
         >
@@ -1040,6 +1049,7 @@ export default function Index() {
                   setSelectedImage={setSelectedImage}
                   setFiatValue={setFiatValue}
                   setSolValue={setSolValue}
+                  onOpenClaimModal={handleOpenClaimModal}
                 />
 
                 <CryptoCard
@@ -1073,7 +1083,7 @@ export default function Index() {
           <ProgressBar progress={fundingProgress} />
         </section>
 
-        {/* tiers & funding */}
+        {/* Tiers & Funding */}
         <section className="py-8 md:py-10 lg:py-12 px-4 md:px-8 max-w-6xl mx-auto">
           <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)] gap-8 lg:gap-10">
             <div className="space-y-4 md:space-y-5">
@@ -1154,6 +1164,7 @@ export default function Index() {
               </div>
             </div>
 
+            {/* Funding + How it works */}
             <div className="space-y-4 md:space-y-5">
               <div className="rounded-2xl border border-border/60 bg-card/60 backdrop-blur-md shadow-[0_20px_60px_rgba(15,23,42,0.95)] overflow-hidden">
                 <FundingPanel
@@ -1215,7 +1226,7 @@ export default function Index() {
           </div>
         </section>
 
-        {/* account + dashboards */}
+        {/* Account + dashboards */}
         <section
           id="account-section"
           className="py-8 md:py-10 lg:py-12 px-4 md:px-8 max-w-6xl mx-auto"
@@ -1303,7 +1314,7 @@ export default function Index() {
           </div>
         </section>
 
-        {/* audit */}
+        {/* Audit */}
         <section
           id="audit-section"
           className="py-8 md:py-10 lg:py-12 px-4 md:px-8 max-w-6xl mx-auto"
@@ -1311,7 +1322,7 @@ export default function Index() {
           <AuditSection onError={handleAuditError} />
         </section>
 
-        {/* footer */}
+        {/* Footer */}
         <footer className="mt-8 pt-8 border-t border-border/30">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
             {/* Brand Section */}
@@ -1324,7 +1335,7 @@ export default function Index() {
                   className="relative w-14 h-14 md:w-16 md:h-16 rounded-2xl shadow-[0_0_30px_rgba(56,189,248,0.9)] ring-2 ring-[#3b82f6]/70"
                 />
               </div>
-              {/* this is the ONLY change: add md:ml-2 to push text slightly right */}
+              {/* text nudged right with md:ml-2 */}
               <div className="md:ml-2">
                 <h4 className="text-lg font-black tracking-[0.2em] bg-gradient-to-r from-emerald-300 via-cyan-300 to-blue-400 bg-clip-text text-transparent mb-1">
                   CRYPTOCARDS
@@ -1337,9 +1348,9 @@ export default function Index() {
             </div>
 
             {/* Quick Links */}
-            <div className="text-center md:text-center">
+            <div className="text-center">
               <h5 className="text-[10px] font-bold uppercase text-foreground mb-3">
-                {t('footer.quickLinks')}
+                Quick Links
               </h5>
               <div className="flex flex-col gap-2">
                 <button
@@ -1438,28 +1449,21 @@ export default function Index() {
         </footer>
       </main>
 
-      <TermsModal
-        open={termsModalOpen}
-        onOpenChange={setTermsModalOpen}
-        step={termsStep}
-        setStep={setTermsStep}
-      />
-
-      <ShareModal
-        open={shareModalOpen}
-        onOpenChange={setShareModalOpen}
-        shareUrl={shareUrl}
-        txHash={shareTxHash}
-        amountDetails={shareAmountDetails}
-      />
-
+      {/* Modals */}
+      <ClaimModal open={claimModalOpen} onOpenChange={setClaimModalOpen} />
+      {cardData && (
+        <ShareModal
+          open={shareModalOpen}
+          onOpenChange={setShareModalOpen}
+          cardId={cardData.cardId}
+        />
+      )}
+      <DocumentationModal open={docsModalOpen} onOpenChange={setDocsModalOpen} />
+      <TermsModal open={termsModalOpen} onOpenChange={setTermsModalOpen} />
       <PrivacyModal open={privacyModalOpen} onOpenChange={setPrivacyModalOpen} />
-
       <DiscordModal open={discordModalOpen} onOpenChange={setDiscordModalOpen} />
 
-      <DocumentationModal open={docsModalOpen} onOpenChange={setDocsModalOpen} />
-
-      {/* Dev panel (unchanged) */}
+      {/* Dev Panel */}
       <DevPanel
         open={devPanelOpen}
         onOpenChange={setDevPanelOpen}
