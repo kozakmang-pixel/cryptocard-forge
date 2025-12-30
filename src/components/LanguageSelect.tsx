@@ -1,16 +1,15 @@
-// src/components/LanguageSelect.tsx
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select';
 import { Globe } from 'lucide-react';
 import { useEffect } from 'react';
 import type { Language } from '@/lib/languageStore';
 
 const LANGUAGES: { value: Language; label: string; flag: string }[] = [
-  { value: 'en', label: 'English', flag: '🇺🇸' }, 
+  { value: 'en', label: 'English', flag: '🇺🇸' },
   { value: 'es', label: 'Español', flag: '🇪🇸' },
-  { value: 'fr', label: 'Français', flag: '🇫🇷' }, 
+  { value: 'fr', label: 'Français', flag: '🇫🇷' },
   { value: 'de', label: 'Deutsch', flag: '🇩🇪' },
   { value: 'pt', label: 'Português', flag: '🇧🇷' },
-  { value: 'zh', label: '中文', flag: '🇨🇳' }, 
+  { value: 'zh', label: '中文', flag: '🇨🇳' },
   { value: 'ja', label: '日本語', flag: '🇯🇵' },
   { value: 'ko', label: '한국어', flag: '🇰🇷' },
   { value: 'ru', label: 'Русский', flag: '🇷🇺' },
