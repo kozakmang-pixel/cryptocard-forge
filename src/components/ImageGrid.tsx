@@ -12,7 +12,7 @@ interface ImageGridProps {
   onUpload: (file: File) => void;
 }
 
-// Base static pool (used when there's no search query)
+// Base static pool (used as fallback)
 // If CARD_IMAGE_URLS is empty, we fall back to generic picsum placeholders.
 const FALLBACK_STATIC_IMAGE_URLS: string[] = Array.from({ length: 120 }, (_, i) => {
   const seed = i + 1;
@@ -33,28 +33,24 @@ function pickRandomUnique<T>(source: T[], count: number): T[] {
   return copy.slice(0, count);
 }
 
-type ImageItem = {
-  url: string;
-  type: 'image' | 'gif';
-};
-
 export function ImageGrid({ selectedImage, onSelectImage, onUpload }: ImageGridProps) {
   const [items, setItems] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [showGifs, setShowGifs] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Load items for either images or GIFs
+  const giphyApiKey = import.meta.env.VITE_GIPHY_API_KEY as string | undefined;
+  const pexelsApiKey = import.meta.env.VITE_PEXELS_API_KEY as string | undefined;
+
   const loadItems = async (term: string) => {
     setLoading(true);
     try {
       if (showGifs) {
-        // GIF MODE – using Giphy search
+        // GIF MODE – Giphy search
         const searchTerm = term.trim() || 'solana degen meme';
-        const giphyApiKey = import.meta.env.VITE_GIPHY_API_KEY;
 
         if (!giphyApiKey) {
-          console.warn('Missing VITE_GIPHY_API_KEY for GIF search, falling back to static images');
+          console.warn('Missing VITE_GIPHY_API_KEY, falling back to static images');
           setItems(pickRandomUnique(STATIC_IMAGE_URLS, 4));
           return;
         }
@@ -62,7 +58,7 @@ export function ImageGrid({ selectedImage, onSelectImage, onUpload }: ImageGridP
         const res = await fetch(
           `https://api.giphy.com/v1/gifs/search?api_key=${giphyApiKey}&q=${encodeURIComponent(
             searchTerm
-          )}&limit=24&rating=pg-13`
+          )}&limit=36&rating=pg-13`
         );
 
         if (!res.ok) throw new Error('Giphy request failed');
@@ -84,15 +80,42 @@ export function ImageGrid({ selectedImage, onSelectImage, onUpload }: ImageGridP
           setItems(pickRandomUnique(urls, 4));
         }
       } else {
-        // IMAGE MODE – static pool, flavored by search term
-        const base = term
-          ? Array.from({ length: 120 }, (_, i) => {
-              const seed = `${encodeURIComponent(term)}_${i + 1}`;
-              return `https://picsum.photos/seed/cc_bg_${seed}/600/380`;
-            })
-          : STATIC_IMAGE_URLS;
+        // IMAGE MODE – Pexels search
+        const searchTerm = term.trim() || 'crypto meme solana neon';
 
-        setItems(pickRandomUnique(base, 4));
+        if (!pexelsApiKey) {
+          console.warn('Missing VITE_PEXELS_API_KEY, falling back to static images');
+          setItems(pickRandomUnique(STATIC_IMAGE_URLS, 4));
+          return;
+        }
+
+        const res = await fetch(
+          `https://api.pexels.com/v1/search?query=${encodeURIComponent(
+            searchTerm
+          )}&per_page=40`,
+          {
+            headers: {
+              Authorization: pexelsApiKey,
+            },
+          }
+        );
+
+        if (!res.ok) throw new Error('Pexels request failed');
+        const data = await res.json();
+
+        const urls: string[] =
+          data?.photos
+            ?.map(
+              (p: any) =>
+                p.src?.landscape || p.src?.large || p.src?.medium || p.src?.original
+            )
+            .filter(Boolean) || [];
+
+        if (!urls.length) {
+          setItems(pickRandomUnique(STATIC_IMAGE_URLS, 4));
+        } else {
+          setItems(pickRandomUnique(urls, 4));
+        }
       }
     } catch (err) {
       console.error('ImageGrid load error', err);
@@ -109,7 +132,7 @@ export function ImageGrid({ selectedImage, onSelectImage, onUpload }: ImageGridP
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Reload when switching between Images / GIFs, keeping active query
+  // Reload when toggling between Images / GIFs
   useEffect(() => {
     loadItems('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -209,7 +232,7 @@ export function ImageGrid({ selectedImage, onSelectImage, onUpload }: ImageGridP
             placeholder={
               showGifs
                 ? 'Search GIFs (e.g. solana, degen, pump)…'
-                : 'Search artwork vibe (e.g. cyberpunk, neon, galaxy)…'
+                : 'Search images (e.g. crypto, solana, degen)…'
             }
           />
           <Button
@@ -224,7 +247,7 @@ export function ImageGrid({ selectedImage, onSelectImage, onUpload }: ImageGridP
         </form>
       </div>
 
-      {/* Grid – NO inner pills/labels, just the artwork */}
+      {/* Grid – 4 tiles, same layout */}
       <div className="grid grid-cols-4 gap-2">
         {displayItems.map((url, idx) => (
           <button
