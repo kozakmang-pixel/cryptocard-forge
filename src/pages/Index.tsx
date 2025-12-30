@@ -18,10 +18,21 @@ import { TermsModal } from '@/components/TermsModal';
 import { ShareModal } from '@/components/ShareModal';
 import { PrivacyModal } from '@/components/PrivacyModal';
 import { DiscordModal } from '@/components/DiscordModal';
+import { DocumentationModal } from '@/components/DocumentationModal';
 import { useLanguage } from '@/lib/languageStore';
 import { translations } from '@/lib/translations';
 import { useToast } from '@/components/ui/use-toast';
-import { Shield, ArrowDownToLine, ExternalLink, Copy } from 'lucide-react';
+import {
+  Shield,
+  ArrowDownToLine,
+  ExternalLink,
+  Copy,
+  FileText,
+  BookOpen,
+  Bug,
+  RefreshCw,
+} from 'lucide-react';
+import { DevPanel } from '@/components/DevPanel';
 
 type CardTier = 'basic' | 'premium' | 'ultimate';
 
@@ -55,10 +66,31 @@ type FontFamily =
   | 'Chakra Petch'
   | 'Turret Road';
 
-type ClaimFormState = {
-  recipientEmail: string;
-  recipientName: string;
-  personalMessage: string;
+type CardData = {
+  cardId: string;
+  cvv: string;
+  depositAddress: string;
+  image: string;
+  tokenAddress: string;
+  tokenSymbol: string;
+  tokenAmount: string;
+  message: string;
+  font: FontFamily;
+  hasExpiry: boolean;
+  expiryDate: string;
+  created: string;
+  locked: boolean;
+  funded: boolean;
+  fiatValue: string;
+  solValue: number;
+};
+
+interface StoredBuilderState {
+  cardData: CardData | null;
+  cardCreated: boolean;
+  funded: boolean;
+  locked: boolean;
+  currentStep: number;
   tokenAddress: string;
   tokenSymbol: string;
   tokenName: string;
@@ -68,8 +100,9 @@ type ClaimFormState = {
   hasExpiry: boolean;
   expiryDate: string;
   selectedImage: string;
-  currency: string;
-};
+  fiatValue: string;
+  solValue: number;
+}
 
 const DEBUG_API = false;
 const BACKEND_URL =
@@ -85,8 +118,10 @@ const decodeApiMessage = (message: string | string[] | undefined) => {
   }
 };
 
+const BUILDER_STATE_KEY = 'cryptocards_builder_state_v1';
+
 export default function Index() {
-  const { language, setLanguage, t } = useLanguage();
+  const { language, setLanguage } = useLanguage();
   const { toast } = useToast();
 
   const [selectedTier, setSelectedTier] = useState<CardTier>('basic');
@@ -114,6 +149,7 @@ export default function Index() {
   const [linkedCardsError, setLinkedCardsError] = useState<string | null>(null);
   const [privacyModalOpen, setPrivacyModalOpen] = useState(false);
   const [discordModalOpen, setDiscordModalOpen] = useState(false);
+  const [docsModalOpen, setDocsModalOpen] = useState(false);
 
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [authUser, setAuthUser] = useState<{ id: string; username: string; email?: string } | null>(
@@ -122,24 +158,26 @@ export default function Index() {
 
   const [cardsRefreshKey, setCardsRefreshKey] = useState(0);
 
-  const [claimForm, setClaimForm] = useState<ClaimFormState>({
-    recipientEmail: '',
-    recipientName: '',
-    personalMessage: '',
-    tokenAddress: '',
-    tokenSymbol: 'TOKEN',
-    tokenName: '',
-    tokenAmount: '',
-    message: '',
-    font: 'Inter',
-    hasExpiry: false,
-    expiryDate: '',
-    selectedImage:
-      'https://images.unsplash.com/photo-1621416894569-0f39ed31d247?w=300&h=190&fit=crop',
-    currency: 'USD',
-  });
+  const [cardData, setCardData] = useState<CardData | null>(null);
+  const [cardCreated, setCardCreated] = useState(false);
+  const [funded, setFunded] = useState(false);
+  const [locked, setLocked] = useState(false);
+  const [currentStep, setCurrentStep] = useState(1);
+  const [tokenAddress, setTokenAddress] = useState('');
+  const [tokenSymbol, setTokenSymbol] = useState('TOKEN');
+  const [tokenName, setTokenName] = useState('');
+  const [tokenAmount, setTokenAmount] = useState('');
+  const [message, setMessage] = useState('');
+  const [font, setFont] = useState<FontFamily>('Inter');
+  const [hasExpiry, setHasExpiry] = useState(false);
+  const [expiryDate, setExpiryDate] = useState('');
+  const [selectedImage, setSelectedImage] = useState(
+    'https://images.unsplash.com/photo-1621416894569-0f39ed31d247?w=300&h=190&fit=crop'
+  );
+  const [fiatValue, setFiatValue] = useState('50.00');
+  const [solValue, setSolValue] = useState(0.5);
 
-  const [currency, setCurrency] = useState('USD');
+  const [devPanelOpen, setDevPanelOpen] = useState(false);
 
   // Hydrate auth from localStorage
   useEffect(() => {
@@ -156,6 +194,80 @@ export default function Index() {
       }
     }
   }, []);
+
+  // Restore builder state from localStorage
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(BUILDER_STATE_KEY);
+      if (!stored) return;
+
+      const parsed: StoredBuilderState = JSON.parse(stored);
+
+      setCardData(parsed.cardData);
+      setCardCreated(parsed.cardCreated);
+      setFunded(parsed.funded);
+      setLocked(parsed.locked);
+      setCurrentStep(parsed.currentStep);
+      setTokenAddress(parsed.tokenAddress);
+      setTokenSymbol(parsed.tokenSymbol);
+      setTokenName(parsed.tokenName);
+      setTokenAmount(parsed.tokenAmount);
+      setMessage(parsed.message);
+      setFont(parsed.font);
+      setHasExpiry(parsed.hasExpiry);
+      setExpiryDate(parsed.expiryDate);
+      setSelectedImage(parsed.selectedImage);
+      setFiatValue(parsed.fiatValue);
+      setSolValue(parsed.solValue);
+    } catch (error) {
+      console.error('Failed to restore builder state:', error);
+    }
+  }, []);
+
+  // Persist builder state
+  useEffect(() => {
+    const state: StoredBuilderState = {
+      cardData,
+      cardCreated,
+      funded,
+      locked,
+      currentStep,
+      tokenAddress,
+      tokenSymbol,
+      tokenName,
+      tokenAmount,
+      message,
+      font,
+      hasExpiry,
+      expiryDate,
+      selectedImage,
+      fiatValue,
+      solValue,
+    };
+
+    try {
+      localStorage.setItem(BUILDER_STATE_KEY, JSON.stringify(state));
+    } catch (error) {
+      console.error('Failed to persist builder state:', error);
+    }
+  }, [
+    cardData,
+    cardCreated,
+    funded,
+    locked,
+    currentStep,
+    tokenAddress,
+    tokenSymbol,
+    tokenName,
+    tokenAmount,
+    message,
+    font,
+    hasExpiry,
+    expiryDate,
+    selectedImage,
+    fiatValue,
+    solValue,
+  ]);
 
   // Update language based on URL hash
   useEffect(() => {
@@ -179,7 +291,7 @@ export default function Index() {
       const decoded = decodeApiMessage(messageParam);
       if (decoded) {
         toast({
-          title: t('toasts.successTitle'),
+          title: translations[language].toasts.successTitle,
           description: decoded,
         });
       }
@@ -190,12 +302,12 @@ export default function Index() {
       if (decoded) {
         toast({
           variant: 'destructive',
-          title: t('toasts.errorTitle'),
+          title: translations[language].toasts.errorTitle,
           description: decoded,
         });
       }
     }
-  }, [language, t, toast]);
+  }, [language, toast]);
 
   const tierPriceOptions: Record<CardTier, PriceOption[]> = {
     basic: [
@@ -274,8 +386,8 @@ export default function Index() {
     console.error(`Error in ${context}:`, error);
     toast({
       variant: 'destructive',
-      title: t('toasts.errorTitle'),
-      description: t('toasts.genericError'),
+      title: translations[language].toasts.errorTitle,
+      description: translations[language].toasts.genericError,
     });
   };
 
@@ -297,7 +409,7 @@ export default function Index() {
         });
 
         if (!response.ok) {
-          let errorMessage = t('toasts.failedFetchCards');
+          let errorMessage = translations[language].toasts.failedFetchCards;
 
           try {
             const data = await response.json();
@@ -321,7 +433,7 @@ export default function Index() {
           if (backendError) {
             throw new Error(backendError);
           } else {
-            throw new Error(t('toasts.failedFetchCards'));
+            throw new Error(translations[language].toasts.failedFetchCards);
           }
         }
 
@@ -329,18 +441,18 @@ export default function Index() {
       } catch (error) {
         console.error('Error fetching linked cards:', error);
         const errorMessage =
-          error instanceof Error ? error.message : t('toasts.failedFetchCards');
+          error instanceof Error ? error.message : translations[language].toasts.failedFetchCards;
         setLinkedCardsError(errorMessage);
         toast({
           variant: 'destructive',
-          title: t('toasts.errorTitle'),
+          title: translations[language].toasts.errorTitle,
           description: errorMessage,
         });
       } finally {
         setIsLoadingLinkedCards(false);
       }
     },
-    [authToken, t, toast]
+    [authToken, language, toast]
   );
 
   useEffect(() => {
@@ -393,14 +505,14 @@ export default function Index() {
       localStorage.setItem('auth_user', JSON.stringify(data.user));
 
       toast({
-        title: t('toasts.loginSuccessTitle'),
-        description: t('toasts.loginSuccessDescription'),
+        title: translations[language].toasts.loginSuccessTitle,
+        description: translations[language].toasts.loginSuccessDescription,
       });
 
       setCardsRefreshKey((prev) => prev + 1);
       fetchLinkedCards();
     },
-    [fetchLinkedCards, t, toast]
+    [fetchLinkedCards, language, toast]
   );
 
   const handleLogout = useCallback(() => {
@@ -410,25 +522,27 @@ export default function Index() {
     localStorage.removeItem('auth_user');
 
     toast({
-      title: t('toasts.logoutSuccessTitle'),
-      description: t('toasts.logoutSuccessDescription'),
+      title: translations[language].toasts.logoutSuccessTitle,
+      description: translations[language].toasts.logoutSuccessDescription,
     });
 
     setLinkedCards([]);
-  }, [t, toast]);
+  }, [language, toast]);
 
   const handleCopyShareLink = async () => {
     try {
       await navigator.clipboard.writeText(shareUrl);
 
       toast({
-        title: t('toasts.linkCopiedTitle'),
-        description: t('toasts.linkCopiedDescription'),
+        title: translations[language].toasts.linkCopiedTitle,
+        description: translations[language].toasts.linkCopiedDescription,
       });
     } catch (error) {
       handleError(error as Error, 'handleCopyShareLink');
     }
   };
+
+  const t = (key: keyof (typeof translations)[typeof language]) => translations[language][key];
 
   const handleViewTerms = () => {
     setTermsStep('wallet');
@@ -623,15 +737,15 @@ export default function Index() {
       .writeText(address)
       .then(() => {
         toast({
-          title: t('toasts.addressCopiedTitle'),
-          description: t('toasts.addressCopiedDescription'),
+          title: translations[language].toasts.addressCopiedTitle,
+          description: translations[language].toasts.addressCopiedDescription,
         });
       })
       .catch(() => {
         toast({
           variant: 'destructive',
-          title: t('toasts.errorTitle'),
-          description: t('toasts.addressCopyFailed'),
+          title: translations[language].toasts.errorTitle,
+          description: translations[language].toasts.addressCopyFailed,
         });
       });
   };
@@ -649,7 +763,6 @@ export default function Index() {
 
   const handleCurrencyChange = (currency: string) => {
     setSelectedCurrency(currency);
-    setCurrency(currency);
   };
 
   const handleResetDesigner = () => {
@@ -667,8 +780,108 @@ export default function Index() {
     fetchLinkedCards();
   };
 
+  const handleReset = () => {
+    setSelectedTier('basic');
+    setSelectedPrice(5);
+    setCustomPriceEnabled(false);
+    setCustomPrice('');
+    setIsSending(false);
+    setFundingAmount(0);
+    setFundingProgress(0);
+    setGiftMessage('');
+    setSelectedCurrency('USD');
+    setIsFiatMode(true);
+    setLinkedCards([]);
+    setTermsModalOpen(false);
+    setTermsStep('wallet');
+    setShareModalOpen(false);
+    setShareUrl('');
+    setShareTxHash('');
+    setShareAmountDetails(null);
+    setIsLoadingLinkedCards(false);
+    setLinkedCardsError(null);
+    setPrivacyModalOpen(false);
+    setDiscordModalOpen(false);
+    setDocsModalOpen(false);
+    setAuthToken(null);
+    setAuthUser(null);
+    localStorage.removeItem('auth_token');
+    localStorage.removeItem('auth_user');
+    setCardsRefreshKey((prev) => prev + 1);
+
+    setCardData(null);
+    setCardCreated(false);
+    setFunded(false);
+    setLocked(false);
+    setCurrentStep(1);
+    setTokenAddress('');
+    setTokenSymbol('TOKEN');
+    setTokenName('');
+    setTokenAmount('');
+    setMessage('');
+    setFont('Inter');
+    setHasExpiry(false);
+    setExpiryDate('');
+    setSelectedImage(
+      'https://images.unsplash.com/photo-1621416894569-0f39ed31d247?w=300&h=190&fit=crop'
+    );
+    setFiatValue('50.00');
+    setSolValue(0.5);
+  };
+
   const heroGradient =
     'bg-[radial-gradient(circle_at_top,_rgba(34,197,94,0.22),_transparent_55%),radial-gradient(circle_at_bottom,_rgba(56,189,248,0.2),_transparent_60%)]';
+
+  const handleDevPanelToggle = () => setDevPanelOpen((prev) => !prev);
+
+  const handleSimulateCardCreated = (
+    id: string,
+    amount: string,
+    symbol: string,
+    imageUrl: string
+  ) => {
+    setCardCreated(true);
+    setCurrentStep(2);
+    setCardData({
+      cardId: id,
+      cvv: '12345',
+      depositAddress: 'Demo123...xyz',
+      image: imageUrl,
+      tokenAddress,
+      tokenSymbol: symbol,
+      tokenAmount: amount,
+      message,
+      font,
+      hasExpiry,
+      expiryDate,
+      created: new Date().toISOString(),
+      locked: false,
+      funded: false,
+      fiatValue,
+      solValue,
+    });
+  };
+
+  const handleSimulateFunding = (isFunded: boolean, fiat: string, sol: number, tokenSymbolF: string) => {
+    setFunded(isFunded);
+    setCardData((prev) =>
+      prev
+        ? {
+            ...prev,
+            funded: isFunded,
+            tokenSymbol: tokenSymbolF,
+            fiatValue: fiat,
+            solValue: sol,
+          }
+        : null
+    );
+  };
+
+  const handleSimulateLocked = () => {
+    setLocked(true);
+    setCurrentStep(3);
+    setCardData((prev) => (prev ? { ...prev, locked: true } : null));
+  };
 
   return (
     <div className="min-h-screen bg-background text-foreground relative overflow-hidden">
@@ -696,6 +909,7 @@ export default function Index() {
       />
 
       <main className="relative z-10">
+        {/* hero + builder */}
         <section
           className={`pt-10 pb-10 md:py-14 lg:py-16 px-4 md:px-8 max-w-6xl mx-auto ${heroGradient}`}
         >
@@ -785,6 +999,7 @@ export default function Index() {
               </div>
             </div>
 
+            {/* Builder preview */}
             <div className="relative">
               <div className="absolute -inset-4 bg-[radial-gradient(circle_at_top,_rgba(34,197,94,0.22),_transparent_60%),radial-gradient(circle_at_bottom,_rgba(56,189,248,0.2),_transparent_60%)] opacity-80 blur-xl" />
 
@@ -798,9 +1013,33 @@ export default function Index() {
                   onGiftMessageChange={handleGiftMessageChange}
                   onError={handleCardDesignerError}
                   onReset={handleResetDesigner}
-                  claimForm={claimForm}
-                  setClaimForm={setClaimForm}
-                  currency={currency}
+                  onToggleMode={handleToggleFundingMode}
+                  cardCreated={cardCreated}
+                  funded={funded}
+                  locked={locked}
+                  currentStep={currentStep}
+                  tokenAddress={tokenAddress}
+                  tokenSymbol={tokenSymbol}
+                  tokenName={tokenName}
+                  tokenAmount={tokenAmount}
+                  message={message}
+                  font={font}
+                  hasExpiry={hasExpiry}
+                  expiryDate={expiryDate}
+                  selectedImage={selectedImage}
+                  fiatValue={fiatValue}
+                  solValue={solValue}
+                  setTokenAddress={setTokenAddress}
+                  setTokenSymbol={setTokenSymbol}
+                  setTokenName={setTokenName}
+                  setTokenAmount={setTokenAmount}
+                  setMessage={setMessage}
+                  setFont={setFont}
+                  setHasExpiry={setHasExpiry}
+                  setExpiryDate={setExpiryDate}
+                  setSelectedImage={setSelectedImage}
+                  setFiatValue={setFiatValue}
+                  setSolValue={setSolValue}
                 />
 
                 <CryptoCard
@@ -810,7 +1049,22 @@ export default function Index() {
                   selectedCurrency={selectedCurrency}
                   giftMessage={giftMessage}
                   onError={handleCardDesignerError}
-                  claimForm={claimForm}
+                  cardData={cardData}
+                  cardCreated={cardCreated}
+                  funded={funded}
+                  locked={locked}
+                  currentStep={currentStep}
+                  tokenAddress={tokenAddress}
+                  tokenSymbol={tokenSymbol}
+                  tokenName={tokenName}
+                  tokenAmount={tokenAmount}
+                  message={message}
+                  font={font}
+                  hasExpiry={hasExpiry}
+                  expiryDate={expiryDate}
+                  selectedImage={selectedImage}
+                  fiatValue={fiatValue}
+                  solValue={solValue}
                 />
               </div>
             </div>
@@ -819,6 +1073,7 @@ export default function Index() {
           <ProgressBar progress={fundingProgress} />
         </section>
 
+        {/* tiers & funding */}
         <section className="py-8 md:py-10 lg:py-12 px-4 md:px-8 max-w-6xl mx-auto">
           <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)] gap-8 lg:gap-10">
             <div className="space-y-4 md:space-y-5">
@@ -913,7 +1168,21 @@ export default function Index() {
                   onShareCard={handleShareCard}
                   onError={handleFundingPanelError}
                   isSending={isSending}
-                  claimForm={claimForm}
+                  cardCreated={cardCreated}
+                  funded={funded}
+                  locked={locked}
+                  currentStep={currentStep}
+                  tokenAddress={tokenAddress}
+                  tokenSymbol={tokenSymbol}
+                  tokenName={tokenName}
+                  tokenAmount={tokenAmount}
+                  message={message}
+                  font={font}
+                  hasExpiry={hasExpiry}
+                  expiryDate={expiryDate}
+                  selectedImage={selectedImage}
+                  fiatValue={fiatValue}
+                  solValue={solValue}
                 />
               </div>
 
@@ -946,6 +1215,7 @@ export default function Index() {
           </div>
         </section>
 
+        {/* account + dashboards */}
         <section
           id="account-section"
           className="py-8 md:py-10 lg:py-12 px-4 md:px-8 max-w-6xl mx-auto"
@@ -1003,6 +1273,18 @@ export default function Index() {
                   </p>
                 </div>
               )}
+
+              <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="w-6 h-6 rounded-full border border-border/50 bg-card/50"
+                  onClick={handleDevPanelToggle}
+                >
+                  <Bug className="w-3 h-3" />
+                </Button>
+                <span>{t('devPanel.hint')}</span>
+              </div>
             </div>
 
             <div className="space-y-4 md:space-y-5 w-full">
@@ -1021,104 +1303,127 @@ export default function Index() {
           </div>
         </section>
 
+        {/* audit */}
         <section
           id="audit-section"
           className="py-8 md:py-10 lg:py-12 px-4 md:px-8 max-w-6xl mx-auto"
         >
           <AuditSection onError={handleAuditError} />
         </section>
-      </main>
 
-      <footer className="mt-8 pt-8 border-t border-border/30">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-          {/* Brand Section */}
-          <div className="flex flex-col md:flex-row items-center md:items-start gap-3 text-center md:text-left">
-            <div className="relative flex-shrink-0">
-              <div className="absolute inset-0 blur-[12px] bg-[radial-gradient(circle_at_center,_rgba(96,165,250,0.9),_transparent_60%)] opacity-80" />
+        {/* footer */}
+        <footer className="mt-8 pt-8 border-t border-border/30">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+            {/* Brand Section */}
+            <div className="flex flex-col md:flex-row items-center md:items-start gap-3 text-center md:text-left">
+              <div className="relative flex-shrink-0">
+                <div className="absolute inset-0 blur-[12px] bg-[radial-gradient(circle_at_center,_rgba(96,165,250,0.9),_transparent_60%)] opacity-80" />
+                <img
+                  src="/cryptocards-logo.png"
+                  alt="CRYPTOCARDS logo"
+                  className="relative w-14 h-14 md:w-16 md:h-16 rounded-2xl shadow-[0_0_30px_rgba(56,189,248,0.9)] ring-2 ring-[#3b82f6]/70"
+                />
+              </div>
+              {/* this is the ONLY change: add md:ml-2 to push text slightly right */}
+              <div className="md:ml-2">
+                <h4 className="text-lg font-black tracking-[0.2em] bg-gradient-to-r from-emerald-300 via-cyan-300 to-blue-400 bg-clip-text text-transparent mb-1">
+                  CRYPTOCARDS
+                </h4>
+                <p className="text-[9px] text-muted-foreground max-w-xs">
+                  On-chain, non-custodial crypto gift cards. The future of digital gifting on
+                  Solana.
+                </p>
+              </div>
+            </div>
+
+            {/* Quick Links */}
+            <div className="text-center md:text-center">
+              <h5 className="text-[10px] font-bold uppercase text-foreground mb-3">
+                {t('footer.quickLinks')}
+              </h5>
+              <div className="flex flex-col gap-2">
+                <button
+                  onClick={() => setDocsModalOpen(true)}
+                  className="text-[9px] text-muted-foreground hover:text-primary transition-colors flex items-center justify-center gap-1"
+                >
+                  <FileText className="w-3 h-3" /> Documentation
+                </button>
+                <button
+                  onClick={handleViewAudit}
+                  className="text-[9px] text-muted-foreground hover:text-primary transition-colors flex items-center justify-center gap-1"
+                >
+                  <Shield className="w-3 h-3" /> {t('footer.viewAudit')}
+                </button>
+                <button
+                  onClick={handleViewTerms}
+                  className="text-[9px] text-muted-foreground hover:text-primary transition-colors flex items-center justify-center gap-1"
+                >
+                  <ExternalLink className="w-3 h-3" /> {t('footer.termsOfUse')}
+                </button>
+                <button
+                  onClick={handleViewPrivacy}
+                  className="text-[9px] text-muted-foreground hover:text-primary transition-colors flex items-center justify-center gap-1"
+                >
+                  <ExternalLink className="w-3 h-3" /> Privacy Policy
+                </button>
+              </div>
+            </div>
+
+            {/* Social Links */}
+            <div className="text-center md:text-right">
+              <h5 className="text-[10px] font-bold uppercase text-foreground mb-3">Community</h5>
+              <div className="flex items-center justify-center md:justify-end gap-4">
+                <a
+                  href="https://x.com/i/communities/2004719020248105452"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="hover:scale-110 transition-transform inline-flex items-center justify-center w-8 h-8 rounded-lg bg-card/60 border border-border/30 hover:border-primary/50"
+                >
+                  <span className="text-[11px] font-semibold">X</span>
+                </a>
+                <button
+                  onClick={handleOpenDiscord}
+                  className="hover:scale-110 transition-transform inline-flex items-center justify-center w-8 h-8 rounded-lg bg-card/60 border border-border/30 hover:border-primary/50"
+                >
+                  <img
+                    src="https://cdn.simpleicons.org/discord/00CFFF"
+                    alt="Discord"
+                    className="w-5 h-5"
+                  />
+                </button>
+                <a
+                  href="mailto:cryptocards@linuxmail.org"
+                  className="hover:scale-110 transition-transform inline-flex items-center justify-center w-8 h-8 rounded-lg bg-card/60 border border-border/30 hover:border-primary/50"
+                >
+                  <img
+                    src="https://cdn.simpleicons.org/gmail/00CFFF"
+                    alt="Email"
+                    className="w-5 h-5"
+                  />
+                </a>
+                <button
+                  onClick={handleCopyShareLink}
+                  disabled={!shareUrl}
+                  className="hover:scale-110 transition-transform inline-flex items-center justify-center w-8 h-8 rounded-lg bg-card/60 border border-border/30 hover:border-primary/50 disabled:opacity-40 disabled:hover:scale-100"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="pt-4 border-t border-border/20 grid grid-cols-1 md:grid-cols-3 items-center gap-3">
+            {/* Left: Solana badge */}
+            <div className="flex items-center gap-2 justify-center md:justify-start">
               <img
-                src="/cryptocards-logo.png"
-                alt="CRYPTOCARDS logo"
-                className="relative w-14 h-14 md:w-16 md:h-16 rounded-2xl shadow-[0_0_30px_rgba(56,189,248,0.9)] ring-2 ring-[#3b82f6]/70"
+                src="https://cryptologos.cc/logos/solana-sol-logo.svg"
+                alt="Solana"
+                className="w-4 h-4"
               />
-            </div>
-            <div className="md:ml-2">
-              <h4 className="text-lg font-black tracking-[0.2em] bg-gradient-to-r from-emerald-300 via-cyan-300 to-blue-400 bg-clip-text text-transparent mb-1">
-                CRYPTOCARDS
-              </h4>
-              <p className="text-[9px] text-muted-foreground max-w-xs">
-                On-chain, non-custodial crypto gift cards. The future of digital gifting on
-                Solana.
-              </p>
-            </div>
-          </div>
-
-          {/* Quick Links */}
-          <div className="text-center md:text-center">
-            <h5 className="text-[10px] font-bold uppercase text-foreground mb-3">
-              {t('footer.quickLinks')}
-            </h5>
-            <div className="flex flex-wrap justify-center gap-2">
-              <button
-                onClick={handleViewAudit}
-                className="inline-flex items-center gap-1 px-2 py-1 rounded-full border border-border/60 bg-card/60 text-[9px] text-muted-foreground hover:border-primary/60 hover:text-foreground"
-              >
-                <Shield className="w-3 h-3" /> {t('footer.viewAudit')}
-              </button>
-              <button
-                onClick={handleViewTerms}
-                className="inline-flex items-center gap-1 px-2 py-1 rounded-full border border-border/60 bg-card/60 text-[9px] text-muted-foreground hover:border-primary/60 hover:text-foreground"
-              >
-                <ExternalLink className="w-3 h-3" /> {t('footer.termsOfUse')}
-              </button>
-              <button
-                onClick={handleViewPrivacy}
-                className="inline-flex items-center gap-1 px-2 py-1 rounded-full border border-border/60 bg-card/60 text-[9px] text-muted-foreground hover:border-primary/60 hover:text-foreground"
-              >
-                <ExternalLink className="w-3 h-3" /> Privacy Policy
-              </button>
-            </div>
-          </div>
-
-          {/* Social Links */}
-          <div className="text-center md:text-right">
-            <h5 className="text-[10px] font-bold uppercase text-foreground mb-3">Community</h5>
-            <div className="flex items-center justify-center md:justify-end gap-4">
-              <a
-                href="https://x.com/i/communities/2004719020248105452"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="hover:scale-110 transition-transform inline-flex items-center justify-center w-8 h-8 rounded-lg bg-card/60 border border-border/30 hover:border-primary/50"
-              >
-                <span className="text-[11px] font-semibold">X</span>
-              </a>
-              <button
-                onClick={handleOpenDiscord}
-                className="hover:scale-110 transition-transform inline-flex items-center justify-center w-8 h-8 rounded-lg bg-card/60 border border-border/30 hover:border-primary/50"
-              >
-                <span className="text-[11px] font-semibold">D</span>
-              </button>
-              <button
-                onClick={handleCopyShareLink}
-                disabled={!shareUrl}
-                className="hover:scale-110 transition-transform inline-flex items-center justify-center w-8 h-8 rounded-lg bg-card/60 border border-border/30 hover:border-primary/50 disabled:opacity-40 disabled:hover:scale-100"
-              >
-                <Copy className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div className="border-t border-border/20 pt-4 pb-6 px-4 md:px-8 max-w-6xl mx-auto">
-          <div className="grid grid-cols-1 md:grid-cols-3 items-center gap-3 text-[9px]">
-            {/* Left: non-custodial label */}
-            <div className="flex justify-center md:justify-start">
-              <p className="inline-flex items-center gap-1.5 text-muted-foreground">
-                <span className="inline-flex h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.9)]" />
-                {t('footer.nonCustodial')}
-              </p>
+              <span className="text-[10px] font-bold text-primary">{t('footer.poweredBy')}</span>
             </div>
 
-            {/* Center: copyright under QUICK LINKS */}
+            {/* Center: copyright */}
             <div className="flex justify-center">
               <p className="text-[9px] text-primary font-bold">
                 {t('footer.creatorRights') || t('footer.copyright')}
@@ -1130,8 +1435,8 @@ export default function Index() {
               <p className="text-[8px] text-muted-foreground">{t('footer.creator')}</p>
             </div>
           </div>
-        </div>
-      </footer>
+        </footer>
+      </main>
 
       <TermsModal
         open={termsModalOpen}
@@ -1151,6 +1456,18 @@ export default function Index() {
       <PrivacyModal open={privacyModalOpen} onOpenChange={setPrivacyModalOpen} />
 
       <DiscordModal open={discordModalOpen} onOpenChange={setDiscordModalOpen} />
+
+      <DocumentationModal open={docsModalOpen} onOpenChange={setDocsModalOpen} />
+
+      {/* Dev panel (unchanged) */}
+      <DevPanel
+        open={devPanelOpen}
+        onOpenChange={setDevPanelOpen}
+        onSimulateCardCreated={handleSimulateCardCreated}
+        onSimulateFunding={handleSimulateFunding}
+        onSimulateLocked={handleSimulateLocked}
+        onResetAll={handleReset}
+      />
     </div>
   );
 }
