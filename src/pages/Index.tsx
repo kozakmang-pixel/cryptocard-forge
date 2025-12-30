@@ -90,7 +90,11 @@ export default function Index() {
   const [discordModalOpen, setDiscordModalOpen] = useState(false);
 
   const [authToken, setAuthToken] = useState<string | null>(null);
-  const [authUser, setAuthUser] = useState<{ id: string; username: string; email?: string } | null>(null);
+  const [authUser, setAuthUser] = useState<{
+    id: string;
+    username: string;
+    email?: string;
+  } | null>(null);
 
   const [cardsRefreshKey, setCardsRefreshKey] = useState(0);
 
@@ -200,7 +204,9 @@ export default function Index() {
     currency,
   ]);
 
-  const handleTokenInfoChange = (info: { symbol: string; name: string } | null) => {
+  const handleTokenInfoChange = (
+    info: { symbol: string; name: string } | null
+  ) => {
     if (info) {
       setTokenSymbol(info.symbol);
       setTokenName(info.name);
@@ -214,6 +220,22 @@ export default function Index() {
     const url = URL.createObjectURL(file);
     setSelectedImage(url);
     toast.success('Image uploaded!');
+  };
+
+  // Manual refresh for SOL price banner
+  const handleRefreshPrices = async () => {
+    try {
+      const res = await fetch(
+        'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd'
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.solana?.usd) {
+        setSolPrice(data.solana.usd);
+      }
+    } catch {
+      // ignore – banner will keep last known price
+    }
   };
 
   // Funding callback from FundingPanel → keep card preview in sync
@@ -248,7 +270,10 @@ export default function Index() {
           currency,
           amount_fiat: 0,
           token_mint: tokenAddress || undefined,
-          expires_at: hasExpiry && expiryDate ? new Date(expiryDate).toISOString() : undefined,
+          expires_at:
+            hasExpiry && expiryDate
+              ? new Date(expiryDate).toISOString()
+              : undefined,
           template_url: selectedImage,
         },
         authToken || undefined
@@ -335,7 +360,7 @@ export default function Index() {
     <div className="min-h-screen pb-12 relative">
       <AnimatedBackground />
       <SecurityBanner />
-      <PriceBanner solPrice={solPrice} />
+      <PriceBanner solPrice={solPrice} onRefresh={handleRefreshPrices} />
 
       <div className="pt-[60px] px-3 max-w-5xl mx-auto relative z-10">
         {/* Top controls */}
@@ -502,14 +527,13 @@ export default function Index() {
                   className="relative w-14 h-14 md:w-16 md:h-16 rounded-full shadow-[0_0_30px_rgba(56,189,248,0.9)] ring-2 ring-[#3b82f6]/70"
                 />
               </div>
-              {/* text block nudged right on md+ so glow doesn't eat it */}
-              <div className="md:ml-2">
+              <div>
                 <h4 className="text-lg font-black tracking-[0.2em] uppercase bg-gradient-to-r from-emerald-300 via-cyan-300 to-blue-400 bg-clip-text text-transparent mb-1">
                   CRYPTOCARDS
                 </h4>
                 <p className="text-[9px] text-muted-foreground max-w-xs">
-                  On-chain, non-custodial crypto gift cards. The future of digital gifting on
-                  Solana.
+                  On-chain, non-custodial crypto gift cards. The future of
+                  digital gifting on Solana.
                 </p>
               </div>
             </div>
@@ -635,10 +659,19 @@ export default function Index() {
           cardId={cardData.cardId}
         />
       )}
-      <DocumentationModal open={docsModalOpen} onOpenChange={setDocsModalOpen} />
+      <DocumentationModal
+        open={docsModalOpen}
+        onOpenChange={setDocsModalOpen}
+      />
       <TermsModal open={termsModalOpen} onOpenChange={setTermsModalOpen} />
-      <PrivacyModal open={privacyModalOpen} onOpenChange={setPrivacyModalOpen} />
-      <DiscordModal open={discordModalOpen} onOpenChange={setDiscordModalOpen} />
+      <PrivacyModal
+        open={privacyModalOpen}
+        onOpenChange={setPrivacyModalOpen}
+      />
+      <DiscordModal
+        open={discordModalOpen}
+        onOpenChange={setDiscordModalOpen}
+      />
 
       {/* Dev panel (unchanged) */}
       <DevPanel
@@ -684,7 +717,9 @@ export default function Index() {
         onSimulateLocked={() => {
           setLocked(true);
           setCurrentStep(3);
-          setCardData((prev) => (prev ? { ...prev, locked: true } : null));
+          setCardData((prev) =>
+            prev ? { ...prev, locked: true } : null
+          );
         }}
         onResetAll={handleReset}
       />
