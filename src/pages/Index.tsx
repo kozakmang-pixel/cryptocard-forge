@@ -493,13 +493,13 @@ export default function Index() {
         <footer className="mt-8 pt-8 border-t border-border/30">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
             {/* Brand Section */}
-            <div className="text-center md:text-left flex flex-col items-center md:items-start">
-              <div className="flex items-center gap-2 mb-2">
-                {/* Neon coin logo */}
-                <div className="w-9 h-9 rounded-full bg-[#050815] relative flex items-center justify-center shadow-[0_0_18px_rgba(64,232,255,0.35)]">
+            <div className="flex flex-col items-center md:items-start gap-3">
+              <div className="flex items-center gap-3">
+                {/* New footer logo */}
+                <div className="w-14 h-14 rounded-full bg-[#050815] relative flex items-center justify-center shadow-[0_0_28px_rgba(64,232,255,0.38)]">
                   <svg
                     viewBox="0 0 64 64"
-                    className="w-8 h-8"
+                    className="w-12 h-12"
                     aria-hidden="true"
                   >
                     <defs>
@@ -513,44 +513,37 @@ export default function Index() {
                       </linearGradient>
                     </defs>
 
-                    {/* Outer ring */}
                     <circle
                       cx="32"
                       cy="32"
                       r="30"
                       fill="none"
                       stroke="url(#ccFooterOuter)"
-                      strokeWidth="1.6"
-                      opacity="0.8"
+                      strokeWidth="2"
+                      opacity="0.9"
                     />
-                    {/* Middle ring */}
                     <circle
                       cx="32"
                       cy="32"
                       r="24"
                       fill="none"
                       stroke="url(#ccFooterInner)"
-                      strokeWidth="1.3"
-                      opacity="0.85"
+                      strokeWidth="1.6"
+                      opacity="0.9"
                     />
-                    {/* Inner hexagon network */}
+
                     <polygon
                       points="32 16 44 24 44 40 32 48 20 40 20 24"
                       fill="none"
                       stroke="url(#ccFooterOuter)"
-                      strokeWidth="1.4"
+                      strokeWidth="1.8"
                     />
-                    {/* Inner connecting lines */}
-                    <line x1="32" y1="16" x2="32" y2="48" stroke="#3CFEB6" strokeWidth="0.8" opacity="0.7" />
-                    <line x1="20" y1="24" x2="44" y2="40" stroke="#3CFEB6" strokeWidth="0.8" opacity="0.55" />
-                    <line x1="44" y1="24" x2="20" y2="40" stroke="#3CFEB6" strokeWidth="0.8" opacity="0.55" />
 
-                    {/* CC text */}
                     <rect
-                      x="24"
-                      y="26"
-                      width="16"
-                      height="12"
+                      x="23"
+                      y="25"
+                      width="18"
+                      height="14"
                       rx="4"
                       ry="4"
                       fill="rgba(3,10,24,0.9)"
@@ -559,30 +552,30 @@ export default function Index() {
                     />
                     <text
                       x="32"
-                      y="34"
+                      y="35"
                       textAnchor="middle"
                       fontFamily="Orbitron, system-ui, sans-serif"
-                      fontSize="7"
+                      fontSize="8"
                       fill="#3CFEB6"
-                      letterSpacing="1.5"
+                      letterSpacing="1.6"
                     >
                       CC
                     </text>
                   </svg>
-                  {/* subtle inner glow */}
-                  <div className="absolute inset-0 rounded-full bg-[radial-gradient(circle_at_50%_50%,rgba(64,232,255,0.28),transparent_55%)] pointer-events-none" />
+
+                  <div className="absolute inset-0 rounded-full bg-[radial-gradient(circle_at_50%_50%,rgba(64,232,255,0.28),transparent_58%)] pointer-events-none" />
                 </div>
 
-                {/* Brand wordmark */}
-                <span className="text-[15px] font-black tracking-[0.35em] uppercase bg-gradient-to-r from-[#3CFEB6] via-[#29D4FF] to-[#297BFF] bg-clip-text text-transparent">
-                  CRYPTOCARDS
-                </span>
+                <div className="flex flex-col items-start">
+                  <span className="text-lg font-black tracking-[0.25em] uppercase bg-gradient-to-r from-[#34E4B2] via-[#35D9F5] to-[#2F7BFF] bg-clip-text text-transparent">
+                    CRYPTOCARDS
+                  </span>
+                  <p className="text-[9px] text-muted-foreground max-w-xs mt-1">
+                    On-chain, non-custodial crypto gift cards. The future of digital gifting on
+                    Solana.
+                  </p>
+                </div>
               </div>
-
-              <p className="text-[9px] text-muted-foreground max-w-xs">
-                On-chain, non-custodial crypto gift cards. The future of digital
-                gifting on Solana.
-              </p>
             </div>
 
             {/* Quick Links */}
