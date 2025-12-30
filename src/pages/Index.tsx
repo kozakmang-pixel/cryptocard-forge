@@ -493,86 +493,26 @@ export default function Index() {
         <footer className="mt-8 pt-8 border-t border-border/30">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
             {/* Brand Section */}
-            <div className="flex flex-col items-center md:items-start gap-3">
-              <div className="flex items-center gap-3">
-                {/* New footer logo */}
-                <div className="w-14 h-14 rounded-full bg-[#050815] relative flex items-center justify-center shadow-[0_0_28px_rgba(64,232,255,0.38)]">
-                  <svg
-                    viewBox="0 0 64 64"
-                    className="w-12 h-12"
-                    aria-hidden="true"
-                  >
-                    <defs>
-                      <linearGradient id="ccFooterOuter" x1="0" y1="0" x2="1" y2="1">
-                        <stop offset="0%" stopColor="#3CFEB6" />
-                        <stop offset="100%" stopColor="#29A7FF" />
-                      </linearGradient>
-                      <linearGradient id="ccFooterInner" x1="0" y1="1" x2="1" y2="0">
-                        <stop offset="0%" stopColor="#9B5CFF" />
-                        <stop offset="100%" stopColor="#29A7FF" />
-                      </linearGradient>
-                    </defs>
-
-                    <circle
-                      cx="32"
-                      cy="32"
-                      r="30"
-                      fill="none"
-                      stroke="url(#ccFooterOuter)"
-                      strokeWidth="2"
-                      opacity="0.9"
-                    />
-                    <circle
-                      cx="32"
-                      cy="32"
-                      r="24"
-                      fill="none"
-                      stroke="url(#ccFooterInner)"
-                      strokeWidth="1.6"
-                      opacity="0.9"
-                    />
-
-                    <polygon
-                      points="32 16 44 24 44 40 32 48 20 40 20 24"
-                      fill="none"
-                      stroke="url(#ccFooterOuter)"
-                      strokeWidth="1.8"
-                    />
-
-                    <rect
-                      x="23"
-                      y="25"
-                      width="18"
-                      height="14"
-                      rx="4"
-                      ry="4"
-                      fill="rgba(3,10,24,0.9)"
-                      stroke="#29A7FF"
-                      strokeWidth="0.8"
-                    />
-                    <text
-                      x="32"
-                      y="35"
-                      textAnchor="middle"
-                      fontFamily="Orbitron, system-ui, sans-serif"
-                      fontSize="8"
-                      fill="#3CFEB6"
-                      letterSpacing="1.6"
-                    >
+            <div className="text-center md:text-left">
+              <div className="flex items-center justify-center md:justify-start gap-3">
+                {/* Neon coin-style CC logo */}
+                <div className="relative flex items-center justify-center w-12 h-12 rounded-full bg-[radial-gradient(circle_at_30%_20%,#22d3ee,transparent_55%),radial-gradient(circle_at_70%_80%,#a855f7,transparent_55%)] border border-cyan-400/70 shadow-[0_0_18px_rgba(56,189,248,0.9)]">
+                  <div className="absolute inset-[3px] rounded-full border border-cyan-300/70" />
+                  <div className="absolute inset-[7px] rounded-full border border-purple-500/60" />
+                  <div className="relative flex items-center justify-center w-7 h-7 rounded-md border border-cyan-200/70 bg-black/70 shadow-[0_0_12px_rgba(56,189,248,0.9)]">
+                    <span className="text-[10px] font-black tracking-[0.16em] text-transparent bg-clip-text bg-gradient-to-r from-cyan-200 via-emerald-300 to-fuchsia-400">
                       CC
-                    </text>
-                  </svg>
-
-                  <div className="absolute inset-0 rounded-full bg-[radial-gradient(circle_at_50%_50%,rgba(64,232,255,0.28),transparent_58%)] pointer-events-none" />
+                    </span>
+                  </div>
                 </div>
 
-                <div className="flex flex-col items-start">
-                  <span className="text-lg font-black tracking-[0.25em] uppercase bg-gradient-to-r from-[#34E4B2] via-[#35D9F5] to-[#2F7BFF] bg-clip-text text-transparent">
+                <div className="text-left">
+                  <h4 className="text-lg font-black tracking-[0.22em] gradient-text mb-1">
                     CRYPTOCARDS
-                  </span>
-                  <p className="text-[9px] text-muted-foreground max-w-xs mt-1">
-                    On-chain, non-custodial crypto gift cards. The future of digital gifting on
-                    Solana.
+                  </h4>
+                  <p className="text-[9px] text-muted-foreground max-w-xs">
+                    On-chain, non-custodial crypto gift cards. The future of
+                    digital gifting on Solana.
                   </p>
                 </div>
               </div>
