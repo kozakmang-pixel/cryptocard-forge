@@ -1,0 +1,21 @@
+{
+  "name": "CRYPTOCARDS — The future of digital gifting on Solana.",
+  "short_name": "CRYPTOCARDS",
+  "description": "On-chain, non-custodial crypto gift cards on Solana.",
+  "icons": [
+    {
+      "src": "/favicon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/favicon-32x32.png",
+      "sizes": "32x32",
+      "type": "image/png"
+    }
+  ],
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#020617",
+  "theme_color": "#020617"
+}
