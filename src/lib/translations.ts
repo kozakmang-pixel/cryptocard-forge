@@ -24,73 +24,46 @@ export const translations = {
       depositWallet: "Deposit wallet",
       protocolTax: "1.5% Protocol Tax on Funded & Locked CRYPTOCARDS",
       protocolTaxDescription:
-        "A 1.5% protocol tax is applied to the SOL balance on each funded and locked CRYPTOCARD. Tax proceeds are swapped to $CRYPTOCARDS and directed to the public burn wallet.",
-      taxEstimate: "Estimated tax on this CRYPTOCARD:",
-    },
-
-    creator: {
-      title: "Creator Dashboard",
-      subtitle: "Overview of all CRYPTOCARDS you've created on Solana mainnet.",
-      deleteWarning:
-        "Are you sure you want to permanently remove this entry from your dashboard? On-chain history will remain, but this local record cannot be restored.",
-      delete: "Delete",
-      copy: "Copy",
-      created: "Created",
-      funded: "Funded",
-      locked: "Locked",
-      claimed: "Claimed",
-      noCards: "No CRYPTOCARDS have been created under this account yet.",
-      waitingDeposit: "Awaiting initial deposit to the funding address…",
-    },
-
-    audit: {
-      title: "On-Chain Audit Trail",
-      subtitle: "Search any CRYPTOCARD ID to review its full on-chain lifecycle.",
-      searchLabel: "Card ID",
-      searchPlaceholder: "Enter 8-digit ID (XXXX-XXXX)",
-      searchButton: "Fetch",
-      finalClaimedAmount: "Final claimed amount",
-      lifecycle: "Lifecycle Timeline",
-      balanceLabel: "On-chain balance",
-      fundedRow: "Deposit received",
-      lockedRow: "Card locked",
-      claimedRow: "Claimed & sent to recipient",
-      noData: "No CRYPTOCARD matching that ID was found.",
-    },
-
-    public: {
-      title: "NETWORK ACTIVITY & BURNS",
-      subtitle:
-        "Live mainnet view of funded, locked, and claimed CRYPTOCARDS — plus protocol burn activity and lifetime volume.",
-      lastUpdated: "Last updated",
-      totalCards: "Total cards funded",
-      totalFunded: "Total volume funded",
-      totalClaimed: "Total value claimed",
-      burns: "Protocol burns",
-      recent: "Recent activity",
-      bootstrapping:
-        "Activity is still bootstrapping. Create, fund, lock, and claim CRYPTOCARDS to populate this feed.",
-      fiat: "Fiat",
-      token: "Token",
-      sol: "SOL",
-      copyWallet: "Copy burn wallet",
-    },
-
-    notifications: {
-      copied: "Copied to clipboard.",
-      copiedFail: "Failed to copy to clipboard.",
+        "A 1.5% protocol tax is applied on the total funded amount once the card is locked and claimed. This helps sustain ongoing development and infrastructure for the CRYPTOCARDS protocol.",
+      solValueLabel: "Estimated value in SOL",
+      fiatValueLabel: "Estimated value in USD",
+      lockedBadge: "Locked",
+      unlockedBadge: "Unlocked",
+      claimWarning:
+        "Once the card is locked and claimed, funds are moved to the recipient’s wallet. Always double-check the recipient before sharing the card.",
+      lockButton: "LOCK & GENERATE CLAIM LINK",
+      cardLocked: "Card locked & ready to gift",
+      lockWarning:
+        "⚠️ Once locked, you will NOT be able to deposit additional tokens to this CRYPTOCARD.",
+      resetButton: "RESET CARD BUILDER",
+      fundingStatusUnfunded: "Awaiting funds...",
+      fundingStatusFunded: "Funds detected on-chain.",
     },
 
     card: {
-      preview: "CRYPTOCARD Preview",
-      balance: "Balance",
-      expires: "Expires:",
+      previewTitle: "Preview",
+      messageLabel: "Message",
+      expiryLabel: "Expiry",
+      noExpiry: "No expiry set",
+      amountLabel: "Amount",
+      tokenUnknown: "Unknown token",
+      tokenAmountLabel: "Token amount",
+      solAmountLabel: "SOL amount",
+      fiatValueLabel: "USD value",
+      cardIdLabel: "Card ID",
+      cvvLabel: "Security code",
+      lockedBadge: "LOCKED",
+      unlockedBadge: "UNLOCKED",
+      fundedBadge: "FUNDED",
+      notFundedBadge: "NOT FUNDED",
+      claimableBadge: "CLAIMABLE",
+      claimedBadge: "CLAIMED",
     },
 
-    claim: {
-      title: "Claim a CRYPTOCARD",
-      subtitle: "Redeem a funded and locked CRYPTOCARD directly to your Solana wallet.",
-
+    audit: {
+      title: "On-Chain Card Audit",
+      description:
+        "Search any CRYPTOCARD by its public ID to inspect on-chain status, balances, and event history. This tool is read-only and does not require a wallet connection.",
       cardIdLabel: "Card ID",
       cardIdPlaceholder: "Enter 8-digit ID (XXXX-XXXX)",
       fetchButton: "Fetch card",
@@ -105,45 +78,28 @@ export const translations = {
       cardIdRequired: "Please enter a card ID before continuing.",
       alreadyClaimed: "This CRYPTOCARD has already been claimed.",
       notLocked: "This CRYPTOCARD must be locked before it can be claimed.",
-      errorGeneric: "We couldn't fetch that card. Please try again in a moment.",
-
-      statusLocked: "Locked",
-      statusClaimed: "Claimed",
-
-      // Scratch / CVV copy – keep multiple keys to satisfy all call sites
-      scratch: "Scratch to reveal CVV",
-      scratchHelp: "Click or drag over the panel to reveal the CVV.",
-      scratchLabel: "Scratch to reveal CVV",
-      scratchInstruction: "Reveal the CVV by scratching the panel.",
-
-      balanceLabel: "Balance",
-      destinationWallet: "Destination wallet",
-      walletPlaceholder: "Enter Solana wallet address",
-
-      claimButton: "Claim funds",
-      claiming: "Processing claim…",
-
-      successTitle: "Claim complete",
-      successMessage: "The CRYPTOCARD has been successfully claimed.",
-      successAmountPrefix: "Amount claimed:",
-      successWalletPrefix: "Sent to:",
-      successFooter:
-        "This claim has been settled on-chain. Always verify the transaction in your preferred Solana explorer.",
+      
+      onChainStatusTitle: "On-Chain Status",
+      onChainStatusDescription:
+        "These values are read from the Solana blockchain or your indexing layer. They may differ slightly from cached dashboard values.",
+      solBalanceLabel: "SOL balance",
+      tokenBalanceLabel: "Token balance",
+      tokenMintLabel: "Token mint",
+      lastUpdatedLabel: "Last updated",
+      noActivity: "No on-chain events have been indexed for this card yet.",
+      activityTitle: "Activity",
+      createdEvent: "Card Created",
+      fundedEvent: "Funds Deposited",
+      lockedEvent: "Card Locked",
+      claimedEvent: "Card Claimed",
+      refundedEvent: "Funds Refunded",
+      errorLoadingActivity: "Failed to load activity. Please try again.",
     },
 
-    design: {
-      title: "Design your CRYPTOCARD",
-      selectImage: "Select background",
-      selectGif: "GIF mode",
-      searchPlaceholder: "Search images or GIFs…",
-      save: "Save design & continue",
-      howItWorksTitle: "How do CRYPTOCARDS work?",
-      howItWorks_1:
-        "On-chain & verifiable — each CRYPTOCARD is funded on-chain, publicly auditable, and can only be redeemed once.",
-      howItWorks_2:
-        "Protocol tax → automated $CRYPTOCARDS buybacks and permanent burns that support long-term ecosystem health.",
-      howItWorks_3:
-        "Recycled fees — all protocol fees are cycled back into the ecosystem to grow and reinforce the protocol.",
-    },
+    // You can add more sections as the UI grows:
+    // - claim page
+    // - dev panel
+    // - notifications
+    // - multi-language strings, etc.
   },
 };
