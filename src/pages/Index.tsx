@@ -493,28 +493,23 @@ export default function Index() {
         <footer className="mt-8 pt-8 border-t border-border/30">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
             {/* Brand Section */}
-            <div className="text-center md:text-left">
-              <div className="flex items-center justify-center md:justify-start gap-3">
-                {/* Neon coin-style CC logo */}
-                <div className="relative flex items-center justify-center w-12 h-12 rounded-full bg-[radial-gradient(circle_at_30%_20%,#22d3ee,transparent_55%),radial-gradient(circle_at_70%_80%,#a855f7,transparent_55%)] border border-cyan-400/70 shadow-[0_0_18px_rgba(56,189,248,0.9)]">
-                  <div className="absolute inset-[3px] rounded-full border border-cyan-300/70" />
-                  <div className="absolute inset-[7px] rounded-full border border-purple-500/60" />
-                  <div className="relative flex items-center justify-center w-7 h-7 rounded-md border border-cyan-200/70 bg-black/70 shadow-[0_0_12px_rgba(56,189,248,0.9)]">
-                    <span className="text-[10px] font-black tracking-[0.16em] text-transparent bg-clip-text bg-gradient-to-r from-cyan-200 via-emerald-300 to-fuchsia-400">
-                      CC
-                    </span>
-                  </div>
-                </div>
-
-                <div className="text-left">
-                  <h4 className="text-lg font-black tracking-[0.22em] gradient-text mb-1">
-                    CRYPTOCARDS
-                  </h4>
-                  <p className="text-[9px] text-muted-foreground max-w-xs">
-                    On-chain, non-custodial crypto gift cards. The future of
-                    digital gifting on Solana.
-                  </p>
-                </div>
+            <div className="flex flex-col md:flex-row items-center md:items-start gap-3 text-center md:text-left">
+              <div className="relative flex-shrink-0">
+                <div className="absolute inset-0 blur-[12px] bg-[radial-gradient(circle_at_center,_rgba(96,165,250,0.9),_transparent_60%)] opacity-80" />
+                <img
+                  src="/cryptocards-logo.png"
+                  alt="CRYPTOCARDS logo"
+                  className="relative w-14 h-14 md:w-16 md:h-16 rounded-full shadow-[0_0_30px_rgba(56,189,248,0.9)] ring-2 ring-[#3b82f6]/70"
+                />
+              </div>
+              <div>
+                <h4 className="text-lg font-black tracking-[0.2em] uppercase bg-gradient-to-r from-emerald-300 via-cyan-300 to-blue-400 bg-clip-text text-transparent mb-1">
+                  CRYPTOCARDS
+                </h4>
+                <p className="text-[9px] text-muted-foreground max-w-xs">
+                  On-chain, non-custodial crypto gift cards. The future of digital gifting on
+                  Solana.
+                </p>
               </div>
             </div>
 
