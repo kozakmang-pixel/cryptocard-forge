@@ -1,82 +1,64 @@
+import { FC } from 'react';
 import { Button } from '@/components/ui/button';
-import { toast } from 'sonner';
-import { Gift, Sparkles } from 'lucide-react';
-import { useLanguage } from '@/lib/languageStore';
+import { Gift, ShieldCheck, Sparkles } from 'lucide-react';
 
 interface HeaderProps {
   onClaimClick: () => void;
 }
 
-export function Header({ onClaimClick }: HeaderProps) {
-  const { t } = useLanguage();
-  const caAddress = '9fakeCRYPTOCARDSaddress123exampleXYZ';
-
-  const copyCA = () => {
-    navigator.clipboard.writeText(caAddress);
-    toast.success('Contract address copied!');
-  };
-
+export const Header: FC<HeaderProps> = ({ onClaimClick }) => {
   return (
-    <header className="flex flex-col items-center py-6 px-3">
-      {/* Main Title with enhanced styling */}
-      <div className="relative mb-2">
-        <div className="absolute inset-0 blur-2xl bg-gradient-to-r from-primary/30 via-accent/20 to-secondary/30 rounded-full" />
-        <h1 className="relative text-3xl md:text-4xl lg:text-5xl font-black tracking-wider gradient-text text-glow flex items-center gap-3">
-          <Sparkles className="w-8 h-8 md:w-10 md:h-10 text-primary animate-pulse" />
-          {t('header.title')}
-          <Sparkles className="w-8 h-8 md:w-10 md:h-10 text-secondary animate-pulse" style={{ animationDelay: '0.5s' }} />
-        </h1>
-      </div>
-      
-      {/* Subtitle */}
-      <p className="text-xs md:text-sm text-muted-foreground text-center max-w-md mb-6 leading-relaxed">
-        {t('header.subtitle')}
-      </p>
-      
-      {/* Claim Button */}
-      <div className="mb-4 w-full max-w-md">
-        <Button
-          onClick={onClaimClick}
-          className="relative w-full h-14 text-lg font-black rounded-xl shadow-glow-green hover:brightness-110 hover:scale-[1.02] transition-all duration-300 overflow-hidden group"
-          style={{
-            background: 'linear-gradient(135deg, hsl(154, 100%, 50%), hsl(191, 100%, 50%), hsl(277, 100%, 50%))',
-            color: 'hsl(0, 0%, 0%)',
-          }}
-        >
-          <span className="relative z-10 flex items-center justify-center gap-2">
-            <Gift className="w-6 h-6" />
-            <span>{t('header.claimButton')}</span>
-          </span>
-          <span className="absolute inset-0 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 bg-gradient-to-r from-transparent via-white/30 to-transparent" />
-        </Button>
-        <p className="text-center text-[9px] text-accent mt-2 font-semibold animate-pulse">
-          {t('header.claimHint')}
-        </p>
-      </div>
+    <header className="sticky top-0 z-30 mb-4">
+      <div className="glass-card border border-border/40 backdrop-blur-xl rounded-2xl px-3 py-2 md:px-4 md:py-3 flex items-center justify-between gap-3 shadow-card">
+        {/* Left: brand + logo */}
+        <div className="flex items-center gap-2 md:gap-3 min-w-0">
+          {/* Logo */}
+          <div className="relative flex-shrink-0">
+            <div className="absolute inset-0 blur-[14px] bg-[radial-gradient(circle_at_center,_rgba(96,165,250,0.9),_transparent_65%)] opacity-80" />
+            <img
+              src="/cryptocards-logo.png"
+              alt="CRYPTOCARDS logo"
+              className="relative w-8 h-8 md:w-9 md:h-9 rounded-full shadow-[0_0_24px_rgba(56,189,248,0.9)] ring-1 ring-[#38bdf8]/70"
+            />
+          </div>
 
-      {/* CA and Buy Button */}
-      <div className="flex flex-wrap gap-3 items-center justify-center">
-        <div className="flex items-center gap-2 bg-card/60 backdrop-blur-sm px-3 py-2 rounded-lg border border-border/40 hover:border-primary/40 transition-colors">
-          <span className="text-[9px] text-primary font-bold">{t('header.ca')}</span>
-          <span className="text-[9px] font-mono text-foreground/80">
-            {caAddress.slice(0, 12)}...{caAddress.slice(-6)}
-          </span>
+          {/* Brand text */}
+          <div className="flex flex-col min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-xs md:text-sm font-black tracking-[0.25em] uppercase bg-gradient-to-r from-emerald-300 via-cyan-300 to-blue-400 bg-clip-text text-transparent">
+                CRYPTOCARDS
+              </span>
+              <span className="hidden md:inline-flex items-center rounded-full border border-emerald-400/40 bg-emerald-500/10 px-2 py-[2px] text-[10px] font-semibold text-emerald-300 tracking-wide">
+                Live on&nbsp;Solana
+              </span>
+            </div>
+            <div className="flex items-center gap-1 text-[10px] md:text-[11px] text-muted-foreground">
+              <Sparkles className="w-3 h-3 text-cyan-300 flex-shrink-0" />
+              <span className="truncate">
+                On-chain, non-custodial crypto gift cards.
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Right: trust + CTA */}
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <div className="hidden md:flex items-center gap-1 text-[10px] text-muted-foreground pr-2 border-r border-border/40">
+            <ShieldCheck className="w-3 h-3 text-emerald-300" />
+            <span className="uppercase tracking-wide font-semibold">
+              Non-custodial • Audited
+            </span>
+          </div>
           <Button
-            variant="outline"
+            onClick={onClaimClick}
             size="sm"
-            onClick={copyCA}
-            className="h-6 px-2 text-[8px] font-bold border-primary/30 hover:bg-primary/10 hover:border-primary"
+            className="h-7 md:h-8 px-3 md:px-4 text-[10px] md:text-[11px] font-black gradient-success text-primary-foreground flex items-center gap-1"
           >
-            {t('header.copy')}
+            <Gift className="w-3 h-3 md:w-4 md:h-4" />
+            <span>Claim a card</span>
           </Button>
         </div>
-        
-        <Button
-          className="gradient-primary text-primary-foreground font-black text-[10px] px-4 py-2 h-8 rounded-lg hover:brightness-110 hover:scale-105 transition-all shadow-glow-cyan"
-        >
-          {t('header.buyButton')}
-        </Button>
       </div>
     </header>
   );
-}
+};
