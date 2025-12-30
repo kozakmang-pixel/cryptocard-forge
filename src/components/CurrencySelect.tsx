@@ -1,11 +1,10 @@
-// src/components/CurrencySelect.tsx
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select';
 import { DollarSign } from 'lucide-react';
 
 const CURRENCIES = [
-  { code: 'USD', prefix: '$', flag: '🇺🇸' }, 
+  { code: 'USD', prefix: '$', flag: '🇺🇸' },
   { code: 'EUR', prefix: '€', flag: '🇪🇺' },
-  { code: 'GBP', prefix: '£', flag: '🇬🇧' }, 
+  { code: 'GBP', prefix: '£', flag: '🇬🇧' },
   { code: 'JPY', prefix: '¥', flag: '🇯🇵' },
   { code: 'AUD', prefix: '$', flag: '🇦🇺' },
   { code: 'CAD', prefix: '$', flag: '🇨🇦' },
