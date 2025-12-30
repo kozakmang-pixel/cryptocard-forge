@@ -200,7 +200,7 @@ app.post('/cards', async (req, res) => {
       const fiatDisplay =
         typeof amount_fiat === 'number' && amount_fiat > 0
           ? `${amount_fiat.toFixed(2)} ${currency}`
-          : '0.00 USD`;
+          : '0.00 USD';
 
       const userLine = user
         ? `User: ${user.email || user.id}`
