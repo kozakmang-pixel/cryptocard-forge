@@ -52,10 +52,10 @@ export const Header: FC<HeaderProps> = ({ onClaimClick }) => {
           <Button
             onClick={onClaimClick}
             size="sm"
-            className="h-7 md:h-8 px-3 md:px-4 text-[10px] md:text-[11px] font-black gradient-success text-primary-foreground flex items-center gap-1"
+            className="h-7 md:h-8 px-3 md:px-4 text-[10px] md:text-[11px] font-black gradient-success text-primary-foreground flex items-center gap-1 shadow-[0_0_25px_rgba(56,189,248,0.9)] ring-2 ring-cyan-400/60 animate-pulse"
           >
             <Gift className="w-3 h-3 md:w-4 md:h-4" />
-            <span>Claim a card</span>
+            <span>CLAIM A CARD</span>
           </Button>
         </div>
       </div>
