@@ -179,8 +179,8 @@ export function CardDesigner({
         {isCreating
           ? t('designer.creating')
           : cardCreated
-          ? 'Design saved – proceed below'
-          : 'Save design & continue'}
+          ? 'DESIGN SAVED – PROCEED'
+          : 'SAVE DESIGN & CONTINUE'}
       </Button>
 
       {/* How do CRYPTOCARDS work? */}
