@@ -502,7 +502,8 @@ export default function Index() {
                   className="relative w-14 h-14 md:w-16 md:h-16 rounded-full shadow-[0_0_30px_rgba(56,189,248,0.9)] ring-2 ring-[#3b82f6]/70"
                 />
               </div>
-              <div>
+              {/* text block nudged right on md+ so glow doesn't eat it */}
+              <div className="md:ml-2">
                 <h4 className="text-lg font-black tracking-[0.2em] uppercase bg-gradient-to-r from-emerald-300 via-cyan-300 to-blue-400 bg-clip-text text-transparent mb-1">
                   CRYPTOCARDS
                 </h4>
