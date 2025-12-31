@@ -81,7 +81,7 @@ export function PriceBanner({
         <img
           src="/cryptocards-cc.png"
           alt="CRYPTOCARDS"
-          className="w-7 h-7 object-contain -translate-y-[5px]"  // moved UP more
+          className="w-7 h-7 object-contain -translate-y-[4px]"  // moved down 1px
         />
         <span className="text-muted-foreground font-medium">
           CRYPTOCARDS:
