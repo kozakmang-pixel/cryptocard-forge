@@ -729,7 +729,7 @@ app.get('/card-status/:publicId', async (req, res) => {
   }
 });
 
-// LOCK CARD (logical lock + protocol SOL tax on lock)
+// LOCK CARD (logical lock + protocol SOL tax on lock + burn tracking)
 app.post('/lock-card', async (req, res) => {
   try {
     const { public_id } = req.body || {};
@@ -798,11 +798,36 @@ app.post('/lock-card', async (req, res) => {
                 'confirmed'
               );
 
+              const burnSol = burnLamports / web3.LAMPORTS_PER_SOL;
+
               console.log(
                 `Protocol tax on lock applied for card ${public_id}:`,
-                burnLamports / web3.LAMPORTS_PER_SOL,
+                burnSol,
                 'SOL'
               );
+
+              // Record burn event in card_burns (if table exists)
+              try {
+                const { error: burnInsertError } = await supabase
+                  .from('card_burns')
+                  .insert({
+                    card_public_id: public_id,
+                    burn_lamports: burnLamports,
+                    burn_sol: burnSol,
+                    tx_signature: signature,
+                    burn_wallet: BURN_WALLET,
+                    created_at: new Date().toISOString(),
+                  });
+
+                if (burnInsertError) {
+                  console.error(
+                    'Supabase card_burns insert error in /lock-card:',
+                    burnInsertError
+                  );
+                }
+              } catch (insertErr) {
+                console.error('Exception inserting into card_burns in /lock-card:', insertErr);
+              }
             } else {
               console.log(
                 `Skipping protocol tax on lock for card ${public_id}: burn amount too low`
@@ -1224,7 +1249,32 @@ app.get('/public-metrics', async (_req, res) => {
 
     const totalVolumeFundedFiat = totalVolumeFundedSol * price;
     const totalVolumeClaimedFiat = totalVolumeClaimedSol * price;
-    const protocolBurnsSol = totalVolumeFundedSol * 0.015;
+
+    // Default: 0, will fall back to 1.5% math if card_burns table isn't available
+    let protocolBurnsSol = 0;
+
+    try {
+      const { data: burnData, error: burnError } = await supabase
+        .from('card_burns')
+        .select('burn_sol');
+
+      if (burnError) {
+        console.error('Supabase /public-metrics card_burns error:', burnError);
+        protocolBurnsSol = totalVolumeFundedSol * 0.015;
+      } else if (burnData && burnData.length > 0) {
+        protocolBurnsSol = burnData.reduce(
+          (sum, row) => sum + Number(row.burn_sol || 0),
+          0
+        );
+      } else {
+        // No burn rows yet, fall back to math
+        protocolBurnsSol = totalVolumeFundedSol * 0.015;
+      }
+    } catch (burnCatchErr) {
+      console.error('Exception reading card_burns in /public-metrics:', burnCatchErr);
+      protocolBurnsSol = totalVolumeFundedSol * 0.015;
+    }
+
     const protocolBurnsFiat = protocolBurnsSol * price;
 
     res.json({
