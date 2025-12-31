@@ -1,3 +1,4 @@
+// src/components/PriceBanner.tsx
 import { TrendingUp, TrendingDown, RefreshCcw } from 'lucide-react';
 
 interface PriceBannerProps {
@@ -21,7 +22,9 @@ export function PriceBanner({
           className="w-4 h-4"
         />
         <span className="text-muted-foreground font-medium">SOL:</span>
-        <span className="text-primary font-bold">${solPrice.toFixed(2)}</span>
+        <span className="text-primary font-bold">
+          ${solPrice.toFixed(2)}
+        </span>
         <TrendingUp className="w-3 h-3 text-accent" />
       </div>
 
@@ -33,7 +36,9 @@ export function PriceBanner({
         <span className="text-[8px] bg-gradient-to-r from-primary/80 via-accent/80 to-secondary/80 text-primary-foreground px-1.5 py-0.5 rounded font-black">
           $CC
         </span>
-        <span className="text-muted-foreground font-medium">CRYPTOCARDS:</span>
+        <span className="text-muted-foreground font-medium">
+          CRYPTOCARDS:
+        </span>
         <span className="text-accent font-bold">
           ${cryptocardsPrice.toFixed(5)}
         </span>
