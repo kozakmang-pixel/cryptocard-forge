@@ -28,7 +28,6 @@ export function PriceBanner({
     try {
       const res = await fetch('/sol-price');
       if (!res.ok) return;
-
       const data = await res.json();
       const price =
         typeof data.price_usd === 'number'
@@ -36,25 +35,18 @@ export function PriceBanner({
           : typeof data.sol_price_usd === 'number'
           ? data.sol_price_usd
           : null;
-
       if (typeof price === 'number' && !Number.isNaN(price)) {
         setCurrentSolPrice(price);
       }
-    } catch {
-      // silent fail – banner is cosmetic
-    }
+    } catch {}
   };
 
   const handleRefreshClick = async () => {
     if (refreshing) return;
     setRefreshing(true);
-
     try {
-      if (onRefresh) {
-        await Promise.resolve(onRefresh());
-      } else {
-        await fetchSolPriceFromBackend();
-      }
+      if (onRefresh) await Promise.resolve(onRefresh());
+      else await fetchSolPriceFromBackend();
     } finally {
       setRefreshing(false);
     }
@@ -89,7 +81,7 @@ export function PriceBanner({
         <img
           src="/cryptocards-cc.png"
           alt="CRYPTOCARDS"
-          className="w-5 h-5 md:w-6 md:h-6 lg:w-7 lg:h-7 object-contain -translate-y-[1px]"
+          className="w-7 h-7 object-contain -translate-y-[5px]"  // moved UP more
         />
         <span className="text-muted-foreground font-medium">
           CRYPTOCARDS:
