@@ -1,3 +1,4 @@
+// src/pages/Index.tsx
 import { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { AnimatedBackground } from '@/components/AnimatedBackground';
@@ -112,28 +113,29 @@ export default function Index() {
     }
   }, []);
 
+  // Reusable SOL price fetch for top banner + manual refresh
+  const fetchSolPrice = useCallback(async () => {
+    try {
+      const res = await fetch(
+        'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd'
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.solana?.usd) {
+        setSolPrice(data.solana.usd);
+      }
+    } catch {
+      // silent – backend still has its own pricing
+    }
+  }, []);
+
   // Simple SOL price fetch for the top banner (client-side).
   // Backend handles pricing for funding/audit/claim.
   useEffect(() => {
-    const fetchPrice = async () => {
-      try {
-        const res = await fetch(
-          'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd'
-        );
-        if (!res.ok) return;
-        const data = await res.json();
-        if (data.solana?.usd) {
-          setSolPrice(data.solana.usd);
-        }
-      } catch {
-        // silent – backend still has its own pricing
-      }
-    };
-
-    fetchPrice();
-    const interval = setInterval(fetchPrice, 60_000);
+    fetchSolPrice();
+    const interval = setInterval(fetchSolPrice, 60_000);
     return () => clearInterval(interval);
-  }, []);
+  }, [fetchSolPrice]);
 
   // Hydrate builder from localStorage
   useEffect(() => {
@@ -204,9 +206,7 @@ export default function Index() {
     currency,
   ]);
 
-  const handleTokenInfoChange = (
-    info: { symbol: string; name: string } | null
-  ) => {
+  const handleTokenInfoChange = (info: { symbol: string; name: string } | null) => {
     if (info) {
       setTokenSymbol(info.symbol);
       setTokenName(info.name);
@@ -220,22 +220,6 @@ export default function Index() {
     const url = URL.createObjectURL(file);
     setSelectedImage(url);
     toast.success('Image uploaded!');
-  };
-
-  // Manual refresh for SOL price banner
-  const handleRefreshPrices = async () => {
-    try {
-      const res = await fetch(
-        'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd'
-      );
-      if (!res.ok) return;
-      const data = await res.json();
-      if (data.solana?.usd) {
-        setSolPrice(data.solana.usd);
-      }
-    } catch {
-      // ignore – banner will keep last known price
-    }
   };
 
   // Funding callback from FundingPanel → keep card preview in sync
@@ -360,7 +344,7 @@ export default function Index() {
     <div className="min-h-screen pb-12 relative">
       <AnimatedBackground />
       <SecurityBanner />
-      <PriceBanner solPrice={solPrice} onRefresh={handleRefreshPrices} />
+      <PriceBanner solPrice={solPrice} onRefresh={fetchSolPrice} />
 
       <div className="pt-[60px] px-3 max-w-5xl mx-auto relative z-10">
         {/* Top controls */}
@@ -532,8 +516,8 @@ export default function Index() {
                   CRYPTOCARDS
                 </h4>
                 <p className="text-[9px] text-muted-foreground max-w-xs">
-                  On-chain, non-custodial crypto gift cards. The future of
-                  digital gifting on Solana.
+                  On-chain, non-custodial crypto gift cards. The future of digital gifting on
+                  Solana.
                 </p>
               </div>
             </div>
@@ -659,19 +643,10 @@ export default function Index() {
           cardId={cardData.cardId}
         />
       )}
-      <DocumentationModal
-        open={docsModalOpen}
-        onOpenChange={setDocsModalOpen}
-      />
+      <DocumentationModal open={docsModalOpen} onOpenChange={setDocsModalOpen} />
       <TermsModal open={termsModalOpen} onOpenChange={setTermsModalOpen} />
-      <PrivacyModal
-        open={privacyModalOpen}
-        onOpenChange={setPrivacyModalOpen}
-      />
-      <DiscordModal
-        open={discordModalOpen}
-        onOpenChange={setDiscordModalOpen}
-      />
+      <PrivacyModal open={privacyModalOpen} onOpenChange={setPrivacyModalOpen} />
+      <DiscordModal open={discordModalOpen} onOpenChange={setDiscordModalOpen} />
 
       {/* Dev panel (unchanged) */}
       <DevPanel
@@ -717,9 +692,7 @@ export default function Index() {
         onSimulateLocked={() => {
           setLocked(true);
           setCurrentStep(3);
-          setCardData((prev) =>
-            prev ? { ...prev, locked: true } : null
-          );
+          setCardData((prev) => (prev ? { ...prev, locked: true } : null));
         }}
         onResetAll={handleReset}
       />
