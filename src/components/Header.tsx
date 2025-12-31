@@ -1,3 +1,4 @@
+// src/components/Header.tsx
 import { FC } from 'react';
 import { Button } from '@/components/ui/button';
 import { Gift, ShieldCheck, Sparkles } from 'lucide-react';
@@ -17,7 +18,7 @@ export const Header: FC<HeaderProps> = ({ onClaimClick }) => {
             <img
               src="/cryptocards-logo.png"
               alt="CRYPTOCARDS logo"
-              className="w-8 h-8 md:w-9 md:h-9 rounded-full"
+              className="w-9 h-9 md:w-10 md:h-10 rounded-full"
             />
           </div>
 
