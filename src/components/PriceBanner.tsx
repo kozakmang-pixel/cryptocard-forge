@@ -3,9 +3,9 @@ import { useEffect, useState } from 'react';
 import { TrendingUp, TrendingDown, RefreshCcw } from 'lucide-react';
 
 interface PriceBannerProps {
-  solPrice?: number;          // now optional, used as initial/external value
+  solPrice?: number;
   cryptocardsPrice?: number;
-  onRefresh?: () => void;     // optional parent refresh callback
+  onRefresh?: () => void;
 }
 
 export function PriceBanner({
@@ -13,25 +13,21 @@ export function PriceBanner({
   cryptocardsPrice = 0.00042,
   onRefresh,
 }: PriceBannerProps) {
-  // Local SOL price state so the banner can update itself
   const [currentSolPrice, setCurrentSolPrice] = useState<number>(
     typeof solPrice === 'number' ? solPrice : 0
   );
   const [refreshing, setRefreshing] = useState(false);
 
-  // Keep local state in sync if parent changes solPrice
   useEffect(() => {
     if (typeof solPrice === 'number' && !Number.isNaN(solPrice)) {
       setCurrentSolPrice(solPrice);
     }
   }, [solPrice]);
 
-  // Internal fetch to /sol-price if no onRefresh handler is provided
   const fetchSolPriceFromBackend = async () => {
     try {
       const res = await fetch('/sol-price');
       if (!res.ok) return;
-
       const data = await res.json();
       const price =
         typeof data.price_usd === 'number'
@@ -51,13 +47,10 @@ export function PriceBanner({
   const handleRefreshClick = async () => {
     if (refreshing) return;
     setRefreshing(true);
-
     try {
       if (onRefresh) {
-        // Let parent handle fetching & updating the solPrice prop
         await Promise.resolve(onRefresh());
       } else {
-        // Self-managed refresh if no callback provided
         await fetchSolPriceFromBackend();
       }
     } finally {
@@ -86,10 +79,9 @@ export function PriceBanner({
         <TrendingUp className="w-3 h-3 text-accent" />
       </div>
 
-      {/* Divider */}
       <div className="w-px h-4 bg-border/50" />
 
-      {/* CRYPTOCARDS Price (placeholder for now) */}
+      {/* CRYPTOCARDS Price */}
       <div className="flex items-center gap-1.5 text-[9px]">
         <span className="text-[8px] bg-gradient-to-r from-primary/80 via-accent/80 to-secondary/80 text-primary-foreground px-1.5 py-0.5 rounded font-black">
           $CC
@@ -103,18 +95,16 @@ export function PriceBanner({
         <TrendingDown className="w-3 h-3 text-warning" />
       </div>
 
-      {/* Divider */}
       <div className="w-px h-4 bg-border/50" />
 
-      {/* Refresh button */}
+      {/* Icon-only refresh button */}
       <button
         type="button"
         onClick={handleRefreshClick}
         disabled={refreshing}
         className="flex items-center gap-1 px-2 py-1 rounded-md border border-primary/40 bg-card/80 text-[8px] font-semibold uppercase tracking-wide hover:bg-primary/15 hover:border-primary/60 disabled:opacity-50 disabled:hover:bg-card/80 disabled:cursor-not-allowed"
       >
-        <RefreshCcw className="w-3 h-3" />
-        <span>{refreshing ? 'Refreshing…' : 'Refresh'}</span>
+        <RefreshCcw className={`w-3 h-3 ${refreshing ? 'animate-spin' : ''}`} />
       </button>
     </div>
   );
