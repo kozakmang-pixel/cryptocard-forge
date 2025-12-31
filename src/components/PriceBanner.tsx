@@ -28,6 +28,7 @@ export function PriceBanner({
     try {
       const res = await fetch('/sol-price');
       if (!res.ok) return;
+
       const data = await res.json();
       const price =
         typeof data.price_usd === 'number'
@@ -35,18 +36,25 @@ export function PriceBanner({
           : typeof data.sol_price_usd === 'number'
           ? data.sol_price_usd
           : null;
+
       if (typeof price === 'number' && !Number.isNaN(price)) {
         setCurrentSolPrice(price);
       }
-    } catch {}
+    } catch {
+      // silent fail – banner is cosmetic
+    }
   };
 
   const handleRefreshClick = async () => {
     if (refreshing) return;
     setRefreshing(true);
+
     try {
-      if (onRefresh) await Promise.resolve(onRefresh());
-      else await fetchSolPriceFromBackend();
+      if (onRefresh) {
+        await Promise.resolve(onRefresh());
+      } else {
+        await fetchSolPriceFromBackend();
+      }
     } finally {
       setRefreshing(false);
     }
@@ -59,7 +67,6 @@ export function PriceBanner({
 
   return (
     <div className="fixed top-[20px] left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 px-3 py-1.5 rounded-lg border border-primary/30 bg-background/80 shadow-lg backdrop-blur-md">
-
       {/* SOL Price */}
       <div className="flex items-center gap-1.5 text-[9px]">
         <img
@@ -81,8 +88,8 @@ export function PriceBanner({
       <div className="flex items-center gap-1.5 text-[9px]">
         <img
           src="/cryptocards-cc.png"
-          alt="CC"
-          className="w-5 h-5"
+          alt="CRYPTOCARDS"
+          className="w-5 h-5 md:w-6 md:h-6 lg:w-7 lg:h-7 object-contain -translate-y-[1px]"
         />
         <span className="text-muted-foreground font-medium">
           CRYPTOCARDS:
@@ -96,7 +103,7 @@ export function PriceBanner({
       {/* Divider */}
       <div className="w-px h-4 bg-border/50" />
 
-      {/* Refresh Icon Only */}
+      {/* Refresh icon only */}
       <button
         type="button"
         onClick={handleRefreshClick}
