@@ -12,6 +12,7 @@ import {
   Copy,
   ArrowUpRight,
 } from 'lucide-react';
+import { useTokenLookup } from '@/hooks/useTokenLookup';
 
 interface PublicMetrics {
   total_cards_funded: number;
@@ -37,6 +38,7 @@ interface PublicActivityEvent {
   currency: string | null;
   timestamp: string;
   tx_signature?: string | null;
+  token_mint?: string | null;
 }
 
 interface SolPriceResponse {
@@ -67,6 +69,122 @@ function formatShortTime(iso?: string | null) {
   });
 }
 
+// Props for a single activity row
+interface ActivityRowProps {
+  evt: PublicActivityEvent;
+  idx: number;
+  solPrice: number | null;
+  labelForType: (type: ActivityType) => string;
+  pillClassForType: (type: ActivityType) => string;
+  handleCopy: (value: string, label: string) => void;
+}
+
+function ActivityRow({
+  evt,
+  idx,
+  solPrice,
+  labelForType,
+  pillClassForType,
+  handleCopy,
+}: ActivityRowProps) {
+  // Look up token info from mint (if present)
+  const mint = evt.token_mint || '';
+  const { tokenInfo } = useTokenLookup(mint);
+
+  const sol = evt.sol_amount ?? 0;
+  const tokenAmount = evt.token_amount ?? sol;
+
+  const price = solPrice && solPrice > 0 ? solPrice : null;
+  const fiat =
+    evt.fiat_value && evt.fiat_value > 0
+      ? evt.fiat_value
+      : price && sol > 0
+      ? sol * price
+      : 0;
+
+  const currency = evt.currency || 'USD';
+  const tokenSymbol = tokenInfo?.symbol || 'TOKEN';
+
+  return (
+    <div
+      key={evt.id || `${evt.card_id}-${evt.timestamp}-${idx}`}
+      className="rounded-md bg-card/70 border border-border/40 px-2 py-1.5"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5">
+          <span
+            className={
+              'inline-flex items-center px-1.5 py-0.5 rounded-full text-[8px] font-semibold ' +
+              pillClassForType(evt.type)
+            }
+          >
+            {labelForType(evt.type).toUpperCase()}
+          </span>
+          <span className="text-[8px] text-muted-foreground">
+            {formatShortTime(evt.timestamp)}
+          </span>
+        </div>
+        <div className="flex items-center gap-1">
+          <span className="text-[8px] uppercase tracking-wide text-muted-foreground">
+            Card ID
+          </span>
+          <span className="text-[9px] font-mono truncate max-w-[90px]">
+            {evt.card_id}
+          </span>
+          <button
+            type="button"
+            onClick={() => handleCopy(evt.card_id, 'Card ID')}
+            className="inline-flex h-4 w-4 items-center justify-center rounded bg-background/60 border border-border/40 hover:border-primary/60"
+          >
+            <Copy className="w-3 h-3 text-muted-foreground" />
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-1 grid grid-cols-3 gap-2">
+        <div>
+          <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
+            Token
+          </div>
+          <div className="text-[10px] font-semibold">
+            {tokenAmount.toFixed(6)} {tokenSymbol}
+          </div>
+        </div>
+        <div>
+          <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
+            SOL
+          </div>
+          <div className="text-[10px] font-semibold">
+            {sol.toFixed(6)} SOL
+          </div>
+        </div>
+        <div>
+          <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
+            Fiat
+          </div>
+          <div className="text-[10px] font-semibold">
+            {currency} {fiat.toFixed(2)}
+          </div>
+        </div>
+      </div>
+
+      {evt.tx_signature && (
+        <div className="mt-1 flex items-center justify-end">
+          <a
+            href={`https://solscan.io/tx/${evt.tx_signature}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-[8px] text-primary hover:text-primary/80"
+          >
+            <ArrowUpRight className="w-3 h-3" />
+            View tx
+          </a>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function PublicDashboard() {
   const { t } = useLanguage();
 
@@ -80,7 +198,8 @@ export function PublicDashboard() {
       const res = await fetch('/sol-price');
       if (!res.ok) return;
       const data: SolPriceResponse = await res.json();
-      const price = typeof data.price_usd === 'number' ? data.price_usd : data.sol_price_usd;
+      const price =
+        typeof data.price_usd === 'number' ? data.price_usd : data.sol_price_usd;
       if (typeof price === 'number') {
         setSolPrice(price);
       }
@@ -109,7 +228,9 @@ export function PublicDashboard() {
             last_updated: data.last_updated,
           });
         } else {
-          console.warn('PublicDashboard: /public-metrics not OK, falling back to /stats');
+          console.warn(
+            'PublicDashboard: /public-metrics not OK, falling back to /stats'
+          );
           const statsRes = await fetch('/stats');
           if (statsRes.ok) {
             const stats = await statsRes.json();
@@ -119,8 +240,10 @@ export function PublicDashboard() {
               total_volume_funded_fiat: stats.total_volume_funded_fiat ?? 0,
               total_volume_claimed_sol: stats.total_volume_claimed_sol ?? 0,
               total_volume_claimed_fiat: stats.total_volume_claimed_fiat ?? 0,
-              protocol_burns_sol: stats.protocol_burns_sol ?? stats.total_burned ?? 0,
-              protocol_burns_fiat: stats.protocol_burns_fiat ?? stats.total_burned_fiat ?? 0,
+              protocol_burns_sol:
+                stats.protocol_burns_sol ?? stats.total_burned ?? 0,
+              protocol_burns_fiat:
+                stats.protocol_burns_fiat ?? stats.total_burned_fiat ?? 0,
               burn_wallet: stats.burn_wallet,
               last_updated: stats.last_updated,
             });
@@ -135,7 +258,11 @@ export function PublicDashboard() {
         const res = await fetch('/public-activity');
         if (res.ok) {
           const data = await res.json();
-          const events = Array.isArray(data?.events) ? data.events : Array.isArray(data) ? data : [];
+          const events = Array.isArray(data?.events)
+            ? data.events
+            : Array.isArray(data)
+            ? data
+            : [];
           setActivity(events as PublicActivityEvent[]);
         }
       } catch (err) {
@@ -256,8 +383,8 @@ export function PublicDashboard() {
         </h2>
         <p className="text-[9px] text-muted-foreground mt-1 max-w-md">
           Live mainnet view of funded, locked, and claimed{' '}
-          <span className="font-semibold text-primary">CRYPTOCARDS</span> — plus protocol burn
-          activity.
+          <span className="font-semibold text-primary">CRYPTOCARDS</span> — plus
+          protocol burn activity.
         </p>
       </div>
 
@@ -368,109 +495,32 @@ export function PublicDashboard() {
           {activityBootstrapping && !loading && (
             <div className="text-[9px] text-muted-foreground py-4 text-center">
               Activity bootstrapping… create, fund, and claim{' '}
-              <span className="font-semibold text-primary">CRYPTOCARDS</span> to populate this feed.
+              <span className="font-semibold text-primary">CRYPTOCARDS</span> to
+              populate this feed.
             </div>
           )}
 
-          {!activityBootstrapping && topTenEvents.length === 0 && !loading && (
-            <div className="text-[9px] text-muted-foreground py-4 text-center">
-              No recent mainnet events recorded yet.
-            </div>
-          )}
+          {!activityBootstrapping &&
+            topTenEvents.length === 0 &&
+            !loading && (
+              <div className="text-[9px] text-muted-foreground py-4 text-center">
+                No recent mainnet events recorded yet.
+              </div>
+            )}
 
           {topTenEvents.length > 0 && (
             <div className="mt-1 max-h-56 overflow-y-auto space-y-1.5">
-              {topTenEvents.map((evt, idx) => {
-                const sol = evt.sol_amount ?? 0;
-                const token = evt.token_amount ?? sol;
-                const price = solPrice && solPrice > 0 ? solPrice : null;
-                const fiat =
-                  evt.fiat_value && evt.fiat_value > 0
-                    ? evt.fiat_value
-                    : price && sol > 0
-                    ? sol * price
-                    : 0;
-                const currency = evt.currency || 'USD';
-
-                return (
-                  <div
-                    key={evt.id || `${evt.card_id}-${evt.timestamp}-${idx}`}
-                    className="rounded-md bg-card/70 border border-border/40 px-2 py-1.5"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-1.5">
-                        <span
-                          className={
-                            'inline-flex items-center px-1.5 py-0.5 rounded-full text-[8px] font-semibold ' +
-                            pillClassForType(evt.type)
-                          }
-                        >
-                          {labelForType(evt.type).toUpperCase()}
-                        </span>
-                        <span className="text-[8px] text-muted-foreground">
-                          {formatShortTime(evt.timestamp)}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <span className="text-[8px] uppercase tracking-wide text-muted-foreground">
-                          Card ID
-                        </span>
-                        <span className="text-[9px] font-mono truncate max-w-[90px]">
-                          {evt.card_id}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => handleCopy(evt.card_id, 'Card ID')}
-                          className="inline-flex h-4 w-4 items-center justify-center rounded bg-background/60 border border-border/40 hover:border-primary/60"
-                        >
-                          <Copy className="w-3 h-3 text-muted-foreground" />
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="mt-1 grid grid-cols-3 gap-2">
-                      <div>
-                        <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
-                          Token
-                        </div>
-                        <div className="text-[10px] font-semibold">
-                          {token.toFixed(6)} TOKEN
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
-                          SOL
-                        </div>
-                        <div className="text-[10px] font-semibold">
-                          {sol.toFixed(6)} SOL
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
-                          Fiat
-                        </div>
-                        <div className="text-[10px] font-semibold">
-                          {currency} {fiat.toFixed(2)}
-                        </div>
-                      </div>
-                    </div>
-
-                    {evt.tx_signature && (
-                      <div className="mt-1 flex items-center justify-end">
-                        <a
-                          href={`https://solscan.io/tx/${evt.tx_signature}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 text-[8px] text-primary hover:text-primary/80"
-                        >
-                          <ArrowUpRight className="w-3 h-3" />
-                          View tx
-                        </a>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+              {topTenEvents.map((evt, idx) => (
+                <ActivityRow
+                  key={evt.id || `${evt.card_id}-${evt.timestamp}-${idx}`}
+                  evt={evt}
+                  idx={idx}
+                  solPrice={solPrice}
+                  labelForType={labelForType}
+                  pillClassForType={pillClassForType}
+                  handleCopy={handleCopy}
+                />
+              ))}
             </div>
           )}
 
@@ -491,14 +541,15 @@ export function PublicDashboard() {
             </span>
           </div>
           <p className="text-[9px] text-muted-foreground mb-2">
-            A <span className="font-semibold text-primary">1.5% protocol tax</span> is applied to
-            the SOL balance on every funded &amp; locked CRYPTOCARD. Tax proceeds swap to{' '}
-            <span className="font-semibold">$CRYPTOCARDS</span> and are sent to a public burn
-            wallet.
+            A <span className="font-semibold text-primary">1.5% protocol tax</span>{' '}
+            is applied to the SOL balance on every funded &amp; locked
+            CRYPTOCARD. Tax proceeds swap to{' '}
+            <span className="font-semibold">$CRYPTOCARDS</span> and are sent to a
+            public burn wallet.
           </p>
           <p className="text-[9px] text-muted-foreground mb-2">
-            Burns are triggered automatically whenever the burn wallet reaches a configured SOL
-            threshold, permanently reducing circulating supply.
+            Burns are triggered automatically whenever the burn wallet reaches a
+            configured SOL threshold, permanently reducing circulating supply.
           </p>
           {enrichedMetrics && (
             <>
@@ -518,7 +569,9 @@ export function PublicDashboard() {
                 </div>
                 <div className="space-y-1">
                   <div className="flex items-center justify-between gap-1">
-                    <span className="text-[9px] text-muted-foreground">Fee wallet</span>
+                    <span className="text-[9px] text-muted-foreground">
+                      Fee wallet
+                    </span>
                     <div className="flex items-center gap-1">
                       <a
                         href="https://solscan.io/account/31qHCz3moBBbbCgwaHfHkHjy5y6e4A1Y1HDtQRsa5Ms2"
@@ -545,7 +598,9 @@ export function PublicDashboard() {
                   </div>
 
                   <div className="flex items-center justify-between gap-1">
-                    <span className="text-[9px] text-muted-foreground">Burn wallet</span>
+                    <span className="text-[9px] text-muted-foreground">
+                      Burn wallet
+                    </span>
                     <div className="flex items-center gap-1">
                       <a
                         href="https://solscan.io/account/A3mpAVduHM9QyRgH1NSZp5ANnbPr2Z5vkXtc8EgDaZBF"
