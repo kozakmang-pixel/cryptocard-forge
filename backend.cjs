@@ -33,6 +33,11 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || web3.clusterApiUrl('mainnet-beta');
 const solanaConnection = new web3.Connection(SOLANA_RPC_URL, 'confirmed');
 
+const SOL_MINT_ADDRESS = 'So11111111111111111111111111111111111111112';
+const TOKEN_PROGRAM_ID = new web3.PublicKey(
+  'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
+);
+
 // --- SOL price helpers (multi-provider + cache) ---
 
 const FALLBACK_SOL_PRICE_USD = 130;
@@ -161,6 +166,98 @@ async function getSolPriceUsd() {
   lastSolPriceUsd = FALLBACK_SOL_PRICE_USD;
   lastSolPriceFetchedAt = now;
   return lastSolPriceUsd;
+}
+
+/**
+ * Get token price in SOL using Jupiter price API.
+ * Returns null if price can't be determined.
+ */
+async function getTokenPriceInSol(mintAddress) {
+  try {
+    const fetch = (await import('node-fetch')).default;
+    const url = `https://price.jup.ag/v6/price?ids=${mintAddress}&vsToken=${SOL_MINT_ADDRESS}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.error('getTokenPriceInSol error: status', res.status);
+      return null;
+    }
+    const body = await res.json();
+    const entry = body?.data?.[mintAddress];
+    const price = entry?.price;
+    if (typeof price === 'number' && Number.isFinite(price) && price > 0) {
+      // price = how many SOL for 1 token (vsToken = SOL)
+      return price;
+    }
+    return null;
+  } catch (err) {
+    console.error('getTokenPriceInSol exception:', err.message || err);
+    return null;
+  }
+}
+
+/**
+ * Enumerate SPL token accounts for an owner and estimate their value in SOL.
+ */
+async function getTokenAccountsWithSolValue(ownerPubkey) {
+  try {
+    const parsed = await solanaConnection.getParsedTokenAccountsByOwner(ownerPubkey, {
+      programId: TOKEN_PROGRAM_ID,
+    });
+
+    const tokens = [];
+    const priceCache = {};
+    let totalValueSol = 0;
+
+    for (const entry of parsed?.value || []) {
+      const acc = entry?.account;
+      const parsedData = acc?.data?.parsed;
+      const info = parsedData?.info;
+      const mint = info?.mint;
+      const tokenAmount = info?.tokenAmount;
+
+      if (!mint || !tokenAmount) continue;
+
+      const amountRawStr = tokenAmount.amount;
+      const decimals = Number(tokenAmount.decimals || 0);
+      const uiAmount = Number(tokenAmount.uiAmount || 0);
+
+      if (!amountRawStr || uiAmount <= 0) continue;
+
+      let priceSol = priceCache[mint];
+      if (priceSol === undefined) {
+        priceSol = await getTokenPriceInSol(mint);
+        priceCache[mint] = priceSol;
+      }
+
+      let valueSol = null;
+      if (priceSol && priceSol > 0) {
+        valueSol = uiAmount * priceSol;
+        totalValueSol += valueSol;
+      }
+
+      tokens.push({
+        mint,
+        amount_raw: amountRawStr,
+        amount_ui: uiAmount,
+        decimals,
+        price_sol_per_token: priceSol,
+        total_value_sol: valueSol,
+      });
+    }
+
+    return {
+      owner: ownerPubkey.toBase58(),
+      tokens,
+      total_value_sol: totalValueSol,
+    };
+  } catch (err) {
+    console.error('getTokenAccountsWithSolValue exception:', err.message || err);
+    return {
+      owner: ownerPubkey.toBase58(),
+      tokens: [],
+      total_value_sol: 0,
+    };
+  }
 }
 
 // --- Express setup ---
@@ -609,7 +706,7 @@ app.post('/auth/forgot-password', async (req, res) => {
       console.error('Error in /auth/forgot-password:', error);
       return res.status(400).json({
         success: false,
-       error: error.message || 'Failed to send reset email',
+        error: error.message || 'Failed to send reset email',
       });
     }
 
@@ -955,6 +1052,44 @@ app.get('/card-balance/:publicId', async (req, res) => {
     });
   } catch (err) {
     console.error('Error in /card-balance:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// CARD TOKEN VALUE (SPL tokens + estimated SOL value)
+app.get('/card-token-value/:publicId', async (req, res) => {
+  try {
+    const publicId = req.params.publicId;
+
+    const { data: card, error } = await supabase
+      .from('cards')
+      .select('deposit_address')
+      .eq('public_id', publicId)
+      .maybeSingle();
+
+    if (error) {
+      console.error('Supabase /card-token-value select error:', error);
+      throw error;
+    }
+
+    if (!card) {
+      return res.status(404).json({ error: 'Card not found' });
+    }
+
+    if (!card.deposit_address) {
+      return res.status(400).json({ error: 'Card has no deposit address' });
+    }
+
+    const ownerPubkey = new web3.PublicKey(card.deposit_address);
+    const result = await getTokenAccountsWithSolValue(ownerPubkey);
+
+    res.json({
+      public_id: publicId,
+      deposit_address: card.deposit_address,
+      ...result,
+    });
+  } catch (err) {
+    console.error('Error in /card-token-value:', err);
     res.status(500).json({ error: err.message });
   }
 });
