@@ -1,10 +1,11 @@
 // src/components/PriceBanner.tsx
+import { useEffect, useState } from 'react';
 import { TrendingUp, TrendingDown, RefreshCcw } from 'lucide-react';
 
 interface PriceBannerProps {
-  solPrice: number;
+  solPrice?: number;          // now optional, used as initial/external value
   cryptocardsPrice?: number;
-  onRefresh?: () => void;
+  onRefresh?: () => void;     // optional parent refresh callback
 }
 
 export function PriceBanner({
@@ -12,6 +13,63 @@ export function PriceBanner({
   cryptocardsPrice = 0.00042,
   onRefresh,
 }: PriceBannerProps) {
+  // Local SOL price state so the banner can update itself
+  const [currentSolPrice, setCurrentSolPrice] = useState<number>(
+    typeof solPrice === 'number' ? solPrice : 0
+  );
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Keep local state in sync if parent changes solPrice
+  useEffect(() => {
+    if (typeof solPrice === 'number' && !Number.isNaN(solPrice)) {
+      setCurrentSolPrice(solPrice);
+    }
+  }, [solPrice]);
+
+  // Internal fetch to /sol-price if no onRefresh handler is provided
+  const fetchSolPriceFromBackend = async () => {
+    try {
+      const res = await fetch('/sol-price');
+      if (!res.ok) return;
+
+      const data = await res.json();
+      const price =
+        typeof data.price_usd === 'number'
+          ? data.price_usd
+          : typeof data.sol_price_usd === 'number'
+          ? data.sol_price_usd
+          : null;
+
+      if (typeof price === 'number' && !Number.isNaN(price)) {
+        setCurrentSolPrice(price);
+      }
+    } catch (err) {
+      console.error('PriceBanner: failed to refresh SOL price', err);
+    }
+  };
+
+  const handleRefreshClick = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+
+    try {
+      if (onRefresh) {
+        // Let parent handle fetching & updating the solPrice prop
+        await Promise.resolve(onRefresh());
+      } else {
+        // Self-managed refresh if no callback provided
+        await fetchSolPriceFromBackend();
+      }
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const displaySolPrice =
+    typeof currentSolPrice === 'number' && !Number.isNaN(currentSolPrice)
+      ? currentSolPrice
+      : 0;
+
   return (
     <div className="fixed top-[20px] left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 px-3 py-1.5 rounded-lg border border-primary/30 bg-background/80 shadow-lg backdrop-blur-md">
       {/* SOL Price */}
@@ -23,7 +81,7 @@ export function PriceBanner({
         />
         <span className="text-muted-foreground font-medium">SOL:</span>
         <span className="text-primary font-bold">
-          ${solPrice.toFixed(2)}
+          ${displaySolPrice.toFixed(2)}
         </span>
         <TrendingUp className="w-3 h-3 text-accent" />
       </div>
@@ -51,12 +109,12 @@ export function PriceBanner({
       {/* Refresh button */}
       <button
         type="button"
-        onClick={onRefresh}
-        disabled={!onRefresh}
+        onClick={handleRefreshClick}
+        disabled={refreshing}
         className="flex items-center gap-1 px-2 py-1 rounded-md border border-primary/40 bg-card/80 text-[8px] font-semibold uppercase tracking-wide hover:bg-primary/15 hover:border-primary/60 disabled:opacity-50 disabled:hover:bg-card/80 disabled:cursor-not-allowed"
       >
         <RefreshCcw className="w-3 h-3" />
-        <span>Refresh</span>
+        <span>{refreshing ? 'Refreshing…' : 'Refresh'}</span>
       </button>
     </div>
   );
