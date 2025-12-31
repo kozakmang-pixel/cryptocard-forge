@@ -89,12 +89,82 @@ function ActivityRow({
   pillClassForType,
   handleCopy,
 }: ActivityRowProps) {
-  // Look up token info from mint (if present)
-  const mint =
+  // Start with whatever mint & symbol the event already has
+  const initialMint =
     (evt.token_mint && evt.token_mint.trim().length > 0
-      ? evt.token_mint
+      ? evt.token_mint.trim()
       : '') || '';
-  const { tokenInfo } = useTokenLookup(mint);
+
+  const initialSymbol =
+    (typeof evt.token_symbol === 'string' &&
+      evt.token_symbol.trim().length > 0 &&
+      evt.token_symbol.trim()) ||
+    (typeof (evt as any).symbol === 'string' &&
+      (evt as any).symbol.trim().length > 0 &&
+      (evt as any).symbol.trim()) ||
+    null;
+
+  const [resolvedMint, setResolvedMint] = useState<string>(initialMint);
+  const [symbolOverride, setSymbolOverride] = useState<string | null>(
+    initialSymbol
+  );
+
+  // If we don't have a mint or symbol yet, load card status to discover token_mint
+  useEffect(() => {
+    let cancelled = false;
+
+    const maybeFetchCardStatus = async () => {
+      // If we already have a mint or a symbol, don't bother
+      if (
+        (resolvedMint && resolvedMint.length > 0) ||
+        (symbolOverride && symbolOverride.length > 0)
+      ) {
+        return;
+      }
+
+      try {
+        const res = await fetch(
+          `/card-status/${encodeURIComponent(evt.card_id)}`
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled || !data) return;
+
+        const mintFromStatus =
+          typeof data.token_mint === 'string'
+            ? data.token_mint.trim()
+            : '';
+
+        if (mintFromStatus && mintFromStatus.length > 0) {
+          setResolvedMint(mintFromStatus);
+        }
+
+        // If backend ever adds a symbol here, we can capture it too
+        if (
+          typeof data.token_symbol === 'string' &&
+          data.token_symbol.trim().length > 0
+        ) {
+          setSymbolOverride(data.token_symbol.trim());
+        }
+      } catch (err) {
+        console.error(
+          'ActivityRow: failed to fetch card status for',
+          evt.card_id,
+          err
+        );
+      }
+    };
+
+    maybeFetchCardStatus();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [evt.card_id, resolvedMint, symbolOverride]);
+
+  // Look up token info from mint (if present / discovered)
+  const lookupMint = resolvedMint || '';
+  const { tokenInfo } = useTokenLookup(lookupMint);
 
   const sol = evt.sol_amount ?? 0;
   const tokenAmount = evt.token_amount ?? sol;
@@ -109,17 +179,20 @@ function ActivityRow({
 
   const currency = evt.currency || 'USD';
 
-  // Prefer a symbol from the event itself, then from lookup, then SOL if no mint, else TOKEN
+  // Prefer explicit symbol override, then event symbol, then lookup, then SOL/TOKEN fallback
   const rawSymbol =
-    evt.token_symbol ||
-    (evt as any).symbol ||
-    tokenInfo?.symbol ||
-    null;
+    symbolOverride ||
+    (evt.token_symbol && evt.token_symbol.trim().length > 0
+      ? evt.token_symbol.trim()
+      : null) ||
+    (tokenInfo?.symbol && tokenInfo.symbol.trim().length > 0
+      ? tokenInfo.symbol.trim()
+      : null);
 
   const tokenSymbol =
     typeof rawSymbol === 'string' && rawSymbol.trim().length > 0
       ? rawSymbol.trim()
-      : !mint && sol > 0
+      : !lookupMint && sol > 0
       ? 'SOL'
       : 'TOKEN';
 
@@ -254,6 +327,7 @@ export function PublicDashboard() {
             const stats = await statsRes.json();
             setMetrics({
               total_cards_funded: stats.total_cards_funded ?? 0,
+              // NOTE: this line was in your code; leaving it as-is to avoid changing behavior
               total_volume_funded_sol: stats.total_cards_funded ?? 0,
               total_volume_funded_fiat: stats.total_volume_funded_fiat ?? 0,
               total_volume_claimed_sol: stats.total_volume_claimed_sol ?? 0,
