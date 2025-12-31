@@ -35,7 +35,9 @@ export function PriceBanner({
           : typeof data.sol_price_usd === 'number'
           ? data.sol_price_usd
           : null;
-      if (typeof price === 'number') setCurrentSolPrice(price);
+      if (typeof price === 'number' && !Number.isNaN(price)) {
+        setCurrentSolPrice(price);
+      }
     } catch {}
   };
 
@@ -74,12 +76,12 @@ export function PriceBanner({
       {/* Divider */}
       <div className="w-px h-4 bg-border/50" />
 
-      {/* CC Price */}
+      {/* CRYPTOCARDS Price */}
       <div className="flex items-center gap-1.5 text-[9px]">
         <img
           src="/cryptocards-cc.png"
           alt="CC"
-          className="w-5 h-5"   // <<----- bumped up so visual size matches SOL
+          className="w-6 h-6"     // <<--- bumped to visually match Solana
         />
         <span className="text-muted-foreground font-medium">
           CRYPTOCARDS:
@@ -93,7 +95,7 @@ export function PriceBanner({
       {/* Divider */}
       <div className="w-px h-4 bg-border/50" />
 
-      {/* Refresh icon (no text) */}
+      {/* Refresh icon only */}
       <button
         type="button"
         onClick={handleRefreshClick}
