@@ -504,11 +504,10 @@ export default function Index() {
             {/* Brand Section */}
             <div className="flex flex-col md:flex-row items-center md:items-start gap-3 text-center md:text-left">
               <div className="relative flex-shrink-0">
-                <div className="absolute inset-0 blur-[12px] bg-[radial-gradient(circle_at_center,_rgba(96,165,250,0.9),_transparent_60%)] opacity-80" />
                 <img
                   src="/cryptocards-logo.png"
                   alt="CRYPTOCARDS logo"
-                  className="relative w-14 h-14 md:w-16 md:h-16 rounded-full shadow-[0_0_30px_rgba(56,189,248,0.9)] ring-2 ring-[#3b82f6]/70"
+                  className="relative w-14 h-14 md:w-16 md:h-16 rounded-full"
                 />
               </div>
               <div>
