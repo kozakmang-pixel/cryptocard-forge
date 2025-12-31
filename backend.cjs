@@ -15,52 +15,46 @@ const web3 = require('@solana/web3.js');
 const PORT = process.env.PORT || 3000;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
-const FRONTEND_URL = process.env.FRONTEND_URL || 'https://cryptocards.fun';
-
-// Optional: public burn wallet for dashboard
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+const SOLANA_RPC = process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com';
 const BURN_WALLET =
   process.env.BURN_WALLET ||
   'A3mpAVduHM9QyRgH1NSZp5ANnbPr2Z5vkXtc8EgDaZBF';
 
-if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
-  console.error('Missing SUPABASE_URL or SUPABASE_SERVICE_KEY in .env');
+const FALLBACK_SOL_PRICE_USD = 150;
+
+// Debug flags
+const DEBUG_API = process.env.DEBUG_API === 'true';
+const DEBUG_AUTH = process.env.DEBUG_AUTH === 'true';
+
+// --- Basic validation ---
+
+if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY || !SUPABASE_ANON_KEY) {
+  console.error('Missing Supabase environment variables. Please set:');
+  console.error('SUPABASE_URL, SUPABASE_SERVICE_KEY, SUPABASE_ANON_KEY');
   process.exit(1);
 }
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+// --- Core clients ---
 
-// Solana connection (for real deposit addresses / balances)
-const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || web3.clusterApiUrl('mainnet-beta');
-const solanaConnection = new web3.Connection(SOLANA_RPC_URL, 'confirmed');
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
+  auth: {
+    autoRefreshToken: false,
+    persistSession: false,
+  },
+});
 
-// --- SOL price helpers (multi-provider + cache) ---
+const solanaConnection = new web3.Connection(SOLANA_RPC, 'confirmed');
 
-const FALLBACK_SOL_PRICE_USD = 130;
-// cache TTL: 2 minutes
-const SOL_PRICE_TTL_MS = 120_000;
+// Dist path for frontend
+const distPath = path.join(__dirname, 'dist');
 
-let lastSolPriceUsd = null;
-let lastSolPriceFetchedAt = 0;
+// --- Helper: robust SOL price fetcher (multiple sources) ---
 
-/**
- * Get SOL price in USD with multiple providers + 2 min in-memory cache.
- * Providers:
- * - Binance
- * - CryptoCompare
- * - CoinPaprika
- * - Coingecko
- */
 async function getSolPriceUsd() {
-  const now = Date.now();
-  if (lastSolPriceUsd && now - lastSolPriceFetchedAt < SOL_PRICE_TTL_MS) {
-    console.log('getSolPriceUsd: using cached value =', lastSolPriceUsd);
-    return lastSolPriceUsd;
-  }
-
+  // Try a few public endpoints in order, fail-soft with fallback
   const fetch = (await import('node-fetch')).default;
-  let lastError = null;
 
-  // Binance
   async function fromBinance() {
     const url = 'https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT';
     const res = await fetch(url);
@@ -78,7 +72,10 @@ async function getSolPriceUsd() {
 
   // CryptoCompare
   async function fromCryptoCompare() {
-    const url = 'https://min-api.cryptocompare.com/data/price?fsym=SOL&tsyms=USD';
+    const apiKey = process.env.CRYPTOCOMPARE_API_KEY;
+    const url = `https://min-api.cryptocompare.com/data/price?fsym=SOL&tsyms=USD${
+      apiKey ? `&api_key=${apiKey}` : ''
+    }`;
     const res = await fetch(url);
     if (!res.ok) {
       console.error('getSolPriceUsd error: cryptocompare status', res.status);
@@ -86,24 +83,24 @@ async function getSolPriceUsd() {
     }
     const body = await res.json();
     const price = body?.USD;
-    if (typeof price !== 'number' || !Number.isFinite(price)) {
+    if (!price || !Number.isFinite(price)) {
       throw new Error('cryptocompare missing or invalid price');
     }
     return price;
   }
 
-  // CoinPaprika
-  async function fromCoinPaprika() {
-    const url = 'https://api.coinpaprika.com/v1/tickers/sol-solana';
+  // Coinbase
+  async function fromCoinbase() {
+    const url = 'https://api.coinbase.com/v2/prices/SOL-USD/spot';
     const res = await fetch(url);
     if (!res.ok) {
-      console.error('getSolPriceUsd error: coinpaprika status', res.status);
-      throw new Error(`coinpaprika status ${res.status}`);
+      console.error('getSolPriceUsd error: coinbase status', res.status);
+      throw new Error(`coinbase status ${res.status}`);
     }
     const body = await res.json();
-    const price = body?.quotes?.USD?.price;
-    if (typeof price !== 'number' || !Number.isFinite(price)) {
-      throw new Error('coinpaprika missing or invalid price');
+    const price = parseFloat(body?.data?.amount);
+    if (!price || !Number.isFinite(price)) {
+      throw new Error('coinbase missing or invalid price');
     }
     return price;
   }
@@ -125,84 +122,61 @@ async function getSolPriceUsd() {
     return price;
   }
 
-  const providers = [fromBinance, fromCryptoCompare, fromCoinPaprika, fromCoingecko];
+  const strategies = [fromBinance, fromCryptoCompare, fromCoinbase, fromCoingecko];
 
-  for (const provider of providers) {
+  for (const strat of strategies) {
     try {
-      const price = await provider();
-      if (price && price > 0 && Number.isFinite(price)) {
-        lastSolPriceUsd = price;
-        lastSolPriceFetchedAt = now;
-        console.log('getSolPriceUsd: fresh price =', price);
-        return price;
+      const price = await strat();
+      if (DEBUG_API) {
+        console.log('getSolPriceUsd success from strategy:', strat.name, price);
       }
+      return price;
     } catch (err) {
-      lastError = err;
-      console.error('getSolPriceUsd provider failed:', err.message || err);
+      console.error('getSolPriceUsd strategy failed:', strat.name, err?.message);
     }
   }
 
-  if (lastSolPriceUsd) {
-    console.warn(
-      'getSolPriceUsd: providers failed, using cached value =',
-      lastSolPriceUsd,
-      'Last error:',
-      lastError && (lastError.message || lastError)
-    );
-    return lastSolPriceUsd;
-  }
-
   console.warn(
-    'getSolPriceUsd: providers failed, using fallback =',
-    FALLBACK_SOL_PRICE_USD,
-    'Last error:',
-    lastError && (lastError.message || lastError)
+    `getSolPriceUsd: all strategies failed. Falling back to static price ${FALLBACK_SOL_PRICE_USD}`
   );
-  lastSolPriceUsd = FALLBACK_SOL_PRICE_USD;
-  lastSolPriceFetchedAt = now;
-  return lastSolPriceUsd;
+  return FALLBACK_SOL_PRICE_USD;
 }
 
-// --- Express setup ---
+// --- Express app setup ---
 
 const app = express();
-app.use(cors());
-app.use(express.json());
 
-// Serve static frontend from dist
-const distPath = path.join(__dirname, 'dist');
+app.use(
+  cors({
+    origin: '*',
+  })
+);
+
+app.use(express.json());
 app.use(express.static(distPath));
 
-// Utility hash helper
-function sha256(str) {
-  return crypto.createHash('sha256').update(str).digest('hex');
+// --- Utility helpers ---
+
+function sha256(data) {
+  return crypto.createHash('sha256').update(data).digest('hex');
 }
 
-// Deterministic public card ID: 8 numeric digits in XXXX-XXXX format
 function generatePublicId() {
-  let digits = '';
-  while (digits.length < 8) {
-    const byte = crypto.randomBytes(1)[0];
-    if (byte >= 250) continue;
-    digits += String(byte % 10);
-  }
-  return digits.slice(0, 4) + '-' + digits.slice(4);
+  return crypto.randomBytes(6).toString('hex').toUpperCase();
 }
 
 function generateDepositSecret() {
   return crypto.randomBytes(32).toString('hex');
 }
 
-// Solana-style deposit address derived from secret
 function generateDepositAddress(secret) {
-  const seed = crypto.createHash('sha256').update(String(secret)).digest().subarray(0, 32);
+  const seed = Buffer.from(secret, 'hex');
   const keypair = web3.Keypair.fromSeed(seed);
   return keypair.publicKey.toBase58();
 }
 
-// Re-create full keypair for a deposit address (for CLAIM)
-function getDepositKeypairFromSecret(secret) {
-  const seed = crypto.createHash('sha256').update(String(secret)).digest().subarray(0, 32);
+function generateDepositKeypairFromSecret(secret) {
+  const seed = Buffer.from(secret, 'hex');
   return web3.Keypair.fromSeed(seed);
 }
 
@@ -249,289 +223,457 @@ async function getUserFromRequest(req) {
 
   try {
     const { data, error } = await supabase.auth.getUser(token);
-    if (error) {
-      // Avoid spamming logs on expired JWTs; just return null
-      if (!error.message?.toLowerCase?.().includes('token is expired')) {
-        console.error('getUserFromRequest error:', error);
+    if (error || !data?.user) {
+      if (DEBUG_AUTH) {
+        console.warn('getUserFromRequest: invalid or expired token', error);
       }
       return null;
     }
-    return data.user || null;
+    return data.user;
   } catch (err) {
-    console.error('getUserFromRequest exception:', err);
+    console.error('getUserFromRequest error:', err);
     return null;
   }
 }
 
-// ----- AUTH ROUTES -----
+// --- Health check ---
 
-// REGISTER: username + password required, email OPTIONAL
-app.post('/auth/register', async (req, res) => {
+app.get('/health', (_req, res) => {
+  res.json({ ok: true, time: new Date().toISOString() });
+});
+
+// --- SOL price endpoint ---
+
+app.get('/sol-price', async (_req, res) => {
   try {
-    const { username, password, email } = req.body || {};
-    if (!username || !password) {
-      return res.status(400).json({
-        success: false,
-        error: 'username and password are required',
-      });
-    }
-
-    const trimmedUsername = String(username).trim();
-    if (!/^[a-zA-Z0-9_\-]{3,20}$/.test(trimmedUsername)) {
-      return res.status(400).json({
-        success: false,
-        error:
-          'Username must be 3-20 characters and contain only letters, numbers, underscores, or dashes.',
-      });
-    }
-
-    const { data: existingUsers, error: existingError } = await supabase.auth.admin.listUsers({
-      page: 1,
-      perPage: 1000,
-    });
-
-    if (existingError) {
-      console.error('Error in /auth/register listUsers:', existingError);
-      return res.status(500).json({
-        success: false,
-        error: 'Failed to check existing users',
-      });
-    }
-
-    const usernameTaken =
-      existingUsers?.users?.some((u) => {
-        const metaUsername = u.user_metadata?.username || u.email?.split('@')[0];
-        return metaUsername && metaUsername.toLowerCase() === trimmedUsername.toLowerCase();
-      }) || false;
-
-    if (usernameTaken) {
-      return res.status(400).json({
-        success: false,
-        error: 'Username is already taken. Please choose a different one.',
-      });
-    }
-
-    const redirectTo = FRONTEND_URL ? `${FRONTEND_URL.replace(/\/+$/, '')}/` : undefined;
-
-    let user = null;
-    let error = null;
-
-    if (email && typeof email === 'string' && email.includes('@')) {
-      const signUp = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: {
-            username: trimmedUsername,
-            notification_email: email,
-          },
-          emailRedirectTo: redirectTo,
-        },
-      });
-
-      error = signUp.error;
-      user = signUp.data?.user ?? null;
-    } else {
-      const syntheticEmail = `${trimmedUsername}+noemail@cryptocards.local`;
-
-      const { data, error: createError } = await supabase.auth.admin.createUser({
-        email: syntheticEmail,
-        password,
-        email_confirm: true,
-        user_metadata: {
-          username: trimmedUsername,
-          notification_email: null,
-        },
-      });
-
-      error = createError;
-      user = data?.user ?? null;
-    }
-
-    if (error) {
-      console.error('Error in /auth/register:', error);
-      return res.status(400).json({
-        success: false,
-        error: error.message || 'Registration failed',
-      });
-    }
-
-    await notifyTelegram(
-      `🆕 New user registered\n\nUsername: \`${trimmedUsername}\`\nEmail: \`${email || 'N/A'}\``
-    );
-
-    return res.json({
-      success: true,
-      user: user
-        ? {
-            id: user.id,
-            username: trimmedUsername,
-            email: email || null,
-          }
-        : null,
-    });
+    const price = await getSolPriceUsd();
+    res.json({ price_usd: price });
   } catch (err) {
-    console.error('Exception in /auth/register:', err);
-    res.status(500).json({ success: false, error: 'Internal server error' });
+    console.error('/sol-price error:', err);
+    res.status(500).json({ error: 'Failed to fetch SOL price' });
   }
 });
 
-// LOGIN: USERNAME + PASSWORD
-app.post('/auth/login', async (req, res) => {
+// --- Auth + user profile endpoints ---
+
+app.post('/auth/signup', async (req, res) => {
   try {
-    const { username, password } = req.body || {};
-    if (!username || !password) {
-      return res.status(400).json({
-        success: false,
-        error: 'username and password are required',
-      });
+    const { email, password } = req.body || {};
+    if (!password) {
+      return res.status(400).json({ error: 'Password is required' });
     }
 
-    const identifier = String(username).trim();
-
-    const { data: usersPage, error: listError } = await supabase.auth.admin.listUsers({
-      page: 1,
-      perPage: 1000,
-    });
-
-    if (listError) {
-      console.error('Error in /auth/login listUsers:', listError);
-      return res.status(500).json({
-        success: false,
-        error: 'Failed to look up user',
-      });
-    }
-
-    const matchedUser =
-      usersPage?.users?.find((u) => {
-        const uname = u.user_metadata?.username;
-        return typeof uname === 'string' && uname.toLowerCase() === identifier.toLowerCase();
-      }) || null;
-
-    if (!matchedUser || !matchedUser.email) {
-      return res.status(401).json({ success: false, error: 'Invalid credentials' });
-    }
-
-    const signIn = await supabase.auth.signInWithPassword({
-      email: matchedUser.email,
+    const { data, error } = await supabase.auth.signUp({
+      email: email || undefined,
       password,
     });
 
-    if (signIn.error || !signIn.data?.user || !signIn.data?.session) {
-      const msg = signIn.error?.message || '';
-      if (msg.toLowerCase().includes('confirm') && msg.toLowerCase().includes('email')) {
-        return res.status(403).json({
-          success: false,
-          error: 'Please confirm your email before logging in.',
-        });
-      }
-
-      return res.status(401).json({
-        success: false,
-        error: signIn.error?.message || 'Invalid credentials',
-      });
+    if (error) {
+      console.error('Supabase signUp error:', error);
+      return res.status(400).json({ error: error.message || 'Signup failed' });
     }
 
-    const { user, session } = signIn.data;
-    const token = session.access_token;
-    const refreshToken = session.refresh_token;
+    const user = data.user;
+    if (!user) {
+      return res.status(500).json({ error: 'User not returned from Supabase' });
+    }
 
-    const responseUser = {
+    const { error: profileError } = await supabase.from('user_profiles').insert({
       id: user.id,
-      username: user.user_metadata?.username || matchedUser.email.split('@')[0],
-      email: user.user_metadata?.notification_email || matchedUser.email,
-    };
+      email: user.email,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      display_name: null,
+      bio: null,
+      telegram_handle: null,
+      twitter_handle: null,
+      discord_handle: null,
+    });
+
+    if (profileError) {
+      console.error('Supabase user profile insert error:', profileError);
+    }
 
     res.json({
-      success: true,
-      token,
-      refreshToken,
-      user: responseUser,
+      user,
+      session: data.session,
+      message: 'Account created. Please check your email for verification.',
     });
   } catch (err) {
-    console.error('Exception in /auth/login:', err);
-    res.status(500).json({ success: false, error: 'Internal server error' });
+    console.error('/auth/signup error:', err);
+    res.status(500).json({ error: 'Signup failed' });
   }
 });
 
-// CURRENT USER
+app.post('/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!password) {
+      return res.status(400).json({ error: 'Password is required' });
+    }
+
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    if (error) {
+      console.error('Supabase signInWithPassword error:', error);
+      return res.status(400).json({ error: error.message || 'Login failed' });
+    }
+
+    res.json({
+      user: data.user,
+      session: data.session,
+    });
+  } catch (err) {
+    console.error('/auth/login error:', err);
+    res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+app.post('/auth/logout', async (req, res) => {
+  try {
+    const authHeader = req.headers['authorization'] || '';
+    const parts = authHeader.split(' ');
+    if (parts.length !== 2 || parts[0].toLowerCase() !== 'bearer') {
+      return res.json({ success: true });
+    }
+
+    const token = parts[1];
+    if (!token) {
+      return res.json({ success: true });
+    }
+
+    const { error } = await supabase.auth.admin.signOut(token);
+    if (error) {
+      console.error('/auth/logout signOut error:', error);
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('/auth/logout error:', err);
+    res.status(500).json({ error: 'Logout failed' });
+  }
+});
+
+// Authenticated user info
 app.get('/auth/me', async (req, res) => {
   try {
     const user = await getUserFromRequest(req);
     if (!user) {
-      return res.status(401).json({
-        success: false,
-        error: 'Not authenticated',
-      });
+      return res.status(401).json({ error: 'Not authenticated' });
     }
 
-    const meta = user.user_metadata || {};
-    const responseUser = {
-      id: user.id,
-      username: meta.username || user.email,
-      email: meta.notification_email || user.email,
-    };
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('*')
+      .eq('id', user.id)
+      .maybeSingle();
 
-    res.json({ success: true, user: responseUser });
+    res.json({
+      user,
+      profile,
+    });
   } catch (err) {
-    console.error('Exception in /auth/me:', err);
-    res.status(500).json({ success: false, error: 'Internal server error' });
+    console.error('/auth/me error:', err);
+    res.status(500).json({ error: 'Failed to load user info' });
   }
 });
 
-// UPDATE EMAIL METADATA (notification email)
-app.post('/auth/update-email', async (req, res) => {
+// Update profile
+app.post('/auth/profile', async (req, res) => {
   try {
     const user = await getUserFromRequest(req);
     if (!user) {
-      return res.status(401).json({
-        success: false,
-        error: 'Not authenticated',
-      });
+      return res.status(401).json({ error: 'Not authenticated' });
     }
 
-    const { newEmail } = req.body || {};
-    if (!newEmail || typeof newEmail !== 'string') {
-      return res.status(400).json({
-        success: false,
-        error: 'newEmail is required',
-      });
-    }
+    const { display_name, bio, telegram_handle, twitter_handle, discord_handle } =
+      req.body || {};
 
-    const { data, error } = await supabase.auth.admin.updateUserById(user.id, {
-      user_metadata: {
-        ...(user.user_metadata || {}),
-        notification_email: newEmail,
-      },
-    });
+    const { error } = await supabase
+      .from('user_profiles')
+      .update({
+        display_name: display_name ?? null,
+        bio: bio ?? null,
+        telegram_handle: telegram_handle ?? null,
+        twitter_handle: twitter_handle ?? null,
+        discord_handle: discord_handle ?? null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', user.id);
 
     if (error) {
-      console.error('Error in /auth/update-email:', error);
-      return res.status(400).json({
-        success: false,
-        error: error.message || 'Failed to update email',
-      });
+      console.error('/auth/profile update error:', error);
+      return res.status(400).json({ error: 'Failed to update profile' });
     }
 
-    const updated = data.user;
-    const meta = updated.user_metadata || {};
-    const responseUser = {
-      id: updated.id,
-      username: meta.username || updated.email,
-      email: meta.notification_email || updated.email,
-    };
-
-    res.json({ success: true, user: responseUser });
+    res.json({ success: true });
   } catch (err) {
-    console.error('Exception in /auth/update-email:', err);
-    res.status(500).json({ success: false, error: 'Internal server error' });
+    console.error('/auth/profile error:', err);
+    res.status(500).json({ error: 'Failed to update profile' });
   }
 });
 
-// EMAIL CHANGE COMPLETE WEBHOOK (secure change)
+// Request password reset
+app.post('/auth/reset-password', async (req, res) => {
+  try {
+    const { email } = req.body || {};
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    const redirectTo = process.env.PASSWORD_RESET_REDIRECT_URL;
+    const { data, error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo,
+    });
+
+    if (error) {
+      console.error('/auth/reset-password error:', error);
+      return res.status(400).json({ error: error.message || 'Reset failed' });
+    }
+
+    res.json({
+      success: true,
+      data,
+      message: 'Password reset email sent.',
+    });
+  } catch (err) {
+    console.error('/auth/reset-password error:', err);
+    res.status(500).json({ error: 'Reset failed' });
+  }
+});
+
+// Complete password update once user is redirected back with access token
+app.post('/auth/update-password', async (req, res) => {
+  try {
+    const { access_token, new_password } = req.body || {};
+    if (!access_token || !new_password) {
+      return res.status(400).json({
+        error: 'access_token and new_password are required',
+      });
+    }
+
+    const supabaseForUpdate = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+      },
+    });
+
+    await supabaseForUpdate.auth.setSession({
+      access_token,
+      refresh_token: '',
+    });
+
+    const { data, error } = await supabaseForUpdate.auth.updateUser({
+      password: new_password,
+    });
+
+    if (error) {
+      console.error('/auth/update-password error:', error);
+      return res.status(400).json({ error: error.message || 'Update failed' });
+    }
+
+    res.json({
+      success: true,
+      user: data.user,
+    });
+  } catch (err) {
+    console.error('/auth/update-password error:', err);
+    res.status(500).json({ error: 'Update failed' });
+  }
+});
+
+// Request email change
+app.post('/auth/email-change-request', async (req, res) => {
+  try {
+    const user = await getUserFromRequest(req);
+    if (!user) {
+      return res.status(401).json({ error: 'Not authenticated' });
+    }
+
+    const { new_email } = req.body || {};
+    if (!new_email) {
+      return res.status(400).json({ error: 'new_email is required' });
+    }
+
+    const existing = await supabase
+      .from('user_profiles')
+      .select('id')
+      .eq('email', new_email)
+      .maybeSingle();
+
+    if (existing.data) {
+      return res.status(400).json({
+        error: 'That email is already in use on another account.',
+      });
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const now = new Date().toISOString();
+
+    const { error: upsertError } = await supabase.from('email_change_tokens').upsert(
+      {
+        user_id: user.id,
+        new_email,
+        token,
+        created_at: now,
+        used: false,
+      },
+      {
+        onConflict: 'user_id',
+      }
+    );
+
+    if (upsertError) {
+      console.error('Error in /auth/email-change-request upsert:', upsertError);
+      return res.status(500).json({ error: 'Failed to create email change token' });
+    }
+
+    const frontendBase = process.env.FRONTEND_BASE_URL || '';
+    const confirmUrl = `${frontendBase}/email-change-confirm?token=${token}&uid=${user.id}`;
+
+    await notifyTelegram(
+      [
+        '*✉️ Email Change Requested*',
+        '',
+        `User: ${maskIdentifier(user.email || user.id)}`,
+        `New Email: ${maskIdentifier(new_email)}`,
+      ].join('\n')
+    );
+
+    res.json({
+      success: true,
+      message: 'Email change requested. Please confirm via the link we sent.',
+      confirm_url: confirmUrl,
+    });
+  } catch (err) {
+    console.error('/auth/email-change-request error:', err);
+    res.status(500).json({ error: 'Failed to request email change' });
+  }
+});
+
+// Confirm email change (user clicked the link)
+app.post('/auth/email-change-confirm', async (req, res) => {
+  try {
+    const { token, user_id } = req.body || {};
+
+    if (!token || !user_id) {
+      return res.status(400).json({
+        success: false,
+        error: 'token and user_id are required',
+      });
+    }
+
+    const { data: tokenRow, error: tokenError } = await supabase
+      .from('email_change_tokens')
+      .select('*')
+      .eq('user_id', user_id)
+      .eq('token', token)
+      .eq('used', false)
+      .maybeSingle();
+
+    if (tokenError) {
+      console.error('Error in /auth/email-change-confirm fetch token:', tokenError);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to validate token',
+      });
+    }
+
+    if (!tokenRow) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid or expired token',
+      });
+    }
+
+    const createdAt = new Date(tokenRow.created_at).getTime();
+    const now = Date.now();
+    const diffHours = (now - createdAt) / (1000 * 60 * 60);
+    if (diffHours > 24) {
+      return res.status(400).json({
+        success: false,
+        error: 'Token has expired',
+      });
+    }
+
+    const new_email = tokenRow.new_email;
+
+    const { error: existingError } = await supabase
+      .from('user_profiles')
+      .select('id')
+      .eq('email', new_email)
+      .limit(1);
+
+    if (existingError) {
+      console.error(
+        'Error in /auth/email-change-confirm checking existing email:',
+        existingError
+      );
+    }
+
+    const { data, error } = await supabase.auth.admin.updateUserById(user_id, {
+      email: new_email,
+    });
+
+    if (error) {
+      console.error('Error in /auth/email-change-confirm updateUserById:', error);
+      return res.status(400).json({
+        success: false,
+        error: 'Failed to update user email in auth',
+      });
+    }
+
+    const { error: profileError } = await supabase
+      .from('user_profiles')
+      .update({
+        email: new_email,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', user_id);
+
+    if (profileError) {
+      console.error('Error in /auth/email-change-confirm update profile:', profileError);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to update profile email',
+      });
+    }
+
+    const { error: tokenUpdateError } = await supabase
+      .from('email_change_tokens')
+      .update({ used: true })
+      .eq('user_id', user_id)
+      .eq('token', token);
+
+    if (tokenUpdateError) {
+      console.error(
+        'Error in /auth/email-change-confirm marking token used:',
+        tokenUpdateError
+      );
+    }
+
+    res.json({
+      success: true,
+      message: 'Email address updated successfully.',
+    });
+  } catch (err) {
+    console.error('/auth/email-change-confirm error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to confirm email change',
+    });
+  }
+});
+
+// Complete the email change on the frontend callback
 app.post('/auth/email-change-complete', async (req, res) => {
   try {
     const { user_id, new_email } = req.body || {};
+
     if (!user_id || !new_email) {
       return res.status(400).json({
         success: false,
@@ -549,80 +691,49 @@ app.post('/auth/email-change-complete', async (req, res) => {
       });
     }
 
-    const updatedUser = data.user;
-    const meta = updatedUser.user_metadata || {};
+    const user = data.user;
 
-    const newMeta = {
-      ...meta,
-      notification_email: new_email,
-    };
-
-    const { data: updateData, error: updateError } = await supabase.auth.admin.updateUserById(
-      user_id,
-      {
-        user_metadata: newMeta,
-      }
-    );
-
-    if (updateError) {
-      console.error('Error in /auth/email-change-complete update:', updateError);
+    if (user.email !== new_email) {
       return res.status(400).json({
         success: false,
-        error: updateError.message || 'Failed to finalize email change',
+        error: 'Email mismatch. Please confirm via the correct link.',
       });
     }
 
-    const updated = updateData.user;
-    const responseUser = {
-      id: updated.id,
-      username: meta.username || updated.email,
-      email: new_email,
-    };
+    const { error: profileError } = await supabase
+      .from('user_profiles')
+      .update({
+        email: new_email,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', user_id);
 
-    res.json({ success: true, user: responseUser });
-  } catch (err) {
-    console.error('Exception in /auth/email-change-complete:', err);
-    res.status(500).json({ success: false, error: 'Internal server error' });
-  }
-});
-
-// FORGOT PASSWORD -> Supabase reset email
-app.post('/auth/forgot-password', async (req, res) => {
-  try {
-    const { email } = req.body || {};
-    if (!email || typeof email !== 'string' || !email.includes('@')) {
-      return res.status(400).json({
+    if (profileError) {
+      console.error(
+        'Error in /auth/email-change-complete updating profile:',
+        profileError
+      );
+      return res.status(500).json({
         success: false,
-        error: 'Valid email is required',
+        error: 'Failed to update profile email',
       });
     }
 
-    const redirectTo = FRONTEND_URL
-      ? `${FRONTEND_URL.replace(/\/+$/, '')}/reset-password`
-      : undefined;
-
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo,
+    res.json({
+      success: true,
+      message: 'Email change completed successfully.',
     });
-
-    if (error) {
-      console.error('Error in /auth/forgot-password:', error);
-      return res.status(400).json({
-        success: false,
-        error: error.message || 'Failed to send reset email',
-      });
-    }
-
-    res.json({ success: true });
   } catch (err) {
-    console.error('Exception in /auth/forgot-password:', err);
-    res.status(500).json({ success: false, error: 'Internal server error' });
+    console.error('/auth/email-change-complete error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to complete email change',
+    });
   }
 });
 
-// ----- CARD + STATS ROUTES -----
+// --- Card creation / funding / claiming ---
 
-// CREATE CARD
 app.post('/create-card', async (req, res) => {
   try {
     const user = await getUserFromRequest(req);
@@ -666,11 +777,13 @@ app.post('/create-card', async (req, res) => {
       refunded: false,
       created_at: now,
       updated_at: now,
-      creator_user_id: user ? user.id : null,
-      creator_email: user ? user.email : null,
+      creator_user_id: user?.id || null,
+      creator_email: user?.email || null,
     };
 
-    const { error: insertError } = await supabase.from('cards').insert(insertPayload);
+    const { error: insertError } = await supabase
+      .from('cards')
+      .insert(insertPayload);
 
     if (insertError) {
       console.error('Supabase insert error /create-card:', insertError);
@@ -729,7 +842,7 @@ app.get('/card-status/:publicId', async (req, res) => {
   }
 });
 
-// LOCK CARD (logical lock, no on-chain tx yet)
+// LOCK CARD (logical lock, now with protocol tax on SOL balance)
 app.post('/lock-card', async (req, res) => {
   try {
     const { public_id } = req.body || {};
@@ -752,8 +865,80 @@ app.post('/lock-card', async (req, res) => {
       return res.status(404).json({ error: 'Card not found' });
     }
 
+    if (card.claimed) {
+      return res.status(400).json({ error: 'Card is already claimed' });
+    }
+
+    if (card.refunded) {
+      return res.status(400).json({ error: 'Card is already refunded' });
+    }
+
     if (card.locked) {
       return res.status(400).json({ error: 'Card is already locked' });
+    }
+
+    // Attempt protocol tax on lock (1.5% of current SOL balance)
+    try {
+      if (card.deposit_secret && card.deposit_address) {
+        const depositKeypair = generateDepositKeypairFromSecret(card.deposit_secret);
+        const depositPubkey = depositKeypair.publicKey;
+
+        if (depositPubkey.toBase58() === card.deposit_address) {
+          const lamports = await solanaConnection.getBalance(depositPubkey);
+
+          if (lamports > 0) {
+            const rawBurnLamports = Math.floor(lamports * 0.015);
+            const minBurnLamports = 5000;
+
+            if (rawBurnLamports >= minBurnLamports) {
+              const burnLamports = rawBurnLamports;
+
+              const { blockhash, lastValidBlockHeight } =
+                await solanaConnection.getLatestBlockhash('finalized');
+
+              const burnTx = new web3.Transaction({
+                feePayer: depositPubkey,
+                recentBlockhash: blockhash,
+              }).add(
+                web3.SystemProgram.transfer({
+                  fromPubkey: depositPubkey,
+                  toPubkey: new web3.PublicKey(BURN_WALLET),
+                  lamports: burnLamports,
+                })
+              );
+
+              burnTx.sign(depositKeypair);
+
+              const raw = burnTx.serialize();
+              const signature = await solanaConnection.sendRawTransaction(raw, {
+                skipPreflight: false,
+              });
+
+              await solanaConnection.confirmTransaction(
+                { signature, blockhash, lastValidBlockHeight },
+                'confirmed'
+              );
+
+              console.log(
+                `Protocol tax on lock applied for card ${public_id}:`,
+                burnLamports / web3.LAMPORTS_PER_SOL,
+                'SOL'
+              );
+            } else {
+              console.log(
+                `Skipping protocol tax on lock for card ${public_id}: burn amount too low`
+              );
+            }
+          }
+        } else {
+          console.error(
+            'Deposit address mismatch in /lock-card protocol tax for card',
+            public_id
+          );
+        }
+      }
+    } catch (taxErr) {
+      console.error('Error applying protocol tax in /lock-card:', taxErr);
     }
 
     const { error: updateError } = await supabase
@@ -779,27 +964,49 @@ app.post('/lock-card', async (req, res) => {
 // SIMPLE STATS (legacy)
 app.get('/stats', async (_req, res) => {
   try {
-    const { data, error } = await supabase.from('cards').select('amount_fiat, refunded');
+    const { data, error } = await supabase
+      .from('cards')
+      .select('funded, locked, claimed, refunded, token_amount, amount_fiat, currency');
 
     if (error) {
       console.error('Supabase /stats error:', error);
       throw error;
     }
 
-    let totalFunded = 0;
-    let totalBurned = 0;
+    let totalCardsFunded = 0;
+    let totalVolumeFundedSol = 0;
+    let totalVolumeClaimedSol = 0;
 
     for (const row of data || []) {
-      const amt = row.amount_fiat || 0;
-      totalFunded += amt;
-      if (row.refunded) {
-        totalBurned += amt;
+      const sol = Number(row.token_amount || 0);
+
+      if (row.funded || row.locked || row.claimed) {
+        totalCardsFunded += 1;
+        totalVolumeFundedSol += sol;
+      }
+
+      if (row.claimed) {
+        totalVolumeClaimedSol += sol;
       }
     }
 
+    const solPrice = await getSolPriceUsd();
+    const price = solPrice || FALLBACK_SOL_PRICE_USD;
+
+    const totalVolumeFundedFiat = totalVolumeFundedSol * price;
+    const totalVolumeClaimedFiat = totalVolumeClaimedSol * price;
+    const protocolBurnsSol = totalVolumeFundedSol * 0.015;
+    const protocolBurnsFiat = protocolBurnsSol * price;
+
     res.json({
-      total_funded: totalFunded,
-      total_burned: totalBurned,
+      total_cards_funded: totalCardsFunded,
+      total_volume_funded_sol: totalVolumeFundedSol,
+      total_volume_funded_fiat: totalVolumeFundedFiat,
+      total_volume_claimed_sol: totalVolumeClaimedSol,
+      total_volume_claimed_fiat: totalVolumeClaimedFiat,
+      protocol_burns_sol: protocolBurnsSol,
+      protocol_burns_fiat: protocolBurnsFiat,
+      burn_wallet: BURN_WALLET,
     });
   } catch (err) {
     console.error('Error in /stats:', err);
@@ -807,325 +1014,7 @@ app.get('/stats', async (_req, res) => {
   }
 });
 
-// MY CARDS (for UserDashboard)
-app.get('/my-cards', async (req, res) => {
-  try {
-    const user = await getUserFromRequest(req);
-    if (!user) {
-      return res.status(401).json({
-        error: 'Not authenticated',
-        code: 'NOT_AUTHENTICATED',
-      });
-    }
-
-    const { data, error } = await supabase
-      .from('cards')
-      .select('*')
-      .eq('creator_user_id', user.id)
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      console.error('Supabase /my-cards error:', error);
-      throw error;
-    }
-
-    res.json(data || []);
-  } catch (err) {
-    console.error('Error in /my-cards:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// CARD BALANCE (live Solana balance for deposit address)
-app.get('/card-balance/:publicId', async (req, res) => {
-  try {
-    const publicId = req.params.publicId;
-
-    const { data: card, error } = await supabase
-      .from('cards')
-      .select('deposit_address')
-      .eq('public_id', publicId)
-      .maybeSingle();
-
-    if (error) {
-      console.error('Supabase /card-balance error:', error);
-      throw error;
-    }
-
-    if (!card) {
-      return res.status(404).json({ error: 'Card not found' });
-    }
-
-    if (!card.deposit_address) {
-      return res.status(400).json({ error: 'Card has no deposit address' });
-    }
-
-    const pubkey = new web3.PublicKey(card.deposit_address);
-    const lamports = await solanaConnection.getBalance(pubkey);
-    const sol = lamports / web3.LAMPORTS_PER_SOL;
-
-    res.json({
-      deposit_address: card.deposit_address,
-      lamports,
-      sol,
-      rpc: SOLANA_RPC_URL,
-    });
-  } catch (err) {
-    console.error('Error in /card-balance:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// SYNC CARD FUNDING: read on-chain balance and mark funded/token_amount in DB
-app.post('/sync-card-funding/:publicId', async (req, res) => {
-  try {
-    const publicId = req.params.publicId;
-
-    const { data: card, error } = await supabase
-      .from('cards')
-      .select('deposit_address, funded, token_amount, currency, amount_fiat')
-      .eq('public_id', publicId)
-      .maybeSingle();
-
-    if (error) {
-      console.error('Supabase /sync-card-funding select error:', error);
-      throw error;
-    }
-
-    if (!card) {
-      return res.status(404).json({ error: 'Card not found' });
-    }
-
-    if (!card.deposit_address) {
-      return res.status(400).json({ error: 'Card has no deposit address' });
-    }
-
-    const pubkey = new web3.PublicKey(card.deposit_address);
-    const lamports = await solanaConnection.getBalance(pubkey);
-    const sol = lamports / web3.LAMPORTS_PER_SOL;
-
-    const isFunded = lamports > 0;
-
-    const { error: updateError } = await supabase
-      .from('cards')
-      .update({
-        funded: isFunded,
-        token_amount: sol,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('public_id', publicId);
-
-    if (updateError) {
-      console.error('Supabase /sync-card-funding update error:', updateError);
-      throw updateError;
-    }
-
-    res.json({
-      public_id: publicId,
-      deposit_address: card.deposit_address,
-      lamports,
-      sol,
-      funded: isFunded,
-    });
-  } catch (err) {
-    console.error('Error in /sync-card-funding:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// CLAIM CARD: verify CVV + move SOL from deposit address to destination wallet
-app.post('/claim-card', async (req, res) => {
-  try {
-    const { public_id, cvv, destination_wallet } = req.body || {};
-
-    if (!public_id || !cvv || !destination_wallet) {
-      return res.status(400).json({
-        success: false,
-        error: 'public_id, cvv, and destination_wallet are required',
-      });
-    }
-
-    let destPubkey;
-    try {
-      destPubkey = new web3.PublicKey(destination_wallet);
-    } catch (_e) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid destination wallet address',
-      });
-    }
-
-    const { data: card, error } = await supabase
-      .from('cards')
-      .select('*')
-      .eq('public_id', public_id)
-      .maybeSingle();
-
-    if (error) {
-      console.error('Supabase /claim-card select error:', error);
-      throw error;
-    }
-
-    if (!card) {
-      return res.status(404).json({
-        success: false,
-        error: 'Card not found',
-      });
-    }
-
-    if (card.claimed) {
-      return res.status(400).json({
-        success: false,
-        error: 'Card has already been claimed',
-      });
-    }
-
-    if (card.refunded) {
-      return res.status(400).json({
-        success: false,
-        error: 'Card has already been refunded',
-      });
-    }
-
-    if (!card.locked) {
-      return res.status(400).json({
-        success: false,
-        error: 'Card must be locked before claiming',
-      });
-    }
-
-    if (!card.deposit_secret || !card.deposit_address) {
-      return res.status(400).json({
-        success: false,
-        error: 'Card has no deposit wallet configured',
-      });
-    }
-
-    // CVV check
-    const providedHash = sha256(cvv);
-    if (providedHash !== card.cvv_hash) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid CVV for this card',
-      });
-    }
-
-    const depositKeypair = getDepositKeypairFromSecret(card.deposit_secret);
-    const depositPubkey = depositKeypair.publicKey;
-
-    if (depositPubkey.toBase58() !== card.deposit_address) {
-      console.error('Deposit address mismatch for card', public_id);
-      return res.status(400).json({
-        success: false,
-        error: 'Card deposit address mismatch',
-      });
-    }
-
-    const lamports = await solanaConnection.getBalance(depositPubkey);
-    if (lamports <= 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'Card has no balance to claim',
-      });
-    }
-
-    // Leave a small buffer for fees
-    const feeBufferLamports = 5000;
-    const lamportsToSend = lamports > feeBufferLamports ? lamports - feeBufferLamports : 0;
-
-    if (lamportsToSend <= 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'Balance is too low to claim after fees',
-      });
-    }
-
-    const { blockhash, lastValidBlockHeight } =
-      await solanaConnection.getLatestBlockhash('finalized');
-
-    const tx = new web3.Transaction({
-      feePayer: depositPubkey,
-      recentBlockhash: blockhash,
-    }).add(
-      web3.SystemProgram.transfer({
-        fromPubkey: depositPubkey,
-        toPubkey: destPubkey,
-        lamports: lamportsToSend,
-      })
-    );
-
-    tx.sign(depositKeypair);
-
-    const raw = tx.serialize();
-    const signature = await solanaConnection.sendRawTransaction(raw, {
-      skipPreflight: false,
-    });
-
-    await solanaConnection.confirmTransaction(
-      { signature, blockhash, lastValidBlockHeight },
-      'confirmed'
-    );
-
-    const solSent = lamportsToSend / web3.LAMPORTS_PER_SOL;
-
-    const { error: updateError } = await supabase
-      .from('cards')
-      .update({
-        claimed: true,
-        funded: false,
-        token_amount: solSent,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('public_id', public_id);
-
-    if (updateError) {
-      console.error('Supabase /claim-card update error:', updateError);
-      throw updateError;
-    }
-
-    const maskedDest = maskIdentifier(destPubkey.toBase58());
-
-    await notifyTelegram(
-      [
-        '*🎁 CRYPTOCARD Claimed*',
-        '',
-        `*Card ID:* \`${public_id}\``,
-        `*Amount:* ${solSent.toFixed(6)} SOL`,
-        `*To:* \`${maskedDest}\``,
-        '',
-        `[Solscan](https://solscan.io/tx/${signature})`,
-      ].join('\n')
-    );
-
-    return res.json({
-      success: true,
-      signature,
-      amount_sol: solSent,
-      destination_wallet: destPubkey.toBase58(),
-    });
-  } catch (err) {
-    console.error('Error in /claim-card:', err);
-    res.status(500).json({
-      success: false,
-      error: err.message || 'Internal server error',
-    });
-  }
-});
-
-// ----- PUBLIC SOL PRICE + METRICS + ACTIVITY FOR DASHBOARD -----
-
-// SOL price endpoint used by PublicDashboard
-app.get('/sol-price', async (_req, res) => {
-  try {
-    const price = await getSolPriceUsd();
-    res.json({ price_usd: price });
-  } catch (err) {
-    console.error('Error in /sol-price:', err);
-    res.status(500).json({ error: 'Failed to fetch SOL price' });
-  }
-});
-
-// Aggregated public metrics for NETWORK ACTIVITY & BURNS
+// Public metrics (dashboard)
 app.get('/public-metrics', async (_req, res) => {
   try {
     const { data, error } = await supabase
@@ -1204,74 +1093,53 @@ app.get('/public-activity', async (_req, res) => {
 
     const nowIso = new Date().toISOString();
 
-    for (const card of data || []) {
-      const sol = Number(card.token_amount || 0);
-      const fiat = typeof card.amount_fiat === 'number' ? card.amount_fiat : null;
-      const currency = card.currency || 'USD';
-      const createdAt = card.created_at || card.updated_at || nowIso;
-      const updatedAt = card.updated_at || createdAt;
-
-      // CREATED
+    for (const row of data || []) {
       events.push({
-        card_id: card.public_id,
-        type: 'CREATED',
-        token_amount: sol,
-        sol_amount: sol,
-        fiat_value: fiat,
-        currency,
-        timestamp: createdAt,
-        tx_signature: null,
+        type: 'created',
+        label: 'Card created',
+        public_id: row.public_id,
+        sol_amount: Number(row.token_amount || 0),
+        fiat_amount: row.amount_fiat,
+        currency: row.currency || 'USD',
+        at: row.created_at || nowIso,
       });
 
-      // FUNDED
-      if (card.funded) {
+      if (row.funded) {
         events.push({
-          card_id: card.public_id,
-          type: 'FUNDED',
-          token_amount: sol,
-          sol_amount: sol,
-          fiat_value: fiat,
-          currency,
-          timestamp: updatedAt,
-          tx_signature: null,
+          type: 'funded',
+          label: 'Card funded',
+          public_id: row.public_id,
+          sol_amount: Number(row.token_amount || 0),
+          fiat_amount: row.amount_fiat,
+          currency: row.currency || 'USD',
+          at: row.updated_at || nowIso,
         });
       }
 
-      // LOCKED
-      if (card.locked) {
+      if (row.locked) {
         events.push({
-          card_id: card.public_id,
-          type: 'LOCKED',
-          token_amount: sol,
-          sol_amount: sol,
-          fiat_value: fiat,
-          currency,
-          timestamp: updatedAt,
-          tx_signature: null,
+          type: 'locked',
+          label: 'Card locked',
+          public_id: row.public_id,
+          sol_amount: Number(row.token_amount || 0),
+          fiat_amount: row.amount_fiat,
+          currency: row.currency || 'USD',
+          at: row.updated_at || nowIso,
         });
       }
 
-      // CLAIMED
-      if (card.claimed) {
+      if (row.claimed) {
         events.push({
-          card_id: card.public_id,
-          type: 'CLAIMED',
-          token_amount: sol,
-          sol_amount: sol,
-          fiat_value: fiat,
-          currency,
-          timestamp: updatedAt,
-          tx_signature: null,
+          type: 'claimed',
+          label: 'Card claimed',
+          public_id: row.public_id,
+          sol_amount: Number(row.token_amount || 0),
+          fiat_amount: row.amount_fiat,
+          currency: row.currency || 'USD',
+          at: row.updated_at || nowIso,
         });
       }
     }
-
-    // Sort newest first and trim to 50
-    events.sort((a, b) => {
-      const ta = new Date(a.timestamp).getTime();
-      const tb = new Date(b.timestamp).getTime();
-      return tb - ta;
-    });
 
     res.json({ events: events.slice(0, 50) });
   } catch (err) {
