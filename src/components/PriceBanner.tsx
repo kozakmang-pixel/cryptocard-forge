@@ -35,9 +35,7 @@ export function PriceBanner({
           : typeof data.sol_price_usd === 'number'
           ? data.sol_price_usd
           : null;
-      if (typeof price === 'number') {
-        setCurrentSolPrice(price);
-      }
+      if (typeof price === 'number') setCurrentSolPrice(price);
     } catch {}
   };
 
@@ -73,6 +71,7 @@ export function PriceBanner({
         <TrendingUp className="w-3 h-3 text-accent" />
       </div>
 
+      {/* Divider */}
       <div className="w-px h-4 bg-border/50" />
 
       {/* CC Price */}
@@ -80,18 +79,21 @@ export function PriceBanner({
         <img
           src="/cryptocards-cc.png"
           alt="CC"
-          className="w-4 h-4 rounded-sm"
+          className="w-5 h-5"   // <<----- bumped up so visual size matches SOL
         />
-        <span className="text-muted-foreground font-medium">CRYPTOCARDS:</span>
+        <span className="text-muted-foreground font-medium">
+          CRYPTOCARDS:
+        </span>
         <span className="text-accent font-bold">
           ${cryptocardsPrice.toFixed(5)}
         </span>
         <TrendingDown className="w-3 h-3 text-warning" />
       </div>
 
+      {/* Divider */}
       <div className="w-px h-4 bg-border/50" />
 
-      {/* Refresh (icon only) */}
+      {/* Refresh icon (no text) */}
       <button
         type="button"
         onClick={handleRefreshClick}
