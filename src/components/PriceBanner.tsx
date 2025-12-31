@@ -81,7 +81,7 @@ export function PriceBanner({
         <img
           src="/cryptocards-cc.png"
           alt="CC"
-          className="w-6 h-6"     // <<--- bumped to visually match Solana
+          className="w-7 h-7"  // <<--- bumped up again
         />
         <span className="text-muted-foreground font-medium">
           CRYPTOCARDS:
