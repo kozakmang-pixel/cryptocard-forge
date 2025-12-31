@@ -10,9 +10,7 @@ import { PublicDashboard } from '@/components/PublicDashboard';
 import { PriceBanner } from '@/components/PriceBanner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Switch } from '@/components/ui/switch';
 import { useLanguage } from '@/lib/languageStore';
-import { useSession } from '@/hooks/useSession';
 import { apiService } from '@/services/api';
 import { toast } from 'sonner';
 import {
@@ -45,10 +43,17 @@ interface CardTemplate {
   tokenName: string;
 }
 
+interface SessionData {
+  token: string;
+  user_id: string;
+  username: string;
+  email?: string | null;
+}
+
 export default function IndexPage() {
   const { t, language, setLanguage } = useLanguage();
-  const { session, loading: sessionLoading, refreshSession, setSession } = useSession();
 
+  // --- Designer state ---
   const [tokenAddress, setTokenAddress] = useState('');
   const [message, setMessage] = useState('');
   const [font, setFont] = useState<FontFamily>('Space Grotesk');
@@ -60,14 +65,20 @@ export default function IndexPage() {
   const [cardCreated, setCardCreated] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
 
+  // --- Auth / session state (local, no useSession hook) ---
+  const [session, setSession] = useState<SessionData | null>(null);
+  const [sessionLoading, setSessionLoading] = useState(true);
   const [usernameInput, setUsernameInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
   const [emailInput, setEmailInput] = useState('');
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('signup');
   const [authLoading, setAuthLoading] = useState(false);
+
+  // --- URL confirmation banner ---
   const [confirmMsg, setConfirmMsg] = useState<string | null>(null);
   const [confirmStatus, setConfirmStatus] = useState<'success' | 'error' | null>(null);
 
+  // --- Prices / refresh ---
   const [solPrice, setSolPrice] = useState<number | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
 
@@ -84,7 +95,26 @@ export default function IndexPage() {
     },
   ]);
 
-  // Parse confirmation message from URL hash
+  // Restore session from localStorage (instead of useSession hook)
+  useEffect(() => {
+    try {
+      const raw = typeof window !== 'undefined'
+        ? window.localStorage.getItem('cryptocards_session')
+        : null;
+      if (raw) {
+        const parsed = JSON.parse(raw) as SessionData;
+        if (parsed?.token) {
+          setSession(parsed);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to restore session from localStorage', err);
+    } finally {
+      setSessionLoading(false);
+    }
+  }, []);
+
+  // Parse confirmation message from URL hash (?/#message=...)
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const hash = window.location.hash;
@@ -98,14 +128,13 @@ export default function IndexPage() {
       setConfirmMsg(decodeURIComponent(message));
       setConfirmStatus(status || 'success');
 
-      // Clean the hash from the URL
       const url = new URL(window.location.href);
       url.hash = '';
       window.history.replaceState(null, '', url.toString());
     }
   }, []);
 
-  // Fetch SOL price for banner and dashboards
+  // Fetch SOL price for banner + dashboards
   const fetchSolPrice = async () => {
     try {
       const res = await fetch('/sol-price');
@@ -132,6 +161,7 @@ export default function IndexPage() {
     setRefreshKey((prev) => prev + 1);
   };
 
+  // Template selection
   const handleTemplateSelect = (template: CardTemplate) => {
     if (locked) return;
     setTokenAddress(template.tokenAddress);
@@ -144,19 +174,16 @@ export default function IndexPage() {
   };
 
   const handleImageUpload = (_file: File) => {
-    toast.info('Custom image upload is not yet wired to storage, using preview only.');
+    toast.info('Custom image upload preview only — persistent storage not wired yet.');
   };
 
   const handleTokenInfoChange = (info: { symbol: string; name: string } | null) => {
-    if (info?.name) {
-      setTokenName(info.name);
-    } else if (info?.symbol) {
-      setTokenName(info.symbol);
-    } else {
-      setTokenName('');
-    }
+    if (info?.name) setTokenName(info.name);
+    else if (info?.symbol) setTokenName(info.symbol);
+    else setTokenName('');
   };
 
+  // Create CRYPTOCARD design
   const handleCreateCard = async () => {
     if (locked || cardCreated) return;
 
@@ -206,19 +233,7 @@ export default function IndexPage() {
     }
   };
 
-  const handleLogout = async () => {
-    try {
-      await apiService.logout();
-      setSession(null);
-      setUsernameInput('');
-      setPasswordInput('');
-      toast.success('Logged out.');
-    } catch (err) {
-      console.error('Logout failed:', err);
-      toast.error('Failed to log out.');
-    }
-  };
-
+  // Auth handlers (using apiService directly, local session)
   const handleAuthSubmit = async () => {
     const username = usernameInput.trim();
     const password = passwordInput.trim();
@@ -243,7 +258,21 @@ export default function IndexPage() {
           throw new Error('Signup failed.');
         }
 
-        setSession(result);
+        const newSession: SessionData = {
+          token: result.token,
+          user_id: result.user_id,
+          username: result.username,
+          email: result.email,
+        };
+
+        setSession(newSession);
+        if (typeof window !== 'undefined') {
+          window.localStorage.setItem(
+            'cryptocards_session',
+            JSON.stringify(newSession)
+          );
+        }
+
         toast.success('Account created. You are now signed in.');
       } else {
         const result = await apiService.login({ username, password });
@@ -251,7 +280,21 @@ export default function IndexPage() {
           throw new Error('Login failed.');
         }
 
-        setSession(result);
+        const newSession: SessionData = {
+          token: result.token,
+          user_id: result.user_id,
+          username: result.username,
+          email: result.email,
+        };
+
+        setSession(newSession);
+        if (typeof window !== 'undefined') {
+          window.localStorage.setItem(
+            'cryptocards_session',
+            JSON.stringify(newSession)
+          );
+        }
+
         toast.success('Logged in successfully.');
       }
     } catch (err: any) {
@@ -259,6 +302,22 @@ export default function IndexPage() {
       toast.error(err?.message || 'Authentication failed.');
     } finally {
       setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await apiService.logout();
+    } catch (err) {
+      console.error('Logout failed (non-fatal):', err);
+    } finally {
+      setSession(null);
+      if (typeof window !== 'undefined') {
+        window.localStorage.removeItem('cryptocards_session');
+      }
+      setUsernameInput('');
+      setPasswordInput('');
+      toast.success('Logged out.');
     }
   };
 
@@ -274,6 +333,7 @@ export default function IndexPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-background via-background/95 to-background text-foreground relative overflow-hidden">
+      {/* background blobs */}
       <div className="pointer-events-none fixed inset-0 z-0">
         <div className="absolute -top-40 -left-40 w-80 h-80 rounded-full bg-gradient-to-br from-cyan-500/20 via-emerald-400/10 to-transparent blur-3xl" />
         <div className="absolute top-0 right-[-100px] w-[420px] h-[420px] rounded-full bg-[radial-gradient(circle_at_top,_rgba(126,34,206,0.2),_transparent_60%)] blur-3xl" />
@@ -281,8 +341,10 @@ export default function IndexPage() {
       </div>
 
       <div className="relative z-10 max-w-5xl mx-auto px-3 sm:px-4 lg:px-6 py-4">
+        {/* HEADER (logo glow removed, no blue aura) */}
         <header className="sticky top-0 z-30 mb-4">
           <div className="glass-card border border-border/40 backdrop-blur-xl rounded-2xl px-3 py-2 md:px-4 md:py-3 flex items-center justify-between gap-3 shadow-card">
+            {/* Left: brand + logo */}
             <div className="flex items-center gap-2 md:gap-3 min-w-0">
               <div className="relative flex-shrink-0">
                 <img
@@ -310,6 +372,7 @@ export default function IndexPage() {
               </div>
             </div>
 
+            {/* Right: trust + CTA */}
             <div className="flex items-center gap-2 flex-shrink-0">
               <div className="hidden md:flex items-center gap-1 text-[10px] text-muted-foreground pr-2 border-r border-border/40">
                 <ShieldCheck className="w-3 h-3 text-emerald-300" />
@@ -335,6 +398,7 @@ export default function IndexPage() {
         </header>
 
         <main className="space-y-4">
+          {/* Price banner */}
           {solPrice !== null && (
             <PriceBanner
               solPrice={solPriceDisplay}
@@ -343,6 +407,7 @@ export default function IndexPage() {
             />
           )}
 
+          {/* Confirmation notice from URL */}
           {confirmMsg && (
             <div
               className={`glass-card rounded-xl p-2.5 border flex items-start gap-2 text-[10px] ${
@@ -367,7 +432,9 @@ export default function IndexPage() {
             </div>
           )}
 
+          {/* Top layout: designer + preview + account panel + audit */}
           <section className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] gap-4 items-start">
+            {/* Left: hero/designer + preview */}
             <div className="space-y-3">
               <div className="glass-card rounded-xl p-3 shadow-card hover:shadow-card-hover transition-all hover:-translate-y-0.5 border border-border/50">
                 <div className="flex items-center justify-between gap-2 mb-2">
@@ -377,12 +444,12 @@ export default function IndexPage() {
                     </h1>
                     <p className="mt-1 text-[9px] md:text-[10px] text-muted-foreground max-w-xl">
                       Create fully on-chain crypto gift cards on Solana with{' '}
-                      <span className="font-semibold text-primary">no wallet
-                        connection required</span> for the recipient. Perfect for
-                      streams, giveaways, and IRL gifting.
+                      <span className="font-semibold text-primary">no wallet connection
+                        required</span>{' '}
+                      for the recipient. Perfect for streams, giveaways, and IRL gifting.
                     </p>
                   </div>
-                  <div className="hidden sm:flex items-center gap-2 text-[9px] text-muted-foreground">
+                  <div className="flex items-center gap-2 text-[8px] text-muted-foreground">
                     <Languages className="w-3 h-3" />
                     <select
                       className="bg-transparent border border-border/50 rounded px-1.5 py-[2px] text-[9px] focus:outline-none"
@@ -452,6 +519,7 @@ export default function IndexPage() {
                 </div>
               </div>
 
+              {/* Templates */}
               <div className="glass-card rounded-xl p-3 shadow-card hover:shadow-card-hover transition-all border border-border/50">
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
@@ -488,7 +556,9 @@ export default function IndexPage() {
               </div>
             </div>
 
+            {/* Right: account + audit */}
             <div className="space-y-3">
+              {/* Creator account panel */}
               <div className="glass-card rounded-xl p-3 shadow-card hover:shadow-card-hover transition-all border border-border/50">
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
@@ -513,7 +583,7 @@ export default function IndexPage() {
                     user={{
                       id: session.user_id,
                       username: session.username,
-                      email: session.email,
+                      email: session.email || undefined,
                     }}
                     onLogout={handleLogout}
                     onEmailUpdate={handleEmailUpdateOnDashboard}
@@ -574,7 +644,9 @@ export default function IndexPage() {
                         {authLoading ? (
                           <>
                             <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                            {authMode === 'signup' ? 'Creating account…' : 'Logging in…'}
+                            {authMode === 'signup'
+                              ? 'Creating account…'
+                              : 'Logging in…'}
                           </>
                         ) : authMode === 'signup' ? (
                           'Create account'
@@ -583,20 +655,23 @@ export default function IndexPage() {
                         )}
                       </Button>
                       <p className="text-[8px] text-muted-foreground">
-                        Your account tracks all CRYPTOCARDS you create. Email is used only
-                        for claim notifications and security alerts.
+                        Your account tracks all CRYPTOCARDS you create. Email is used
+                        only for claim notifications and security alerts.
                       </p>
                     </div>
                   </div>
                 )}
               </div>
 
+              {/* On-chain audit */}
               <AuditSection />
             </div>
           </section>
 
+          {/* Public dashboard */}
           <PublicDashboard />
 
+          {/* Claiming explainer */}
           <section
             id="claim-section"
             className="glass-card rounded-xl p-3 mt-4 shadow-card hover:shadow-card-hover transition-all border border-border/50"
@@ -623,9 +698,9 @@ export default function IndexPage() {
                 </div>
                 <p className="text-[9px] text-muted-foreground">
                   The creator shares a unique{' '}
-                  <span className="font-semibold text-primary">Card ID</span> with you (via
-                  DM, stream overlay, QR, or IRL printout). You&apos;ll use this to claim
-                  the funds locked on-chain for your wallet.
+                  <span className="font-semibold text-primary">Card ID</span> with you
+                  (via DM, stream overlay, QR, or IRL printout). You&apos;ll use this to
+                  claim the funds locked on-chain for your wallet.
                 </p>
 
                 <div className="flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground mt-2">
@@ -635,10 +710,13 @@ export default function IndexPage() {
                   Claim to your Solana wallet
                 </div>
                 <p className="text-[9px] text-muted-foreground">
-                  Visit the claim page, paste your Card ID, and choose the wallet address
-                  you want to receive funds to. The claim transaction executes on-chain,
-                  moving the balance from the deposit wallet{' '}
-                  <span className="font-semibold text-primary">directly into your wallet</span>.
+                  Visit the claim page, paste your Card ID, and choose the wallet
+                  address you want to receive funds to. The claim transaction executes
+                  on-chain, moving the balance from the deposit wallet{' '}
+                  <span className="font-semibold text-primary">
+                    directly into your wallet
+                  </span>
+                  .
                 </p>
               </div>
 
@@ -650,10 +728,11 @@ export default function IndexPage() {
                   Non-custodial by design
                 </div>
                 <p className="text-[9px] text-muted-foreground">
-                  <span className="font-semibold text-primary">CRYPTOCARDS never hold
-                    private keys or recipient funds.</span> The protocol only controls the
-                  deposit wallet until it sends value to the final recipient address you
-                  provide during claim.
+                  <span className="font-semibold text-primary">
+                    CRYPTOCARDS never hold private keys or recipient funds.
+                  </span>{' '}
+                  The protocol only controls the deposit wallet until it sends value to
+                  the final recipient address you provide during claim.
                 </p>
 
                 <div className="flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground mt-2">
@@ -665,13 +744,14 @@ export default function IndexPage() {
                   <span className="font-semibold text-primary">
                     cryptocards.fun
                   </span>{' '}
-                  domain before claiming. Never share your seed phrase or private key with
-                  anyone — the protocol will never ask for it.
+                  domain before claiming. Never share your seed phrase or private key
+                  with anyone — the protocol will never ask for it.
                 </p>
               </div>
             </div>
           </section>
 
+          {/* FOOTER (logo, no glow) */}
           <footer className="mt-6 pb-6 border-t border-border/40 pt-4">
             <div className="flex flex-col md:flex-row items-center justify-between gap-3 text-[9px] text-muted-foreground">
               <div className="flex items-center gap-2">
@@ -692,8 +772,8 @@ export default function IndexPage() {
                     </span>
                   </div>
                   <p className="mt-1 text-[9px] max-w-xs">
-                    On-chain, non-custodial crypto gift cards. The future of digital gifting
-                    on Solana.
+                    On-chain, non-custodial crypto gift cards. The future of digital
+                    gifting on Solana.
                   </p>
                 </div>
               </div>
