@@ -706,7 +706,7 @@ app.post('/auth/forgot-password', async (req, res) => {
       console.error('Error in /auth/forgot-password:', error);
       return res.status(400).json({
         success: false,
-        error: error.message || 'Failed to send reset email',
+       error: error.message || 'Failed to send reset email',
       });
     }
 
@@ -1094,7 +1094,7 @@ app.get('/card-token-value/:publicId', async (req, res) => {
   }
 });
 
-// SYNC CARD FUNDING: read on-chain balance and mark funded/token_amount in DB
+// SYNC CARD FUNDING: SOL + SPL tokens -> total value in SOL
 app.post('/sync-card-funding/:publicId', async (req, res) => {
   try {
     const publicId = req.params.publicId;
@@ -1119,16 +1119,30 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
     }
 
     const pubkey = new web3.PublicKey(card.deposit_address);
-    const lamports = await solanaConnection.getBalance(pubkey);
-    const sol = lamports / web3.LAMPORTS_PER_SOL;
 
-    const isFunded = lamports > 0;
+    // Native SOL balance
+    const lamports = await solanaConnection.getBalance(pubkey);
+    const solNative = lamports / web3.LAMPORTS_PER_SOL;
+
+    // SPL token balances + value in SOL
+    const tokenValueResult = await getTokenAccountsWithSolValue(pubkey);
+    const tokensValueSol = tokenValueResult.total_value_sol || 0;
+
+    // Total value in SOL (native + priced SPL tokens)
+    const totalSolValue = solNative + tokensValueSol;
+
+    // Consider card funded if:
+    // - has any native SOL, OR
+    // - has any SPL token accounts at all (even if we can't price them yet)
+    const hasAnyTokens =
+      Array.isArray(tokenValueResult.tokens) && tokenValueResult.tokens.length > 0;
+    const isFunded = lamports > 0 || hasAnyTokens;
 
     const { error: updateError } = await supabase
       .from('cards')
       .update({
         funded: isFunded,
-        token_amount: sol,
+        token_amount: totalSolValue,
         updated_at: new Date().toISOString(),
       })
       .eq('public_id', publicId);
@@ -1142,8 +1156,12 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
       public_id: publicId,
       deposit_address: card.deposit_address,
       lamports,
-      sol,
+      sol_native: solNative,
+      tokens_total_value_sol: tokensValueSol,
+      total_value_sol: totalSolValue,
       funded: isFunded,
+      // Debug info for now; frontend can ignore if it wants
+      token_portfolio: tokenValueResult,
     });
   } catch (err) {
     console.error('Error in /sync-card-funding:', err);
