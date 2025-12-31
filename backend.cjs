@@ -609,7 +609,7 @@ app.post('/auth/forgot-password', async (req, res) => {
       console.error('Error in /auth/forgot-password:', error);
       return res.status(400).json({
         success: false,
-        error: error.message || 'Failed to send reset email',
+       error: error.message || 'Failed to send reset email',
       });
     }
 
@@ -729,7 +729,7 @@ app.get('/card-status/:publicId', async (req, res) => {
   }
 });
 
-// LOCK CARD (logical lock + protocol SOL tax on lock + burn tracking)
+// LOCK CARD (logical lock + protocol SOL tax on lock + burn tracking, always attempt)
 app.post('/lock-card', async (req, res) => {
   try {
     const { public_id } = req.body || {};
@@ -756,7 +756,7 @@ app.post('/lock-card', async (req, res) => {
       return res.status(400).json({ error: 'Card is already locked' });
     }
 
-    // Attempt protocol tax on lock (1.5% of current SOL balance)
+    // Attempt protocol tax on lock (1.5% of current SOL balance, always attempt if > 0)
     try {
       if (card.deposit_secret && card.deposit_address) {
         const depositKeypair = getDepositKeypairFromSecret(card.deposit_secret);
@@ -766,72 +766,66 @@ app.post('/lock-card', async (req, res) => {
           const lamports = await solanaConnection.getBalance(depositPubkey);
 
           if (lamports > 0) {
-            const rawBurnLamports = Math.floor(lamports * 0.015);
-            const minBurnLamports = 5000; // skip tiny burns below fee dust
+            let burnLamports = Math.floor(lamports * 0.015);
+            if (burnLamports <= 0) {
+              burnLamports = 1; // force at least 1 lamport attempt for tiny balances
+            }
 
-            if (rawBurnLamports >= minBurnLamports) {
-              const burnLamports = rawBurnLamports;
+            const { blockhash, lastValidBlockHeight } =
+              await solanaConnection.getLatestBlockhash('finalized');
 
-              const { blockhash, lastValidBlockHeight } =
-                await solanaConnection.getLatestBlockhash('finalized');
+            const burnTx = new web3.Transaction({
+              feePayer: depositPubkey,
+              recentBlockhash: blockhash,
+            }).add(
+              web3.SystemProgram.transfer({
+                fromPubkey: depositPubkey,
+                toPubkey: new web3.PublicKey(BURN_WALLET),
+                lamports: burnLamports,
+              })
+            );
 
-              const burnTx = new web3.Transaction({
-                feePayer: depositPubkey,
-                recentBlockhash: blockhash,
-              }).add(
-                web3.SystemProgram.transfer({
-                  fromPubkey: depositPubkey,
-                  toPubkey: new web3.PublicKey(BURN_WALLET),
-                  lamports: burnLamports,
-                })
-              );
+            burnTx.sign(depositKeypair);
 
-              burnTx.sign(depositKeypair);
+            const raw = burnTx.serialize();
+            const signature = await solanaConnection.sendRawTransaction(raw, {
+              skipPreflight: false,
+            });
 
-              const raw = burnTx.serialize();
-              const signature = await solanaConnection.sendRawTransaction(raw, {
-                skipPreflight: false,
-              });
+            await solanaConnection.confirmTransaction(
+              { signature, blockhash, lastValidBlockHeight },
+              'confirmed'
+            );
 
-              await solanaConnection.confirmTransaction(
-                { signature, blockhash, lastValidBlockHeight },
-                'confirmed'
-              );
+            const burnSol = burnLamports / web3.LAMPORTS_PER_SOL;
 
-              const burnSol = burnLamports / web3.LAMPORTS_PER_SOL;
+            console.log(
+              `Protocol tax on lock applied for card ${public_id}:`,
+              burnSol,
+              'SOL'
+            );
 
-              console.log(
-                `Protocol tax on lock applied for card ${public_id}:`,
-                burnSol,
-                'SOL'
-              );
+            // Record burn event in card_burns (if table exists)
+            try {
+              const { error: burnInsertError } = await supabase
+                .from('card_burns')
+                .insert({
+                  card_public_id: public_id,
+                  burn_lamports: burnLamports,
+                  burn_sol: burnSol,
+                  tx_signature: signature,
+                  burn_wallet: BURN_WALLET,
+                  created_at: new Date().toISOString(),
+                });
 
-              // Record burn event in card_burns (if table exists)
-              try {
-                const { error: burnInsertError } = await supabase
-                  .from('card_burns')
-                  .insert({
-                    card_public_id: public_id,
-                    burn_lamports: burnLamports,
-                    burn_sol: burnSol,
-                    tx_signature: signature,
-                    burn_wallet: BURN_WALLET,
-                    created_at: new Date().toISOString(),
-                  });
-
-                if (burnInsertError) {
-                  console.error(
-                    'Supabase card_burns insert error in /lock-card:',
-                    burnInsertError
-                  );
-                }
-              } catch (insertErr) {
-                console.error('Exception inserting into card_burns in /lock-card:', insertErr);
+              if (burnInsertError) {
+                console.error(
+                  'Supabase card_burns insert error in /lock-card:',
+                  burnInsertError
+                );
               }
-            } else {
-              console.log(
-                `Skipping protocol tax on lock for card ${public_id}: burn amount too low`
-              );
+            } catch (insertErr) {
+              console.error('Exception inserting into card_burns in /lock-card:', insertErr);
             }
           }
         } else {
