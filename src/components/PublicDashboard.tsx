@@ -39,6 +39,8 @@ interface PublicActivityEvent {
   timestamp: string;
   tx_signature?: string | null;
   token_mint?: string | null;
+  // backend may also send a symbol; we keep type loose so we can read it
+  token_symbol?: string | null;
 }
 
 interface SolPriceResponse {
@@ -88,7 +90,10 @@ function ActivityRow({
   handleCopy,
 }: ActivityRowProps) {
   // Look up token info from mint (if present)
-  const mint = evt.token_mint || '';
+  const mint =
+    (evt.token_mint && evt.token_mint.trim().length > 0
+      ? evt.token_mint
+      : '') || '';
   const { tokenInfo } = useTokenLookup(mint);
 
   const sol = evt.sol_amount ?? 0;
@@ -103,7 +108,20 @@ function ActivityRow({
       : 0;
 
   const currency = evt.currency || 'USD';
-  const tokenSymbol = tokenInfo?.symbol || 'TOKEN';
+
+  // Prefer a symbol from the event itself, then from lookup, then SOL if no mint, else TOKEN
+  const rawSymbol =
+    evt.token_symbol ||
+    (evt as any).symbol ||
+    tokenInfo?.symbol ||
+    null;
+
+  const tokenSymbol =
+    typeof rawSymbol === 'string' && rawSymbol.trim().length > 0
+      ? rawSymbol.trim()
+      : !mint && sol > 0
+      ? 'SOL'
+      : 'TOKEN';
 
   return (
     <div
@@ -236,7 +254,7 @@ export function PublicDashboard() {
             const stats = await statsRes.json();
             setMetrics({
               total_cards_funded: stats.total_cards_funded ?? 0,
-              total_volume_funded_sol: stats.total_volume_funded_sol ?? 0,
+              total_volume_funded_sol: stats.total_cards_funded ?? 0,
               total_volume_funded_fiat: stats.total_volume_funded_fiat ?? 0,
               total_volume_claimed_sol: stats.total_volume_claimed_sol ?? 0,
               total_volume_claimed_fiat: stats.total_volume_claimed_fiat ?? 0,
