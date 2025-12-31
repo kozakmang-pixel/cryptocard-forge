@@ -13,12 +13,11 @@ export const Header: FC<HeaderProps> = ({ onClaimClick }) => {
         {/* Left: brand + logo */}
         <div className="flex items-center gap-2 md:gap-3 min-w-0">
           {/* Logo */}
-          <div className="relative flex-shrink-0">
-            <div className="absolute inset-0 blur-[14px] bg-[radial-gradient(circle_at_center,_rgba(96,165,250,0.9),_transparent_65%)] opacity-80" />
+          <div className="flex-shrink-0">
             <img
               src="/cryptocards-logo.png"
               alt="CRYPTOCARDS logo"
-              className="relative w-8 h-8 md:w-9 md:h-9 rounded-full shadow-[0_0_24px_rgba(56,189,248,0.9)] ring-1 ring-[#38bdf8]/70"
+              className="w-8 h-8 md:w-9 md:h-9 rounded-full"
             />
           </div>
 
