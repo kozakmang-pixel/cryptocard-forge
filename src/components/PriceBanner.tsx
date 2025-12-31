@@ -35,23 +35,18 @@ export function PriceBanner({
           : typeof data.sol_price_usd === 'number'
           ? data.sol_price_usd
           : null;
-      if (typeof price === 'number' && !Number.isNaN(price)) {
+      if (typeof price === 'number') {
         setCurrentSolPrice(price);
       }
-    } catch {
-      console.error('PriceBanner: failed refresh');
-    }
+    } catch {}
   };
 
   const handleRefreshClick = async () => {
     if (refreshing) return;
     setRefreshing(true);
     try {
-      if (onRefresh) {
-        await Promise.resolve(onRefresh());
-      } else {
-        await fetchSolPriceFromBackend();
-      }
+      if (onRefresh) await Promise.resolve(onRefresh());
+      else await fetchSolPriceFromBackend();
     } finally {
       setRefreshing(false);
     }
@@ -78,10 +73,9 @@ export function PriceBanner({
         <TrendingUp className="w-3 h-3 text-accent" />
       </div>
 
-      {/* Divider */}
       <div className="w-px h-4 bg-border/50" />
 
-      {/* CRYPTOCARDS Price */}
+      {/* CC Price */}
       <div className="flex items-center gap-1.5 text-[9px]">
         <img
           src="/cryptocards-cc.png"
@@ -95,10 +89,9 @@ export function PriceBanner({
         <TrendingDown className="w-3 h-3 text-warning" />
       </div>
 
-      {/* Divider */}
       <div className="w-px h-4 bg-border/50" />
 
-      {/* Icon-only Refresh */}
+      {/* Refresh (icon only) */}
       <button
         type="button"
         onClick={handleRefreshClick}
