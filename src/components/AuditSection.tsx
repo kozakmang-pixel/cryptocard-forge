@@ -13,6 +13,7 @@ import {
   Activity,
   ExternalLink,
 } from 'lucide-react';
+import { useTokenLookup } from '@/hooks/useTokenLookup';
 
 interface CardStatus {
   public_id: string;
@@ -29,6 +30,8 @@ interface CardStatus {
   template_url?: string | null;
   message?: string | null;
   expires_at?: string | null;
+  token_mint?: string | null;
+  token_symbol?: string | null;
 }
 
 interface CardBalanceResponse {
@@ -56,12 +59,19 @@ export function AuditSection() {
   const [balance, setBalance] = useState<CardBalanceResponse | null>(null);
   const [solPrice, setSolPrice] = useState<number | null>(null);
 
+  // token identity for this card
+  const [tokenMint, setTokenMint] = useState<string>('');
+  const [tokenSymbolOverride, setTokenSymbolOverride] = useState<string | null>(null);
+
+  const { tokenInfo } = useTokenLookup(tokenMint || '');
+
   const fetchSolPrice = async () => {
     try {
       const res = await fetch('/sol-price');
       if (!res.ok) throw new Error('Failed to fetch SOL price');
       const data = await res.json();
-      const price = typeof data.price_usd === 'number' ? data.price_usd : data.sol_price_usd;
+      const price =
+        typeof data.price_usd === 'number' ? data.price_usd : data.sol_price_usd;
       if (typeof price === 'number') {
         setSolPrice(price);
       }
@@ -80,10 +90,25 @@ export function AuditSection() {
     setLoading(true);
     setCard(null);
     setBalance(null);
+    setTokenMint('');
+    setTokenSymbolOverride(null);
 
     try {
       const status = (await apiService.getCardStatus(trimmed)) as CardStatus;
       setCard(status);
+
+      // capture token identity from status if present
+      const mintFromStatus =
+        typeof status.token_mint === 'string' ? status.token_mint.trim() : '';
+      if (mintFromStatus) {
+        setTokenMint(mintFromStatus);
+      }
+      if (
+        typeof status.token_symbol === 'string' &&
+        status.token_symbol.trim().length > 0
+      ) {
+        setTokenSymbolOverride(status.token_symbol.trim());
+      }
 
       try {
         const res = await fetch(`/card-balance/${encodeURIComponent(trimmed)}`);
@@ -100,6 +125,8 @@ export function AuditSection() {
       console.error('AuditSection: failed to load card status', err);
       setCard(null);
       setBalance(null);
+      setTokenMint('');
+      setTokenSymbolOverride(null);
       toast.error(err?.message || 'Card not found. Check the Card ID.');
     } finally {
       setLoading(false);
@@ -127,9 +154,7 @@ export function AuditSection() {
         : 0;
 
     const solFromBalance =
-      typeof balance?.sol === 'number' && balance.sol > 0
-        ? balance.sol
-        : 0;
+      typeof balance?.sol === 'number' && balance.sol > 0 ? balance.sol : 0;
 
     const onChainSol = solFromBalance || solFromStatus;
     const tokenAmount = solFromStatus || onChainSol;
@@ -155,16 +180,33 @@ export function AuditSection() {
       ? 'Funded'
       : 'Not funded';
 
-    const statusColor =
-      card.claimed
-        ? 'bg-purple-500/15 text-purple-400 border border-purple-500/40'
-        : card.locked
-        ? 'bg-amber-500/15 text-amber-400 border border-amber-500/40'
-        : card.funded
-        ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/40'
-        : 'bg-muted text-muted-foreground';
+    const statusColor = card.claimed
+      ? 'bg-purple-500/15 text-purple-400 border border-purple-500/40'
+      : card.locked
+      ? 'bg-amber-500/15 text-amber-400 border border-amber-500/40'
+      : card.funded
+      ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/40'
+      : 'bg-muted text-muted-foreground';
 
     const onChainAddress = balance?.deposit_address || card.deposit_address || '';
+
+    // Resolve token symbol: override → card.token_symbol → lookup → SOL/TOKEN fallback
+    const rawSymbol =
+      tokenSymbolOverride ||
+      (typeof card.token_symbol === 'string' &&
+      card.token_symbol.trim().length > 0
+        ? card.token_symbol.trim()
+        : null) ||
+      (tokenInfo?.symbol && tokenInfo.symbol.trim().length > 0
+        ? tokenInfo.symbol.trim()
+        : null);
+
+    const tokenSymbol =
+      typeof rawSymbol === 'string' && rawSymbol.trim().length > 0
+        ? rawSymbol.trim()
+        : !tokenMint && onChainSol > 0
+        ? 'SOL'
+        : 'TOKEN';
 
     return {
       tokenAmount,
@@ -174,8 +216,9 @@ export function AuditSection() {
       statusLabel,
       statusColor,
       onChainAddress,
+      tokenSymbol,
     };
-  }, [card, balance, solPrice]);
+  }, [card, balance, solPrice, tokenInfo, tokenSymbolOverride, tokenMint]);
 
   const timeline: TimelineEvent[] = useMemo(() => {
     if (!card || !derived) return [];
@@ -201,9 +244,9 @@ export function AuditSection() {
         label: 'Funded',
         detail: `On-chain funding detected: ${derived.tokenAmount.toFixed(
           6
-        )} TOKEN • ${derived.onChainSol.toFixed(6)} SOL • ${derived.currency} ${derived.fiat.toFixed(
-          2
-        )}.`,
+        )} ${derived.tokenSymbol} • ${derived.onChainSol.toFixed(
+          6
+        )} SOL • ${derived.currency} ${derived.fiat.toFixed(2)}.`,
         at: card.updated_at || card.created_at || null,
       });
     }
@@ -212,7 +255,8 @@ export function AuditSection() {
       events.push({
         type: 'locked',
         label: 'Locked',
-        detail: 'Card locked for claiming. Funding amount is now fixed for the recipient.',
+        detail:
+          'Card locked for claiming. Funding amount is now fixed for the recipient.',
         at: card.updated_at || card.created_at || null,
       });
     }
@@ -223,9 +267,9 @@ export function AuditSection() {
         label: 'Claimed',
         detail: `Final claimed amount: ${derived.tokenAmount.toFixed(
           6
-        )} TOKEN • ${derived.onChainSol.toFixed(6)} SOL • ${derived.currency} ${derived.fiat.toFixed(
-          2
-        )}.`,
+        )} ${derived.tokenSymbol} • ${derived.onChainSol.toFixed(
+          6
+        )} SOL • ${derived.currency} ${derived.fiat.toFixed(2)}.`,
         at: card.updated_at || null,
       });
     }
@@ -392,7 +436,7 @@ export function AuditSection() {
                   Token amount
                 </div>
                 <div className="text-[10px] font-semibold">
-                  {derived.tokenAmount.toFixed(6)} TOKEN
+                  {derived.tokenAmount.toFixed(6)} {derived.tokenSymbol}
                 </div>
 
                 <div className="mt-1 text-[8px] uppercase tracking-wide text-muted-foreground">
@@ -454,9 +498,9 @@ export function AuditSection() {
                   Card amount (snapshot)
                 </div>
                 <div className="text-[9px] font-semibold">
-                  {derived.tokenAmount.toFixed(6)} TOKEN •{' '}
-                  {derived.onChainSol.toFixed(6)} SOL •{' '}
-                  {derived.currency} {derived.fiat.toFixed(2)}
+                  {derived.tokenAmount.toFixed(6)} {derived.tokenSymbol} •{' '}
+                  {derived.onChainSol.toFixed(6)} SOL • {derived.currency}{' '}
+                  {derived.fiat.toFixed(2)}
                 </div>
               </div>
 
