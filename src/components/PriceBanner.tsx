@@ -59,6 +59,7 @@ export function PriceBanner({
 
   return (
     <div className="fixed top-[20px] left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 px-3 py-1.5 rounded-lg border border-primary/30 bg-background/80 shadow-lg backdrop-blur-md">
+
       {/* SOL Price */}
       <div className="flex items-center gap-1.5 text-[9px]">
         <img
@@ -77,11 +78,11 @@ export function PriceBanner({
       <div className="w-px h-4 bg-border/50" />
 
       {/* CRYPTOCARDS Price */}
-      <div className="flex items-center gap-1 text-[9px]">
+      <div className="flex items-center gap-1.5 text-[9px]">
         <img
           src="/cryptocards-cc.png"
           alt="CC"
-          className="w-5 h-5 rounded-sm"
+          className="w-5 h-5"
         />
         <span className="text-muted-foreground font-medium">
           CRYPTOCARDS:
@@ -95,12 +96,12 @@ export function PriceBanner({
       {/* Divider */}
       <div className="w-px h-4 bg-border/50" />
 
-      {/* Refresh Icon */}
+      {/* Refresh Icon Only */}
       <button
         type="button"
         onClick={handleRefreshClick}
         disabled={refreshing}
-        className="flex items-center px-2 py-1 rounded-md border border-primary/40 bg-card/80 hover:bg-primary/15 hover:border-primary/60 disabled:opacity-50 disabled:hover:bg-card/80 disabled:cursor-not-allowed"
+        className="flex items-center px-2 py-1 rounded-md border border-primary/40 bg-card/80 text-[8px] font-semibold hover:bg-primary/15 hover:border-primary/60 disabled:opacity-50 disabled:hover:bg-card/80 disabled:cursor-not-allowed"
       >
         <RefreshCcw className="w-3 h-3" />
       </button>
