@@ -35,12 +35,11 @@ export function PriceBanner({
           : typeof data.sol_price_usd === 'number'
           ? data.sol_price_usd
           : null;
-
       if (typeof price === 'number' && !Number.isNaN(price)) {
         setCurrentSolPrice(price);
       }
-    } catch (err) {
-      console.error('PriceBanner: failed to refresh SOL price', err);
+    } catch {
+      console.error('PriceBanner: failed refresh');
     }
   };
 
@@ -79,32 +78,34 @@ export function PriceBanner({
         <TrendingUp className="w-3 h-3 text-accent" />
       </div>
 
+      {/* Divider */}
       <div className="w-px h-4 bg-border/50" />
 
       {/* CRYPTOCARDS Price */}
       <div className="flex items-center gap-1.5 text-[9px]">
-        <span className="text-[8px] bg-gradient-to-r from-primary/80 via-accent/80 to-secondary/80 text-primary-foreground px-1.5 py-0.5 rounded font-black">
-          $CC
-        </span>
-        <span className="text-muted-foreground font-medium">
-          CRYPTOCARDS:
-        </span>
+        <img
+          src="/cryptocards-cc.png"
+          alt="CC"
+          className="w-4 h-4 rounded-sm"
+        />
+        <span className="text-muted-foreground font-medium">CRYPTOCARDS:</span>
         <span className="text-accent font-bold">
           ${cryptocardsPrice.toFixed(5)}
         </span>
         <TrendingDown className="w-3 h-3 text-warning" />
       </div>
 
+      {/* Divider */}
       <div className="w-px h-4 bg-border/50" />
 
-      {/* Icon-only refresh button */}
+      {/* Icon-only Refresh */}
       <button
         type="button"
         onClick={handleRefreshClick}
         disabled={refreshing}
-        className="flex items-center gap-1 px-2 py-1 rounded-md border border-primary/40 bg-card/80 text-[8px] font-semibold uppercase tracking-wide hover:bg-primary/15 hover:border-primary/60 disabled:opacity-50 disabled:hover:bg-card/80 disabled:cursor-not-allowed"
+        className="flex items-center px-2 py-1 rounded-md border border-primary/40 bg-card/80 text-[8px] font-semibold hover:bg-primary/15 hover:border-primary/60 disabled:opacity-50 disabled:hover:bg-card/80 disabled:cursor-not-allowed"
       >
-        <RefreshCcw className={`w-3 h-3 ${refreshing ? 'animate-spin' : ''}`} />
+        <RefreshCcw className="w-3 h-3" />
       </button>
     </div>
   );
