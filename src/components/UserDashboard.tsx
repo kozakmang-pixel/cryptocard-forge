@@ -219,24 +219,43 @@ export function UserDashboard({
 
   const enrichedCards: EnrichedCard[] = useMemo(() => {
     return cards.map((card) => {
-      const sol = typeof card.token_amount === 'number' ? card.token_amount : 0;
       const currency = card.currency || 'USD';
-      const fiatFromDb =
-        typeof card.amount_fiat === 'number' && card.amount_fiat > 0
-          ? card.amount_fiat
-          : null;
-      const fiat =
-        fiatFromDb !== null
-          ? fiatFromDb
-          : solPrice && sol > 0
-          ? sol * solPrice
-          : 0;
+
+      const hasTokenAmount =
+        typeof card.token_amount === 'number' && card.token_amount > 0;
+      const hasFiatAmount =
+        typeof card.amount_fiat === 'number' && card.amount_fiat > 0;
+
+      let sol = 0;
+      let fiat = 0;
+
+      // Prefer to trust the normalized token_amount from backend when present
+      if (hasTokenAmount) {
+        sol = card.token_amount as number;
+      }
+
+      // If we have a stored fiat snapshot, respect it
+      if (hasFiatAmount) {
+        fiat = card.amount_fiat as number;
+      }
+
+      // If we only have SOL but no fiat yet, derive fiat from live price
+      if (!hasFiatAmount && hasTokenAmount && solPrice && sol > 0) {
+        fiat = sol * solPrice;
+      }
+
+      // If we only have fiat but no SOL (e.g. claimed card where backend kept amount_fiat
+      // but token_amount is null/0), derive SOL from fiat using live price
+      if (!hasTokenAmount && hasFiatAmount && solPrice && fiat > 0) {
+        sol = fiat / solPrice;
+      }
 
       const isFunded =
         card.funded ||
         card.locked ||
         card.claimed ||
-        (typeof card.token_amount === 'number' && card.token_amount > 0);
+        hasTokenAmount ||
+        hasFiatAmount;
 
       const tokenMint = card.token_mint || null;
       const tokenSymbol =
