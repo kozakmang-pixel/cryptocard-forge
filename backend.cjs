@@ -9,6 +9,7 @@ const cors = require('cors');
 const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 const web3 = require('@solana/web3.js');
+const splToken = require('@solana/spl-token');
 
 // --- Env + config ---
 
@@ -22,7 +23,6 @@ const BURN_WALLET =
   process.env.BURN_WALLET ||
   'A3mpAVduHM9QyRgH1NSZp5ANnbPr2Z5vkXtc8EgDaZBF';
 
-// Optional: public fee wallet for paying all on-chain tx fees
 const FEE_WALLET_SECRET = process.env.FEE_WALLET_SECRET || null;
 let feeWalletKeypair = null;
 
@@ -35,12 +35,28 @@ function getFeeWalletKeypair() {
       .digest()
       .subarray(0, 32);
     feeWalletKeypair = web3.Keypair.fromSeed(seed);
-    console.log(
-      '[CRYPTOCARDS] Fee wallet configured. Public key:',
-      feeWalletKeypair.publicKey.toBase58()
-    );
   }
   return feeWalletKeypair;
+}
+
+// Log fee wallet status on startup
+if (FEE_WALLET_SECRET) {
+  try {
+    const fw = getFeeWalletKeypair();
+    console.log(
+      '[CRYPTOCARDS] Fee wallet configured. Public key:',
+      fw.publicKey.toBase58()
+    );
+  } catch (err) {
+    console.error(
+      '[CRYPTOCARDS] Failed to initialize fee wallet:',
+      err
+    );
+  }
+} else {
+  console.log(
+    '[CRYPTOCARDS] No FEE_WALLET_SECRET set. Deposit wallets will pay transaction fees.'
+  );
 }
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
@@ -1106,10 +1122,7 @@ app.post('/lock-card', async (req, res) => {
               );
 
             const feeWallet = getFeeWalletKeypair();
-            const feePayer =
-              feeWallet && feeWallet.publicKey
-                ? feeWallet.publicKey
-                : depositPubkey;
+            const feePayer = feeWallet ? feeWallet.publicKey : depositPubkey;
 
             const burnTx = new web3.Transaction({
               feePayer,
@@ -1154,9 +1167,7 @@ app.post('/lock-card', async (req, res) => {
             console.log(
               `Protocol tax on lock applied for card ${public_id}:`,
               burnSol,
-              'SOL',
-              '| fee payer:',
-              feePayer.toBase58()
+              'SOL'
             );
 
             // Record burn event in card_burns (if table exists)
@@ -1504,7 +1515,7 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
   }
 });
 
-// CLAIM CARD: verify CVV + move SOL from deposit address to destination wallet
+// CLAIM CARD: verify CVV + move SOL from deposit address + SPL tokens to destination wallet
 app.post('/claim-card', async (req, res) => {
   try {
     const {
@@ -1617,37 +1628,43 @@ app.post('/claim-card', async (req, res) => {
       });
     }
 
+    // Determine native SOL and SPL token balances for this card
+    const feeWallet = getFeeWalletKeypair();
+
     const lamports =
       await solanaConnection.getBalance(
         depositPubkey
       );
-    if (lamports <= 0) {
+
+    // Get SPL token portfolio + SOL-equivalent value
+    const tokenValueResult =
+      await getTokenAccountsWithSolValue(depositPubkey);
+    const tokensValueSol =
+      Number(tokenValueResult.total_value_sol || 0);
+
+    // Decide how much native SOL we can send
+    const feeBufferLamports = 5000;
+    let lamportsToSend = 0;
+
+    if (feeWallet) {
+      // Fee wallet pays transaction fees and rent -> we can send full balance
+      lamportsToSend = lamports;
+    } else if (lamports > feeBufferLamports) {
+      // No fee wallet: leave a small buffer on the deposit wallet for fees
+      lamportsToSend = lamports - feeBufferLamports;
+    }
+
+    const hasTokensToSend =
+      Array.isArray(tokenValueResult.tokens) &&
+      tokenValueResult.tokens.some(
+        (t) => Number(t.amount_ui || 0) > 0
+      );
+
+    if (lamportsToSend <= 0 && !hasTokensToSend) {
       return res.status(400).json({
         success: false,
         error:
           'Card has no balance to claim',
-      });
-    }
-
-    const feeWallet = getFeeWalletKeypair();
-
-    // If we have a fee wallet, it pays tx fees and we can send all lamports.
-    // If not, fall back to old behavior: leave a small buffer for fees.
-    let lamportsToSend = lamports;
-    const feeBufferLamports = 5000;
-
-    if (!feeWallet) {
-      lamportsToSend =
-        lamports > feeBufferLamports
-          ? lamports - feeBufferLamports
-          : 0;
-    }
-
-    if (lamportsToSend <= 0) {
-      return res.status(400).json({
-        success: false,
-        error:
-          'Balance is too low to claim after fees',
       });
     }
 
@@ -1667,14 +1684,97 @@ app.post('/claim-card', async (req, res) => {
     const tx = new web3.Transaction({
       feePayer,
       recentBlockhash: blockhash,
-    }).add(
-      web3.SystemProgram.transfer({
-        fromPubkey: depositPubkey,
-        toPubkey: destPubkey,
-        lamports: lamportsToSend,
-      })
-    );
+    });
 
+    // 1) Move any native SOL (if present)
+    if (lamportsToSend > 0) {
+      tx.add(
+        web3.SystemProgram.transfer({
+          fromPubkey: depositPubkey,
+          toPubkey: destPubkey,
+          lamports: lamportsToSend,
+        })
+      );
+    }
+
+    // 2) Move all SPL token balances (if present)
+    if (hasTokensToSend) {
+      const parsed =
+        await solanaConnection.getParsedTokenAccountsByOwner(
+          depositPubkey,
+          {
+            programId: TOKEN_PROGRAM_ID,
+          }
+        );
+
+      for (const entry of parsed?.value || []) {
+        const acc = entry?.account;
+        const parsedData = acc?.data?.parsed;
+        const info = parsedData?.info;
+        const mint = info?.mint;
+        const tokenAmount = info?.tokenAmount;
+
+        if (!mint || !tokenAmount) continue;
+
+        const uiAmount = Number(
+          tokenAmount.uiAmount || 0
+        );
+        if (uiAmount <= 0) continue;
+
+        const amountRawStr = tokenAmount.amount;
+        if (!amountRawStr) continue;
+
+        const mintPubkey =
+          new web3.PublicKey(mint);
+        const fromTokenAccount =
+          entry.pubkey instanceof web3.PublicKey
+            ? entry.pubkey
+            : new web3.PublicKey(entry.pubkey);
+
+        // Destination ATA for this mint
+        const destAta =
+          await splToken.getAssociatedTokenAddress(
+            mintPubkey,
+            destPubkey,
+            false,
+            TOKEN_PROGRAM_ID,
+            splToken.ASSOCIATED_TOKEN_PROGRAM_ID
+          );
+
+        const ataInfo =
+          await solanaConnection.getAccountInfo(
+            destAta
+          );
+
+        // If ATA does not exist, create it (fee payer covers rent)
+        if (!ataInfo) {
+          tx.add(
+            splToken.createAssociatedTokenAccountInstruction(
+              feePayer,
+              destAta,
+              destPubkey,
+              mintPubkey,
+              TOKEN_PROGRAM_ID,
+              splToken.ASSOCIATED_TOKEN_PROGRAM_ID
+            )
+          );
+        }
+
+        // Transfer full token balance
+        tx.add(
+          splToken.createTransferInstruction(
+            fromTokenAccount,
+            destAta,
+            depositPubkey,
+            BigInt(amountRawStr),
+            [],
+            TOKEN_PROGRAM_ID
+          )
+        );
+      }
+    }
+
+    // Sign with required keypairs
     if (feeWallet) {
       tx.sign(feeWallet, depositKeypair);
     } else {
@@ -1697,13 +1797,15 @@ app.post('/claim-card', async (req, res) => {
 
     const solSent =
       lamportsToSend / web3.LAMPORTS_PER_SOL;
+    const totalValueSol =
+      solSent + tokensValueSol;
 
     const { error: updateError } = await supabase
       .from('cards')
       .update({
         claimed: true,
         funded: false,
-        token_amount: solSent,
+        token_amount: totalValueSol,
         updated_at: new Date().toISOString(),
       })
       .eq('public_id', public_id);
@@ -1725,7 +1827,10 @@ app.post('/claim-card', async (req, res) => {
         '*🎁 CRYPTOCARD Claimed*',
         '',
         `*Card ID:* \`${public_id}\``,
-        `*Amount:* ${solSent.toFixed(6)} SOL`,
+        `*Native SOL sent:* ${solSent.toFixed(6)} SOL`,
+        `*Total value (SOL + tokens):* ${totalValueSol.toFixed(
+          6
+        )} SOL`,
         `*To:* \`${maskedDest}\``,
         '',
         `[Solscan](https://solscan.io/tx/${signature})`,
@@ -1736,6 +1841,7 @@ app.post('/claim-card', async (req, res) => {
       success: true,
       signature,
       amount_sol: solSent,
+      total_value_sol: totalValueSol,
       destination_wallet: destPubkey.toBase58(),
       fee_payer: feePayer.toBase58(),
     });
@@ -1848,12 +1954,6 @@ app.get('/public-metrics', async (_req, res) => {
     const protocolBurnsFiat =
       protocolBurnsSol * price;
 
-    const feeWallet = getFeeWalletKeypair();
-    const feeWalletPub =
-      feeWallet && feeWallet.publicKey
-        ? feeWallet.publicKey.toBase58()
-        : null;
-
     res.json({
       total_cards_funded: totalCardsFunded,
       total_volume_funded_sol: totalVolumeFundedSol,
@@ -1865,7 +1965,6 @@ app.get('/public-metrics', async (_req, res) => {
       protocol_burns_sol: protocolBurnsSol,
       protocol_burns_fiat: protocolBurnsFiat,
       burn_wallet: BURN_WALLET,
-      fee_wallet: feeWalletPub,
       last_updated: new Date().toISOString(),
     });
   } catch (err) {
@@ -2002,9 +2101,4 @@ app.listen(PORT, () => {
   console.log(
     `CRYPTOCARDS backend listening on port ${PORT}`
   );
-  if (!FEE_WALLET_SECRET) {
-    console.warn(
-      '[CRYPTOCARDS] No FEE_WALLET_SECRET configured; card deposit wallets will pay transaction fees.'
-    );
-  }
 });
