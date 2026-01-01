@@ -4,9 +4,13 @@ import { TrendingUp, TrendingDown, RefreshCcw } from 'lucide-react';
 
 interface PriceBannerProps {
   solPrice?: number;
-  cryptocardsPrice?: number;
+  cryptocardsPrice?: number; // optional fallback
   onRefresh?: () => void;
 }
+
+// CRYPTOCARDS token mint on Solana
+const CRYPTOCARDS_MINT =
+  'AuxRtUDw7KhWZxbMcfqPoB1cLcvq44Sw83UHRd3Spump';
 
 export function PriceBanner({
   solPrice,
@@ -16,13 +20,27 @@ export function PriceBanner({
   const [currentSolPrice, setCurrentSolPrice] = useState<number>(
     typeof solPrice === 'number' ? solPrice : 0
   );
+  const [currentCryptocardsPrice, setCurrentCryptocardsPrice] = useState<number>(
+    typeof cryptocardsPrice === 'number' ? cryptocardsPrice : 0
+  );
   const [refreshing, setRefreshing] = useState(false);
 
+  // Keep SOL price in sync with prop if parent passes it
   useEffect(() => {
     if (typeof solPrice === 'number' && !Number.isNaN(solPrice)) {
       setCurrentSolPrice(solPrice);
     }
   }, [solPrice]);
+
+  // Keep CRYPTOCARDS price in sync with prop (used as fallback)
+  useEffect(() => {
+    if (
+      typeof cryptocardsPrice === 'number' &&
+      !Number.isNaN(cryptocardsPrice)
+    ) {
+      setCurrentCryptocardsPrice(cryptocardsPrice);
+    }
+  }, [cryptocardsPrice]);
 
   const fetchSolPriceFromBackend = async () => {
     try {
@@ -35,18 +53,59 @@ export function PriceBanner({
           : typeof data.sol_price_usd === 'number'
           ? data.sol_price_usd
           : null;
-      if (typeof price === 'number' && !Number.isNaN(price)) {
+      if (typeof price === 'number' && !Number.isNaN(price) && price > 0) {
         setCurrentSolPrice(price);
       }
-    } catch {}
+    } catch {
+      // swallow errors; banner just won't update
+    }
   };
+
+  // Fetch CRYPTOCARDS price directly from Jupiter (same endpoint style as backend)
+  const fetchCryptocardsPriceFromJupiter = async () => {
+    try {
+      const res = await fetch(
+        `https://lite-api.jup.ag/price/v3?ids=${encodeURIComponent(
+          CRYPTOCARDS_MINT
+        )}`
+      );
+      if (!res.ok) return;
+      const body = await res.json();
+      const entry = body?.[CRYPTOCARDS_MINT];
+
+      // Backend uses entry.usdPrice; also fall back to entry.price just in case
+      const price =
+        typeof entry?.usdPrice === 'number'
+          ? entry.usdPrice
+          : typeof entry?.price === 'number'
+          ? entry.price
+          : null;
+
+      if (typeof price === 'number' && !Number.isNaN(price) && price > 0) {
+        setCurrentCryptocardsPrice(price);
+      }
+    } catch {
+      // swallow errors; leave previous price / fallback
+    }
+  };
+
+  // On mount, try to pull a fresh CRYPTOCARDS price at least once
+  useEffect(() => {
+    fetchCryptocardsPriceFromJupiter();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleRefreshClick = async () => {
     if (refreshing) return;
     setRefreshing(true);
     try {
-      if (onRefresh) await Promise.resolve(onRefresh());
-      else await fetchSolPriceFromBackend();
+      if (onRefresh) {
+        await Promise.resolve(onRefresh());
+      } else {
+        await fetchSolPriceFromBackend();
+      }
+      // Always refresh CRYPTOCARDS price too
+      await fetchCryptocardsPriceFromJupiter();
     } finally {
       setRefreshing(false);
     }
@@ -55,6 +114,15 @@ export function PriceBanner({
   const displaySolPrice =
     typeof currentSolPrice === 'number' && !Number.isNaN(currentSolPrice)
       ? currentSolPrice
+      : 0;
+
+  const displayCryptocardsPrice =
+    typeof currentCryptocardsPrice === 'number' &&
+    !Number.isNaN(currentCryptocardsPrice) &&
+    currentCryptocardsPrice > 0
+      ? currentCryptocardsPrice
+      : typeof cryptocardsPrice === 'number'
+      ? cryptocardsPrice
       : 0;
 
   return (
@@ -81,13 +149,13 @@ export function PriceBanner({
         <img
           src="/cryptocards-cc.png"
           alt="CRYPTOCARDS"
-          className="w-7 h-7 object-contain -translate-y-[4px]"  // moved down 1px
+          className="w-7 h-7 object-contain -translate-y-[4px]" // keep your existing offset
         />
         <span className="text-muted-foreground font-medium">
           CRYPTOCARDS:
         </span>
         <span className="text-accent font-bold">
-          ${cryptocardsPrice.toFixed(5)}
+          ${displayCryptocardsPrice.toFixed(5)}
         </span>
         <TrendingDown className="w-3 h-3 text-warning" />
       </div>
