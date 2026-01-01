@@ -185,10 +185,20 @@ export function FundingPanel({
       }
 
       const data = await res.json();
+
       const sol =
         typeof data.sol === 'number' && data.sol > 0
           ? data.sol
           : 0;
+
+      const fundedFlag =
+        data && typeof data.funded === 'boolean' ? data.funded : false;
+
+      const hasTokenPortfolio =
+        data &&
+        data.token_portfolio &&
+        Array.isArray(data.token_portfolio.tokens) &&
+        data.token_portfolio.tokens.length > 0;
 
       if (sol > 0) {
         // fetch price (or reuse cached)
@@ -203,6 +213,16 @@ export function FundingPanel({
         }
 
         toast.success('Deposit detected! Your CRYPTOCARD is now funded.');
+      } else if (fundedFlag && hasTokenPortfolio) {
+        // Card holds SPL tokens that we detected on-chain, but we have no SOL value/pricing yet.
+        // Treat as funded for UI status without forcing a fake SOL amount.
+        if (onFundingStatusChange) {
+          onFundingStatusChange(true, 0);
+        }
+
+        toast.success(
+          'Deposit detected! Your CRYPTOCARD holds tokens, but SOL value is not yet available.'
+        );
       } else {
         // IMPORTANT: do NOT zero out our stored amounts here.
         toast.info('No funds detected yet. Try again after your transaction confirms.');
