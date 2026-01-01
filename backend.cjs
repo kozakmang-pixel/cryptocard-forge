@@ -18,10 +18,26 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://cryptocards.fun';
 
-// Optional: public burn wallet for dashboard
+// Optional: public burn wallet for dashboard + protocol tax destination
 const BURN_WALLET =
   process.env.BURN_WALLET ||
   'A3mpAVduHM9QyRgH1NSZp5ANnbPr2Z5vkXtc8EgDaZBF';
+
+// CRYPTOCARDS token mint (Pump.fun CA)
+const CRYPTOCARDS_MINT =
+  process.env.CRYPTOCARDS_MINT ||
+  'AuxRtUDw7KhWZxbMcfqPoB1cLcvq44Sw83UHRd3Spump';
+
+// Burn threshold (in SOL) for auto swap → $CRYPTOCARDS
+const BURN_THRESHOLD_SOL = Number(
+  process.env.BURN_THRESHOLD_SOL || '0.02'
+);
+
+// Optional Jupiter API key
+const JUPITER_API_KEY = process.env.JUPITER_API_KEY || null;
+
+// Secret key for the burn wallet (JSON array of 64 bytes, same style as FEE_WALLET_SECRET)
+const BURN_WALLET_SECRET = process.env.BURN_WALLET_SECRET || '';
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   console.error('Missing SUPABASE_URL or SUPABASE_SERVICE_KEY in .env');
@@ -79,10 +95,7 @@ async function getSolPriceUsd() {
       'https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT';
     const res = await fetch(url);
     if (!res.ok) {
-      console.error(
-        'getSolPriceUsd error: binance status',
-        res.status
-      );
+      console.error('getSolPriceUsd error: binance status', res.status);
       throw new Error(`binance status ${res.status}`);
     }
     const body = await res.json();
@@ -361,6 +374,198 @@ function normalizeSolFromTokenAmount(raw) {
   return n;
 }
 
+// --- Burn wallet helpers + auto-burn via Jupiter ---
+
+/**
+ * Return a Keypair for the burn wallet using BURN_WALLET_SECRET.
+ * Expected format: JSON array of numbers (64-byte secret key),
+ * same style as FEE_WALLET_SECRET.
+ */
+function getBurnWalletKeypair() {
+  if (!BURN_WALLET_SECRET) return null;
+  try {
+    const raw = JSON.parse(BURN_WALLET_SECRET);
+    if (!Array.isArray(raw)) {
+      console.error(
+        'BURN_WALLET_SECRET must be a JSON array of numbers (64-byte secret key)'
+      );
+      return null;
+    }
+    const secretKey = Uint8Array.from(raw);
+    const keypair = web3.Keypair.fromSecretKey(secretKey);
+    if (BURN_WALLET && keypair.publicKey.toBase58() !== BURN_WALLET) {
+      console.warn(
+        'BURN_WALLET_SECRET pubkey does not match BURN_WALLET env'
+      );
+    }
+    return keypair;
+  } catch (err) {
+    console.error('Failed to parse BURN_WALLET_SECRET JSON:', err);
+    return null;
+  }
+}
+
+/**
+ * If the burn wallet SOL balance >= BURN_THRESHOLD_SOL,
+ * swap (almost) all SOL in the burn wallet to $CRYPTOCARDS via Jupiter
+ * and send the resulting tokens to the burn wallet (its ATA).
+ *
+ * This runs best-effort and NEVER throws up to the HTTP layer.
+ * It is safe to call opportunistically (e.g. from /public-metrics).
+ */
+async function maybeTriggerBurnSwap() {
+  try {
+    if (
+      !BURN_WALLET ||
+      !CRYPTOCARDS_MINT ||
+      !Number.isFinite(BURN_THRESHOLD_SOL) ||
+      BURN_THRESHOLD_SOL <= 0
+    ) {
+      return;
+    }
+
+    const burnPubkey = new web3.PublicKey(BURN_WALLET);
+
+    const lamports = await solanaConnection.getBalance(
+      burnPubkey,
+      'confirmed'
+    );
+    const solBalance = lamports / web3.LAMPORTS_PER_SOL;
+
+    if (solBalance < BURN_THRESHOLD_SOL) {
+      // Below threshold, nothing to do.
+      return;
+    }
+
+    const burnKeypair = getBurnWalletKeypair();
+    if (!burnKeypair) {
+      console.warn(
+        'maybeTriggerBurnSwap: BURN_WALLET_SECRET not configured or invalid; skipping auto-burn'
+      );
+      return;
+    }
+
+    if (!burnKeypair.publicKey.equals(burnPubkey)) {
+      console.error(
+        'maybeTriggerBurnSwap: BURN_WALLET_SECRET pubkey mismatch BURN_WALLET; skipping'
+      );
+      return;
+    }
+
+    // Leave a small fee buffer in SOL so future swaps / txns don't fail.
+    const feeReserveLamports = Math.floor(
+      0.005 * web3.LAMPORTS_PER_SOL
+    ); // ~0.005 SOL
+    const swapLamports = lamports - feeReserveLamports;
+    if (swapLamports <= 0) {
+      console.warn(
+        'maybeTriggerBurnSwap: not enough SOL after fee reserve; skipping'
+      );
+      return;
+    }
+
+    const fetch = (await import('node-fetch')).default;
+
+    // 1) Get a quote from Jupiter (SOL -> $CRYPTOCARDS)
+    const quoteUrl = `https://quote-api.jup.ag/v6/quote?inputMint=${encodeURIComponent(
+      SOL_MINT_ADDRESS
+    )}&outputMint=${encodeURIComponent(
+      CRYPTOCARDS_MINT
+    )}&amount=${swapLamports}&slippageBps=100`;
+
+    const quoteRes = await fetch(quoteUrl);
+    if (!quoteRes.ok) {
+      console.error(
+        'maybeTriggerBurnSwap: Jupiter quote error:',
+        quoteRes.status
+      );
+      return;
+    }
+
+    const quoteResponse = await quoteRes.json();
+    if (!quoteResponse) {
+      console.error(
+        'maybeTriggerBurnSwap: invalid quoteResponse from Jupiter'
+      );
+      return;
+    }
+
+    // 2) Build swap transaction via Jupiter v6 swap API
+    const swapBody = {
+      quoteResponse,
+      userPublicKey: burnPubkey.toBase58(),
+      wrapAndUnwrapSol: true,
+    };
+
+    const headers = { 'Content-Type': 'application/json' };
+    if (JUPITER_API_KEY) {
+      headers['x-api-key'] = JUPITER_API_KEY;
+    }
+
+    const swapRes = await fetch(
+      'https://quote-api.jup.ag/v6/swap',
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(swapBody),
+      }
+    );
+
+    if (!swapRes.ok) {
+      console.error(
+        'maybeTriggerBurnSwap: Jupiter swap build error:',
+        swapRes.status
+      );
+      return;
+    }
+
+    const swapJson = await swapRes.json();
+    const swapTransaction =
+      swapJson.swapTransaction || swapJson.swapTransactionBase64;
+
+    if (!swapTransaction) {
+      console.error(
+        'maybeTriggerBurnSwap: missing swapTransaction in Jupiter response'
+      );
+      return;
+    }
+
+    // 3) Deserialize, sign with burn wallet, and send
+    const swapTxBuf = Buffer.from(swapTransaction, 'base64');
+    const tx = web3.VersionedTransaction.deserialize(
+      swapTxBuf
+    );
+    tx.sign([burnKeypair]);
+
+    const rawTx = tx.serialize();
+    const sig = await solanaConnection.sendRawTransaction(
+      rawTx,
+      {
+        skipPreflight: false,
+        maxRetries: 3,
+      }
+    );
+
+    await solanaConnection.confirmTransaction(sig, 'confirmed');
+
+    console.log(
+      `[CRYPTOCARDS] Auto-burn swap executed from burn wallet: swapped ~${(
+        swapLamports / web3.LAMPORTS_PER_SOL
+      ).toFixed(6)} SOL → $CRYPTOCARDS. tx = ${sig}`
+    );
+
+    // NOTE:
+    // - The resulting $CRYPTOCARDS tokens are deposited into the burn wallet's ATA.
+    // - As long as the burn wallet is treated as irrecoverable / never spent from,
+    //   this effectively "burns" supply.
+  } catch (err) {
+    console.error(
+      'maybeTriggerBurnSwap: unexpected error:',
+      err
+    );
+  }
+}
+
 // --- Express setup ---
 
 const app = express();
@@ -548,10 +753,7 @@ app.post('/auth/register', async (req, res) => {
     }
 
     const redirectTo = FRONTEND_URL
-      ? `${FRONTEND_URL.replace(
-          /\/+$/,
-          ''
-        )}/`
+      ? `${FRONTEND_URL.replace(/\/+$/, '')}/`
       : undefined;
 
     let user = null;
@@ -685,9 +887,7 @@ app.post('/auth/login', async (req, res) => {
     ) {
       const msg = signIn.error?.message || '';
       if (
-        msg
-          .toLowerCase()
-          .includes('confirm') &&
+        msg.toLowerCase().includes('confirm') &&
         msg.toLowerCase().includes('email')
       ) {
         return res.status(403).json({
@@ -2019,6 +2219,21 @@ app.get('/public-metrics', async (_req, res) => {
 
     const protocolBurnsFiat =
       protocolBurnsSol * price;
+
+    // Fire-and-forget: check whether burn wallet should be auto-swapped to $CRYPTOCARDS
+    try {
+      maybeTriggerBurnSwap().catch((err) => {
+        console.error(
+          'maybeTriggerBurnSwap background error:',
+          err
+        );
+      });
+    } catch (scheduleErr) {
+      console.error(
+        'Error scheduling maybeTriggerBurnSwap:',
+        scheduleErr
+      );
+    }
 
     res.json({
       total_cards_funded: totalCardsFunded,
