@@ -64,6 +64,11 @@ function getSymbolForCard(card: CardStatusResponse | null, mainTokenMint?: strin
 export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProps) {
   const { t } = useLanguage();
 
+  // Unified message for "not funded / already claimed"
+  const notFundedMessage =
+    t('claim.notFundedOrClaimed') ??
+    'Card has already been claimed or has not been funded.';
+
   const [cardId, setCardId] = useState(initialCardId ?? '');
   const [walletAddress, setWalletAddress] = useState('');
   const [cvv, setCvv] = useState('');
@@ -161,7 +166,7 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
       const status = await apiService.getCardStatus(trimmed);
 
       if (!status.funded) {
-        toast.error(t('claim.notFunded') ?? 'This CRYPTOCARD is not funded yet.');
+        toast.error(notFundedMessage);
       }
       if (!status.locked) {
         toast.error(t('claim.notLocked') ?? 'This CRYPTOCARD must be locked before claiming.');
@@ -206,7 +211,7 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
       return;
     }
     if (!pulledCard.funded) {
-      toast.error(t('claim.notFunded') ?? 'This CRYPTOCARD is not funded yet.');
+      toast.error(notFundedMessage);
       return;
     }
 
