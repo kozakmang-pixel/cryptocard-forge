@@ -28,16 +28,15 @@ const CRYPTOCARDS_MINT =
   process.env.CRYPTOCARDS_MINT ||
   'AuxRtUDw7KhWZxbMcfqPoB1cLcvq44Sw83UHRd3Spump';
 
-// Burn threshold (in SOL) for auto swap → $CRYPTOCARDS
+// Burn threshold (in SOL) for dashboard / metrics (separate from worker's THRESHOLD_SOL)
 const BURN_THRESHOLD_SOL = Number(
   process.env.BURN_THRESHOLD_SOL || '0.02'
 );
 
-// Optional Jupiter API key
-const JUPITER_API_KEY = process.env.JUPITER_API_KEY || null;
-
-// Secret key for the burn wallet (JSON array of 64 bytes, same style as FEE_WALLET_SECRET)
-const BURN_WALLET_SECRET = process.env.BURN_WALLET_SECRET || '';
+// 🔥 External burn worker (Railway) config
+const BURN_WORKER_URL = process.env.BURN_WORKER_URL || '';
+const BURN_WORKER_AUTH_TOKEN =
+  process.env.BURN_WORKER_AUTH_TOKEN || '';
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   console.error('Missing SUPABASE_URL or SUPABASE_SERVICE_KEY in .env');
@@ -365,306 +364,85 @@ function normalizeSolFromTokenAmount(raw) {
   return n;
 }
 
-// --- Burn wallet helpers + auto-burn via Jupiter ---
+// --- External Burn Worker Helpers (Railway) ---
 
 /**
- * Return a Keypair for the burn wallet using BURN_WALLET_SECRET.
- * Expected format: JSON array of numbers (64-byte secret key),
- * same style as FEE_WALLET_SECRET.
+ * Call the external burn worker /run-burn endpoint (Railway).
+ * This does NOT throw to the HTTP layer; returns a structured object.
  */
-function getBurnWalletKeypair() {
-  if (!BURN_WALLET_SECRET) return null;
+async function callBurnWorkerRunBurn() {
   try {
-    const raw = JSON.parse(BURN_WALLET_SECRET);
-    if (!Array.isArray(raw)) {
-      console.error(
-        'BURN_WALLET_SECRET must be a JSON array of numbers (64-byte secret key)'
-      );
-      return null;
-    }
-    const secretKey = Uint8Array.from(raw);
-    const keypair = web3.Keypair.fromSecretKey(secretKey);
-    if (BURN_WALLET && keypair.publicKey.toBase58() !== BURN_WALLET) {
+    if (!BURN_WORKER_URL || !BURN_WORKER_AUTH_TOKEN) {
       console.warn(
-        'BURN_WALLET_SECRET pubkey does not match BURN_WALLET env'
-      );
-    }
-    return keypair;
-  } catch (err) {
-    console.error('Failed to parse BURN_WALLET_SECRET JSON:', err);
-    return null;
-  }
-}
-
-/**
- * If the burn wallet SOL balance >= BURN_THRESHOLD_SOL,
- * swap (almost) all SOL in the burn wallet to $CRYPTOCARDS via Jupiter
- * and send the resulting tokens to the burn wallet (its ATA).
- *
- * This runs best-effort and NEVER throws up to the HTTP layer.
- * It is safe to call opportunistically (e.g. from /public-metrics).
- *
- * Returns a structured object for debugging / manual triggering:
- *  { success: boolean, reason?: string, error?: string, tx?: string, swappedSol?: number, solBalance?: number, thresholdSol?: number }
- */
-async function maybeTriggerBurnSwap() {
-  try {
-    if (
-      !BURN_WALLET ||
-      !CRYPTOCARDS_MINT ||
-      !Number.isFinite(BURN_THRESHOLD_SOL) ||
-      BURN_THRESHOLD_SOL <= 0
-    ) {
-      return {
-        success: false,
-        reason: 'config_missing',
-        burnWallet: BURN_WALLET || null,
-        mint: CRYPTOCARDS_MINT || null,
-        thresholdSol: BURN_THRESHOLD_SOL,
-      };
-    }
-
-    const burnPubkey = new web3.PublicKey(BURN_WALLET);
-
-    const lamports = await solanaConnection.getBalance(
-      burnPubkey,
-      'confirmed'
-    );
-    const solBalance = lamports / web3.LAMPORTS_PER_SOL;
-
-    if (solBalance < BURN_THRESHOLD_SOL) {
-      // Below threshold, nothing to do.
-      return {
-        success: false,
-        reason: 'below_threshold',
-        burnWallet: BURN_WALLET,
-        solBalance,
-        thresholdSol: BURN_THRESHOLD_SOL,
-      };
-    }
-
-    const burnKeypair = getBurnWalletKeypair();
-    if (!burnKeypair) {
-      console.warn(
-        'maybeTriggerBurnSwap: BURN_WALLET_SECRET not configured or invalid; skipping auto-burn'
+        '[BURN] Burn worker not configured (BURN_WORKER_URL / BURN_WORKER_AUTH_TOKEN missing)'
       );
       return {
-        success: false,
-        reason: 'no_burn_wallet_secret',
-        burnWallet: BURN_WALLET,
-        solBalance,
-        thresholdSol: BURN_THRESHOLD_SOL,
-      };
-    }
-
-    if (!burnKeypair.publicKey.equals(burnPubkey)) {
-      console.error(
-        'maybeTriggerBurnSwap: BURN_WALLET_SECRET pubkey mismatch BURN_WALLET; skipping'
-      );
-      return {
-        success: false,
-        reason: 'secret_pubkey_mismatch',
-        burnWallet: BURN_WALLET,
-        solBalance,
-        thresholdSol: BURN_THRESHOLD_SOL,
-        burnWalletSecretPubkey: burnKeypair.publicKey.toBase58(),
-      };
-    }
-
-    // --- NEW: be conservative so Jupiter doesn't run out of lamports in route ---
-
-    // Leave a decent fee buffer in SOL so future swaps / txns don't fail.
-    const FEE_RESERVE_SOL = 0.01;       // keep ~0.01 SOL in the wallet
-    const SAFETY_FRACTION = 0.85;       // only swap ~85% of spendable balance
-
-    const feeReserveLamports = Math.floor(
-      FEE_RESERVE_SOL * web3.LAMPORTS_PER_SOL
-    );
-
-    let spendableLamports = lamports - feeReserveLamports;
-
-    if (spendableLamports <= 0) {
-      console.warn(
-        'maybeTriggerBurnSwap: not enough SOL after fee reserve; skipping',
-        { lamports, feeReserveLamports }
-      );
-      return {
-        success: false,
-        reason: 'insufficient_after_fee_reserve',
-        burnWallet: BURN_WALLET,
-        solBalance,
-        thresholdSol: BURN_THRESHOLD_SOL,
-        lamports,
-        feeReserveLamports,
-      };
-    }
-
-    const swapLamports = Math.floor(spendableLamports * SAFETY_FRACTION);
-
-    if (swapLamports <= 0) {
-      console.warn(
-        'maybeTriggerBurnSwap: swapLamports <= 0 after safety fraction; skipping',
-        { lamports, spendableLamports, SAFETY_FRACTION }
-      );
-      return {
-        success: false,
-        reason: 'insufficient_after_safety_margin',
-        burnWallet: BURN_WALLET,
-        solBalance,
-        thresholdSol: BURN_THRESHOLD_SOL,
-        lamports,
-        spendableLamports,
-        feeReserveLamports,
-        safetyFraction: SAFETY_FRACTION,
+        ok: false,
+        error: 'burn_worker_not_configured',
       };
     }
 
     const fetch = (await import('node-fetch')).default;
+    const url = `${BURN_WORKER_URL.replace(/\/+$/, '')}/run-burn`;
 
-    // 1) Get a quote from Jupiter (SOL -> $CRYPTOCARDS)
-    const quoteUrl = `https://quote-api.jup.ag/v6/quote?inputMint=${encodeURIComponent(
-      SOL_MINT_ADDRESS
-    )}&outputMint=${encodeURIComponent(
-      CRYPTOCARDS_MINT
-    )}&amount=${swapLamports}&slippageBps=100`;
+    console.log('[BURN] Calling burn worker:', url);
 
-    const quoteRes = await fetch(quoteUrl);
-    if (!quoteRes.ok) {
-      console.error(
-        'maybeTriggerBurnSwap: Jupiter quote error:',
-        quoteRes.status
-      );
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-burn-auth': BURN_WORKER_AUTH_TOKEN,
+      },
+      body: JSON.stringify({}),
+    });
+
+    const data = await res.json().catch(() => ({}));
+
+    console.log('[BURN] Burn worker response:', data);
+
+    if (!res.ok) {
       return {
-        success: false,
-        reason: 'quote_failed',
-        burnWallet: BURN_WALLET,
-        solBalance,
-        thresholdSol: BURN_THRESHOLD_SOL,
-        httpStatus: quoteRes.status,
+        ok: false,
+        status: res.status,
+        error: data.error || 'burn_worker_http_error',
+        raw: data,
       };
     }
 
-    const quoteResponse = await quoteRes.json();
-    if (!quoteResponse) {
-      console.error(
-        'maybeTriggerBurnSwap: invalid quoteResponse from Jupiter'
-      );
-      return {
-        success: false,
-        reason: 'invalid_quote_response',
-        burnWallet: BURN_WALLET,
-      };
-    }
-
-    // 2) Build swap transaction via Jupiter v6 swap API
-    const swapBody = {
-      quoteResponse,
-      userPublicKey: burnPubkey.toBase58(),
-      wrapAndUnwrapSol: true,
-    };
-
-    const headers = { 'Content-Type': 'application/json' };
-    if (JUPITER_API_KEY) {
-      headers['x-api-key'] = JUPITER_API_KEY;
-    }
-
-    const swapRes = await fetch(
-      'https://quote-api.jup.ag/v6/swap',
-      {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(swapBody),
-      }
-    );
-
-    if (!swapRes.ok) {
-      console.error(
-        'maybeTriggerBurnSwap: Jupiter swap build error:',
-        swapRes.status
-      );
-      return {
-        success: false,
-        reason: 'swap_build_failed',
-        burnWallet: BURN_WALLET,
-        solBalance,
-        thresholdSol: BURN_THRESHOLD_SOL,
-        httpStatus: swapRes.status,
-      };
-    }
-
-    const swapJson = await swapRes.json();
-    const swapTransaction =
-      swapJson.swapTransaction || swapJson.swapTransactionBase64;
-
-    if (!swapTransaction) {
-      console.error(
-        'maybeTriggerBurnSwap: missing swapTransaction in Jupiter response'
-      );
-      return {
-        success: false,
-        reason: 'missing_swap_transaction',
-        burnWallet: BURN_WALLET,
-      };
-    }
-
-    // 3) Deserialize, sign with burn wallet, and send
-    const swapTxBuf = Buffer.from(swapTransaction, 'base64');
-    const tx = web3.VersionedTransaction.deserialize(
-      swapTxBuf
-    );
-    tx.sign([burnKeypair]);
-
-    const rawTx = tx.serialize();
-    const sig = await solanaConnection.sendRawTransaction(
-      rawTx,
-      {
-        skipPreflight: false,
-        maxRetries: 3,
-      }
-    );
-
-    await solanaConnection.confirmTransaction(sig, 'confirmed');
-
-    const swappedSol = swapLamports / web3.LAMPORTS_PER_SOL;
-
-    console.log(
-      `[CRYPTOCARDS] Auto-burn swap executed from burn wallet: swapped ~${swappedSol.toFixed(
-        6
-      )} SOL → $CRYPTOCARDS. tx = ${sig}`
-    );
-
-    // NOTE:
-    // - The resulting $CRYPTOCARDS tokens are deposited into the burn wallet's ATA.
-    // - As long as the burn wallet is treated as irrecoverable / never spent from,
-    //   this effectively "burns" supply.
-
+    return data;
+  } catch (err) {
+    console.error('[BURN] Error calling burn worker:', err);
     return {
-      success: true,
-      burnWallet: BURN_WALLET,
-      swappedSol,
-      thresholdSol: BURN_THRESHOLD_SOL,
-      tx: sig,
+      ok: false,
+      error: err?.message || 'burn_worker_request_failed',
+    };
+  }
+}
+
+/**
+ * Optional helper to read burn worker /health for debugging.
+ */
+async function getBurnWorkerHealth() {
+  try {
+    if (!BURN_WORKER_URL) {
+      return {
+        ok: false,
+        error: 'burn_worker_not_configured',
+      };
+    }
+    const fetch = (await import('node-fetch')).default;
+    const url = `${BURN_WORKER_URL.replace(/\/+$/, '')}/health`;
+    const res = await fetch(url);
+    const data = await res.json().catch(() => ({}));
+    return {
+      status: res.status,
+      ...data,
     };
   } catch (err) {
-    console.error(
-      'maybeTriggerBurnSwap: unexpected error:',
-      err
-    );
-
-    let errorMessage = err?.message || String(err);
-
-    // If web3 SendTransactionError attached logs, include them (this is what you saw).
-    if (err?.transactionMessage || err?.transactionLogs) {
-      errorMessage =
-        (err.transactionMessage || errorMessage) +
-        '\nLogs:\n' +
-        JSON.stringify(err.transactionLogs || [], null, 2);
-    }
-
+    console.error('[BURN] Error calling worker /health:', err);
     return {
-      success: false,
-      reason: 'exception',
-      error: errorMessage,
+      ok: false,
+      error: err?.message || 'burn_worker_health_failed',
     };
   }
 }
@@ -794,24 +572,12 @@ async function getUserFromRequest(req) {
 
 // ----- BURN WALLET DEBUG ROUTES -----
 
-// Status endpoint for burn wallet / env wiring
+// Status endpoint for burn wallet / external worker wiring
 app.get('/burnwalletstatus', async (_req, res) => {
   try {
-    const hasBurnWalletSecret = !!BURN_WALLET_SECRET;
     const burnPubkey = BURN_WALLET
       ? new web3.PublicKey(BURN_WALLET)
       : null;
-
-    const keypair = getBurnWalletKeypair();
-    let burnWalletSecretPubkey = null;
-    let burnWalletSecretMatchesEnv = null;
-
-    if (keypair) {
-      burnWalletSecretPubkey = keypair.publicKey.toBase58();
-      burnWalletSecretMatchesEnv = burnPubkey
-        ? keypair.publicKey.equals(burnPubkey)
-        : null;
-    }
 
     let solBalanceLamports = 0;
     let solBalance = 0;
@@ -823,9 +589,21 @@ app.get('/burnwalletstatus', async (_req, res) => {
       solBalance = solBalanceLamports / web3.LAMPORTS_PER_SOL;
     }
 
+    // Interpret "hasBurnWalletSecret" in old UI as "external worker configured"
+    const workerConfigured =
+      !!BURN_WORKER_URL && !!BURN_WORKER_AUTH_TOKEN;
+
+    const workerHealth = await getBurnWorkerHealth();
+    const workerWallet = workerHealth?.wallet || null;
+
+    const burnWalletSecretMatchesEnv =
+      workerWallet && BURN_WALLET
+        ? workerWallet === BURN_WALLET
+        : null;
+
     const canSwap =
       !!burnPubkey &&
-      !!keypair &&
+      workerConfigured &&
       Number.isFinite(BURN_THRESHOLD_SOL) &&
       BURN_THRESHOLD_SOL > 0 &&
       solBalance >= BURN_THRESHOLD_SOL;
@@ -833,12 +611,13 @@ app.get('/burnwalletstatus', async (_req, res) => {
     res.json({
       burnWallet: BURN_WALLET || null,
       thresholdSol: BURN_THRESHOLD_SOL,
-      hasBurnWalletSecret,
-      burnWalletSecretPubkey,
+      hasBurnWalletSecret: workerConfigured,
+      burnWalletSecretPubkey: workerWallet,
       burnWalletSecretMatchesEnv,
       solBalanceLamports,
       solBalance,
       canSwap,
+      workerHealth,
     });
   } catch (err) {
     console.error('Error in /burnwalletstatus:', err);
@@ -848,23 +627,20 @@ app.get('/burnwalletstatus', async (_req, res) => {
   }
 });
 
-// Manual trigger of burn swap (Jupiter) for debugging / stream demos
+// Manual trigger of burn swap via external worker (for debugging / stream demos)
 app.get('/burn-wallet-swap', async (_req, res) => {
   try {
-    const result = await maybeTriggerBurnSwap();
+    const result = await callBurnWorkerRunBurn();
     if (!result) {
       return res.status(500).json({
         success: false,
-        error: 'No result from maybeTriggerBurnSwap',
+        error: 'No result from burn worker',
       });
     }
 
-    if (!result.success) {
-      // Below threshold is a "soft" error, keep 400 so UI can detect
+    if (!result.ok) {
       const status =
-        result.reason === 'below_threshold'
-          ? 400
-          : 500;
+        result.reason === 'below_threshold' ? 400 : 500;
       return res.status(status).json(result);
     }
 
@@ -877,6 +653,29 @@ app.get('/burn-wallet-swap', async (_req, res) => {
         err?.message ||
         'Unexpected error in /burn-wallet-swap',
     });
+  }
+});
+
+// Optional admin endpoint to trigger burn via backend (if you want POST)
+app.post('/admin/run-burn', async (_req, res) => {
+  try {
+    const result = await callBurnWorkerRunBurn();
+    if (!result.ok) {
+      return res.status(500).json({
+        ok: false,
+        error: result.error || 'burn_failed',
+        details: result,
+      });
+    }
+    res.json({
+      ok: true,
+      details: result,
+    });
+  } catch (err) {
+    console.error('[BURN] /admin/run-burn error:', err);
+    res
+      .status(500)
+      .json({ ok: false, error: err?.message || 'server_error' });
   }
 });
 
@@ -2411,17 +2210,17 @@ app.get('/public-metrics', async (_req, res) => {
     const protocolBurnsFiat =
       protocolBurnsSol * price;
 
-    // Fire-and-forget: check whether burn wallet should be auto-swapped to $CRYPTOCARDS
+    // Fire-and-forget: ask external burn worker to run auto-burn
     try {
-      maybeTriggerBurnSwap().catch((err) => {
+      callBurnWorkerRunBurn().catch((err) => {
         console.error(
-          'maybeTriggerBurnSwap background error:',
+          '[BURN] background burn worker error:',
           err
         );
       });
     } catch (scheduleErr) {
       console.error(
-        'Error scheduling maybeTriggerBurnSwap:',
+        'Error scheduling burn worker auto-run:',
         scheduleErr
       );
     }
