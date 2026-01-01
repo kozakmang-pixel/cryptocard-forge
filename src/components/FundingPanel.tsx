@@ -87,6 +87,33 @@ export function FundingPanel({
     return solPrice; // fallback to existing cached value (may be null)
   }, [solPrice]);
 
+  // helper: fetch token price in SOL directly from Jupiter on the client
+  const fetchTokenPriceInSolFromJupiter = useCallback(
+    async (mintAddress: string): Promise<number | null> => {
+      try {
+        const url = `https://price.jup.ag/v6/price?ids=${encodeURIComponent(
+          mintAddress
+        )}&vsToken=So11111111111111111111111111111111111111112`;
+        const res = await fetch(url);
+        if (!res.ok) {
+          console.error('Jupiter price fetch error:', res.status);
+          return null;
+        }
+        const body = await res.json();
+        const entry = body?.data?.[mintAddress];
+        const price = entry?.price;
+        if (typeof price === 'number' && Number.isFinite(price) && price > 0) {
+          return price;
+        }
+        return null;
+      } catch (err) {
+        console.error('Jupiter price fetch exception:', err);
+        return null;
+      }
+    },
+    []
+  );
+
   // initial load: pull any existing funded/claimed amounts from backend
   useEffect(() => {
     const loadInitial = async () => {
@@ -196,8 +223,8 @@ export function FundingPanel({
 
       const data: any = await res.json();
 
-      // total value in SOL (native SOL + priced SPL tokens)
-      const totalSolValue =
+      // total value in SOL (native SOL + priced SPL tokens) from backend
+      const totalSolValueBackend =
         typeof data.total_value_sol === 'number' && data.total_value_sol > 0
           ? data.total_value_sol
           : typeof data.sol === 'number' && data.sol > 0
@@ -213,21 +240,28 @@ export function FundingPanel({
         Array.isArray(tokenPortfolio.tokens) &&
         tokenPortfolio.tokens.length > 0;
 
-      // take first token as primary (typical case: only one SPL on the card)
+      // Primary token (typical case: only one SPL on the card)
       let primaryTokenAmount: number | null = null;
+      let primaryTokenMint: string | null = null;
+
       if (hasTokenPortfolio) {
         const first = tokenPortfolio.tokens[0];
-        if (first && typeof first.amount_ui === 'number' && first.amount_ui > 0) {
-          primaryTokenAmount = first.amount_ui;
+        if (first) {
+          if (typeof first.amount_ui === 'number' && first.amount_ui > 0) {
+            primaryTokenAmount = first.amount_ui;
+          }
+          if (typeof first.mint === 'string') {
+            primaryTokenMint = first.mint;
+          }
         }
       }
 
-      // If Jupiter priced the token(s) or there is native SOL, we get a non-zero SOL value
-      if (totalSolValue > 0) {
-        const price = (await fetchSolPrice()) ?? solPrice;
-        const usd = price ? totalSolValue * price : displayUsd;
+      // If backend already has a non-zero SOL value (native + SPL), use it.
+      if (totalSolValueBackend > 0) {
+        const priceUsd = (await fetchSolPrice()) ?? solPrice;
+        const usd = priceUsd ? totalSolValueBackend * priceUsd : displayUsd;
 
-        setSolAmount(totalSolValue);
+        setSolAmount(totalSolValueBackend);
         setUsdAmount(usd);
 
         if (primaryTokenAmount !== null) {
@@ -235,28 +269,50 @@ export function FundingPanel({
         }
 
         if (onFundingStatusChange) {
-          onFundingStatusChange(true, totalSolValue);
+          onFundingStatusChange(true, totalSolValueBackend);
         }
 
         toast.success('Deposit detected! Your CRYPTOCARD is now funded.');
-      } else if (fundedFlag && hasTokenPortfolio) {
-        // Card holds SPL tokens that we detected on-chain, but we have no SOL valuation yet.
-        // Treat as funded in UI; keep SOL/USD at 0 until we can price it.
-        if (primaryTokenAmount !== null) {
-          setTokenAmount(primaryTokenAmount);
-        }
-
-        if (onFundingStatusChange) {
-          onFundingStatusChange(true, 0);
-        }
-
-        toast.success(
-          'Deposit detected! Your CRYPTOCARD holds tokens, but SOL value is not yet available.'
-        );
-      } else {
-        // IMPORTANT: do NOT zero out our stored amounts here.
-        toast.info('No funds detected yet. Try again after your transaction confirms.');
+        return;
       }
+
+      // Backend says no SOL value, but we *do* see tokens on-chain.
+      // Try client-side Jupiter price to recover SOL/USD values,
+      // especially for fresh PumpFun / meme listings.
+      if (fundedFlag && hasTokenPortfolio && primaryTokenAmount !== null && primaryTokenMint) {
+        const priceInSol = await fetchTokenPriceInSolFromJupiter(primaryTokenMint);
+
+        if (priceInSol && priceInSol > 0) {
+          const solVal = primaryTokenAmount * priceInSol;
+
+          const priceUsd = (await fetchSolPrice()) ?? solPrice;
+          const usdVal = priceUsd ? solVal * priceUsd : 0;
+
+          setSolAmount(solVal);
+          setUsdAmount(usdVal);
+          setTokenAmount(primaryTokenAmount);
+
+          if (onFundingStatusChange) {
+            onFundingStatusChange(true, solVal);
+          }
+
+          toast.success('Deposit detected! Your CRYPTOCARD is now funded.');
+        } else {
+          // We know tokens are there, but even Jupiter won't price them yet.
+          setTokenAmount(primaryTokenAmount);
+          if (onFundingStatusChange) {
+            onFundingStatusChange(true, 0);
+          }
+          toast.success(
+            'Deposit detected! Your CRYPTOCARD holds tokens, but SOL value is not yet available.'
+          );
+        }
+
+        return;
+      }
+
+      // No SOL and no SPL tokens detected.
+      toast.info('No funds detected yet. Try again after your transaction confirms.');
     } catch (err: any) {
       console.error('FundingPanel checkFunding failed', err);
       toast.error(err?.message || 'Failed to check funding status');
