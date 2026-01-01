@@ -59,7 +59,7 @@ interface SyncFundingResponse {
   public_id: string;
   deposit_address: string;
   lamports: number;
-  sol: number; // alias for total_value_sol
+  sol: number; // alias for total_value_sol in some implementations
   sol_native: number;
   tokens_total_value_sol: number;
   total_value_sol: number;
@@ -209,26 +209,59 @@ export function AuditSection() {
 
     const isTokenCard = !!card.token_mint;
 
-    // --- SOL value (from sync-card-funding) ---
+    // --- SOL value (from sync-card-funding + DB fallbacks) ---
 
     let solValue = 0; // total SOL-equivalent (SOL + SPL) for display
     let nativeSol = 0; // raw native SOL balance at deposit at sync time
 
     if (funding) {
-      if (typeof funding.total_value_sol === 'number' && funding.total_value_sol > 0) {
+      // Preferred: total_value_sol if backend populates it
+      if (
+        typeof funding.total_value_sol === 'number' &&
+        funding.total_value_sol > 0
+      ) {
         solValue = funding.total_value_sol;
-      } else if (typeof funding.sol === 'number' && funding.sol > 0) {
-        solValue = funding.sol;
-      }
+      } else {
+        // Otherwise aggregate components that may be present
+        let sum = 0;
 
-      if (typeof funding.sol_native === 'number' && funding.sol_native > 0) {
-        nativeSol = funding.sol_native;
+        if (
+          typeof funding.tokens_total_value_sol === 'number' &&
+          funding.tokens_total_value_sol > 0
+        ) {
+          sum += funding.tokens_total_value_sol;
+        }
+
+        if (
+          typeof funding.sol_native === 'number' &&
+          funding.sol_native > 0
+        ) {
+          sum += funding.sol_native;
+          nativeSol = funding.sol_native;
+        }
+
+        if (sum > 0) {
+          solValue = sum;
+        } else if (typeof funding.sol === 'number' && funding.sol > 0) {
+          // Some implementations may alias sol → total SOL value
+          solValue = funding.sol;
+        }
       }
     }
 
     // fallback to live native SOL from /card-balance if needed
     if (solValue <= 0 && typeof balance?.sol === 'number' && balance.sol > 0) {
       solValue = balance.sol;
+    }
+
+    // FINAL fallback: use normalized SOL snapshot from DB token_amount
+    // Backend stores a normalized "SOL value" in token_amount after funding sync.
+    if (
+      solValue <= 0 &&
+      typeof card.token_amount === 'number' &&
+      card.token_amount > 0
+    ) {
+      solValue = card.token_amount;
     }
 
     // --- Token amount (units) ---
@@ -244,8 +277,12 @@ export function AuditSection() {
 
       if (primary && typeof primary.amount_ui === 'number' && primary.amount_ui > 0) {
         tokenAmount = primary.amount_ui;
-      } else if (typeof card.token_amount === 'number' && card.token_amount > 0) {
+      } else if (
+        typeof card.token_amount === 'number' &&
+        card.token_amount > 0
+      ) {
         // Fallback: DB value if we don't have portfolio detail
+        // (May be normalized SOL in some setups, but we still surface it as "token" amount.)
         tokenAmount = card.token_amount;
       } else {
         tokenAmount = 0;
@@ -254,7 +291,10 @@ export function AuditSection() {
       // SOL-only card: "token" is just SOL
       if (solValue > 0) {
         tokenAmount = solValue;
-      } else if (typeof card.token_amount === 'number' && card.token_amount > 0) {
+      } else if (
+        typeof card.token_amount === 'number' &&
+        card.token_amount > 0
+      ) {
         tokenAmount = card.token_amount;
       } else {
         tokenAmount = 0;
