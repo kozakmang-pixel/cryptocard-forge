@@ -1507,13 +1507,22 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
       tokenValueResult.tokens.length > 0;
     const isFunded = lamports > 0 || hasAnyTokens;
 
+    // IMPORTANT:
+    // - We always update "funded" so the current on-chain state is reflected.
+    // - We ONLY update token_amount when there is a non-zero totalSolValue.
+    //   This prevents wiping out the historical snapshot (e.g. after claim).
+    const updates = {
+      funded: isFunded,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (totalSolValue > 0) {
+      updates.token_amount = totalSolValue;
+    }
+
     const { error: updateError } = await supabase
       .from('cards')
-      .update({
-        funded: isFunded,
-        token_amount: totalSolValue,
-        updated_at: new Date().toISOString(),
-      })
+      .update(updates)
       .eq('public_id', publicId);
 
     if (updateError) {
