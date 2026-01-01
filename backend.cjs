@@ -11,6 +11,39 @@ const { createClient } = require('@supabase/supabase-js');
 const web3 = require('@solana/web3.js');
 const splToken = require('@solana/spl-token');
 
+// --- Base58 helper for burn wallet secrets (no extra deps) ---
+const BASE58_ALPHABET =
+  '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+
+function decodeBase58(str) {
+  if (typeof str !== 'string') {
+    throw new Error('decodeBase58 expects a string');
+  }
+  const bytes = [0];
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    const val = BASE58_ALPHABET.indexOf(ch);
+    if (val < 0) {
+      throw new Error('Invalid base58 character');
+    }
+    let carry = val;
+    for (let j = 0; j < bytes.length; j++) {
+      const x = bytes[j] * 58 + carry;
+      bytes[j] = x & 0xff;
+      carry = x >> 8;
+    }
+    while (carry > 0) {
+      bytes.push(carry & 0xff);
+      carry >>= 8;
+    }
+  }
+  // handle leading zeros
+  for (let i = 0; i < str.length && str[i] === '1'; i++) {
+    bytes.push(0);
+  }
+  return Uint8Array.from(bytes.reverse());
+}
+
 // --- Env + config ---
 
 const PORT = process.env.PORT || 3000;
@@ -36,7 +69,7 @@ const BURN_THRESHOLD_SOL = Number(
 // Optional Jupiter API key
 const JUPITER_API_KEY = process.env.JUPITER_API_KEY || null;
 
-// Secret key for the burn wallet (JSON array of 64 bytes, same style as FEE_WALLET_SECRET)
+// Secret key for the burn wallet (JSON array of 64 bytes, or base58 private key)
 const BURN_WALLET_SECRET = process.env.BURN_WALLET_SECRET || '';
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
@@ -378,21 +411,54 @@ function normalizeSolFromTokenAmount(raw) {
 
 /**
  * Return a Keypair for the burn wallet using BURN_WALLET_SECRET.
- * Expected format: JSON array of numbers (64-byte secret key),
- * same style as FEE_WALLET_SECRET.
+ * Accepted formats:
+ *  - JSON array of numbers (64-byte secret key)
+ *  - JSON object with { secretKey: [...] }
+ *  - base58-encoded private key string (e.g. Phantom export)
  */
 function getBurnWalletKeypair() {
   if (!BURN_WALLET_SECRET) return null;
+
   try {
-    const raw = JSON.parse(BURN_WALLET_SECRET);
-    if (!Array.isArray(raw)) {
-      console.error(
-        'BURN_WALLET_SECRET must be a JSON array of numbers (64-byte secret key)'
-      );
-      return null;
+    let raw;
+    // Try JSON first
+    try {
+      raw = JSON.parse(BURN_WALLET_SECRET);
+    } catch (_err) {
+      raw = null;
     }
-    const secretKey = Uint8Array.from(raw);
-    const keypair = web3.Keypair.fromSecretKey(secretKey);
+
+    let secretKeyBytes = null;
+
+    if (Array.isArray(raw)) {
+      // Already JSON array of numbers
+      secretKeyBytes = Uint8Array.from(raw);
+    } else if (raw && typeof raw === 'object' && Array.isArray(raw.secretKey)) {
+      // JSON object with { secretKey: [...] }
+      secretKeyBytes = Uint8Array.from(raw.secretKey);
+    } else {
+      // Fallback: treat as base58 private key string
+      const trimmed = BURN_WALLET_SECRET.trim();
+      try {
+        const decoded = decodeBase58(trimmed);
+        if (decoded.length !== 64) {
+          console.error(
+            'BURN_WALLET_SECRET base58 decoded length is not 64 bytes, got',
+            decoded.length
+          );
+          return null;
+        }
+        secretKeyBytes = decoded;
+      } catch (e) {
+        console.error(
+          'Failed to interpret BURN_WALLET_SECRET as JSON or base58:',
+          e.message || e
+        );
+        return null;
+      }
+    }
+
+    const keypair = web3.Keypair.fromSecretKey(secretKeyBytes);
     if (BURN_WALLET && keypair.publicKey.toBase58() !== BURN_WALLET) {
       console.warn(
         'BURN_WALLET_SECRET pubkey does not match BURN_WALLET env'
@@ -400,7 +466,7 @@ function getBurnWalletKeypair() {
     }
     return keypair;
   } catch (err) {
-    console.error('Failed to parse BURN_WALLET_SECRET JSON:', err);
+    console.error('Failed to build burn wallet keypair:', err);
     return null;
   }
 }
