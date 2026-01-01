@@ -148,29 +148,53 @@ export function AuditSection() {
       return null;
     }
 
-    const solFromStatus =
-      typeof card.token_amount === 'number' && card.token_amount > 0
-        ? card.token_amount
-        : 0;
+    const isTokenCard = !!card.token_mint;
 
-    const solFromBalance =
-      typeof balance?.sol === 'number' && balance.sol > 0 ? balance.sol : 0;
+    // --- Separate token amount and SOL amount ---
 
-    const onChainSol = solFromBalance || solFromStatus;
-    const tokenAmount = solFromStatus || onChainSol;
+    let tokenAmount = 0; // in token units (Peepo, CRYPTOCARDS, etc.)
+    let onChainSol = 0; // in SOL
     const currency = card.currency || 'USD';
+
+    if (isTokenCard) {
+      // For SPL token cards, treat card.token_amount as token units (snapshot),
+      // and only use live SOL balance for the deposit wallet.
+      const tokenFromStatus =
+        typeof card.token_amount === 'number' && card.token_amount > 0
+          ? card.token_amount
+          : 0;
+
+      const solFromBalance =
+        typeof balance?.sol === 'number' && balance.sol > 0 ? balance.sol : 0;
+
+      tokenAmount = tokenFromStatus;
+
+      // After claim, deposit wallet is usually empty – don't pretend there's SOL.
+      onChainSol = card.claimed ? 0 : solFromBalance;
+    } else {
+      // SOL-only cards: token amount === SOL amount
+      const solFromStatus =
+        typeof card.token_amount === 'number' && card.token_amount > 0
+          ? card.token_amount
+          : 0;
+      const solFromBalance =
+        typeof balance?.sol === 'number' && balance.sol > 0 ? balance.sol : 0;
+
+      onChainSol = solFromBalance || solFromStatus;
+      tokenAmount = onChainSol; // "token" is just SOL here
+    }
 
     const fiatFromDb =
       typeof card.amount_fiat === 'number' && card.amount_fiat > 0
         ? card.amount_fiat
         : null;
 
-    const fiat =
-      fiatFromDb !== null
-        ? fiatFromDb
-        : solPrice && onChainSol > 0
-        ? onChainSol * solPrice
-        : 0;
+    let fiat = 0;
+    if (fiatFromDb !== null) {
+      fiat = fiatFromDb;
+    } else if (solPrice && onChainSol > 0) {
+      fiat = onChainSol * solPrice;
+    }
 
     const statusLabel = card.claimed
       ? 'Claimed'
@@ -193,8 +217,7 @@ export function AuditSection() {
     // Resolve token symbol: override → card.token_symbol → lookup → SOL/TOKEN fallback
     const rawSymbol =
       tokenSymbolOverride ||
-      (typeof card.token_symbol === 'string' &&
-      card.token_symbol.trim().length > 0
+      (typeof card.token_symbol === 'string' && card.token_symbol.trim().length > 0
         ? card.token_symbol.trim()
         : null) ||
       (tokenInfo?.symbol && tokenInfo.symbol.trim().length > 0
@@ -204,11 +227,12 @@ export function AuditSection() {
     const tokenSymbol =
       typeof rawSymbol === 'string' && rawSymbol.trim().length > 0
         ? rawSymbol.trim()
-        : !tokenMint && onChainSol > 0
+        : !isTokenCard && onChainSol > 0
         ? 'SOL'
         : 'TOKEN';
 
     return {
+      isTokenCard,
       tokenAmount,
       onChainSol,
       fiat,
@@ -218,12 +242,31 @@ export function AuditSection() {
       onChainAddress,
       tokenSymbol,
     };
-  }, [card, balance, solPrice, tokenInfo, tokenSymbolOverride, tokenMint]);
+  }, [card, balance, solPrice, tokenInfo, tokenSymbolOverride]);
 
   const timeline: TimelineEvent[] = useMemo(() => {
     if (!card || !derived) return [];
 
     const events: TimelineEvent[] = [];
+
+    const formatAmountLine = (prefix: string) => {
+      const parts: string[] = [];
+
+      // Always show token amount
+      parts.push(`${derived.tokenAmount.toFixed(6)} ${derived.tokenSymbol}`);
+
+      // Only show SOL amount if we have a sane value (> 0)
+      if (!derived.isTokenCard || derived.onChainSol > 0) {
+        parts.push(`${derived.onChainSol.toFixed(6)} SOL`);
+      }
+
+      // Only show fiat if we actually have something > 0
+      if (derived.fiat > 0) {
+        parts.push(`${derived.currency} ${derived.fiat.toFixed(2)}`);
+      }
+
+      return `${prefix}: ${parts.join(' • ')}.`;
+    };
 
     // Created
     events.push({
@@ -242,11 +285,7 @@ export function AuditSection() {
       events.push({
         type: 'funded',
         label: 'Funded',
-        detail: `On-chain funding detected: ${derived.tokenAmount.toFixed(
-          6
-        )} ${derived.tokenSymbol} • ${derived.onChainSol.toFixed(
-          6
-        )} SOL • ${derived.currency} ${derived.fiat.toFixed(2)}.`,
+        detail: formatAmountLine('On-chain funding detected'),
         at: card.updated_at || card.created_at || null,
       });
     }
@@ -265,11 +304,7 @@ export function AuditSection() {
       events.push({
         type: 'claimed',
         label: 'Claimed',
-        detail: `Final claimed amount: ${derived.tokenAmount.toFixed(
-          6
-        )} ${derived.tokenSymbol} • ${derived.onChainSol.toFixed(
-          6
-        )} SOL • ${derived.currency} ${derived.fiat.toFixed(2)}.`,
+        detail: formatAmountLine('Final claimed amount'),
         at: card.updated_at || null,
       });
     }
@@ -481,7 +516,8 @@ export function AuditSection() {
                     ({balance.lamports} lamports)
                     {card.claimed && balance.sol === 0 && (
                       <span className="block text-[8px] text-muted-foreground mt-0.5">
-                        Deposit wallet is empty after claim – funds were moved to the recipient.
+                        Deposit wallet is empty after claim – funds were moved to the
+                        recipient.
                       </span>
                     )}
                   </>
@@ -498,9 +534,19 @@ export function AuditSection() {
                   Card amount (snapshot)
                 </div>
                 <div className="text-[9px] font-semibold">
-                  {derived.tokenAmount.toFixed(6)} {derived.tokenSymbol} •{' '}
-                  {derived.onChainSol.toFixed(6)} SOL • {derived.currency}{' '}
-                  {derived.fiat.toFixed(2)}
+                  {derived.tokenAmount.toFixed(6)} {derived.tokenSymbol}
+                  {(!derived.isTokenCard || derived.onChainSol > 0) && (
+                    <>
+                      {' '}
+                      • {derived.onChainSol.toFixed(6)} SOL
+                    </>
+                  )}
+                  {derived.fiat > 0 && (
+                    <>
+                      {' '}
+                      • {derived.currency} {derived.fiat.toFixed(2)}
+                    </>
+                  )}
                 </div>
               </div>
 
