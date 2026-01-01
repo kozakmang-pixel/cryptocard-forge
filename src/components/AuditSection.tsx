@@ -41,6 +41,34 @@ interface CardBalanceResponse {
   rpc?: string;
 }
 
+interface TokenPortfolioToken {
+  mint: string;
+  amount_ui: number;
+  decimals: number;
+  price_sol_per_token: number | null;
+  total_value_sol: number | null;
+}
+
+interface TokenPortfolio {
+  owner: string;
+  total_value_sol: number;
+  tokens: TokenPortfolioToken[];
+}
+
+interface SyncFundingResponse {
+  public_id: string;
+  deposit_address: string;
+  lamports: number;
+  sol: number; // alias for total_value_sol
+  sol_native: number;
+  tokens_total_value_sol: number;
+  total_value_sol: number;
+  funded: boolean;
+  locked: boolean;
+  hasDeposit: boolean;
+  token_portfolio?: TokenPortfolio;
+}
+
 type TimelineType = 'created' | 'funded' | 'locked' | 'claimed' | 'refunded';
 
 interface TimelineEvent {
@@ -57,6 +85,7 @@ export function AuditSection() {
   const [loading, setLoading] = useState(false);
   const [card, setCard] = useState<CardStatus | null>(null);
   const [balance, setBalance] = useState<CardBalanceResponse | null>(null);
+  const [funding, setFunding] = useState<SyncFundingResponse | null>(null);
   const [solPrice, setSolPrice] = useState<number | null>(null);
 
   // token identity for this card
@@ -90,10 +119,12 @@ export function AuditSection() {
     setLoading(true);
     setCard(null);
     setBalance(null);
+    setFunding(null);
     setTokenMint('');
     setTokenSymbolOverride(null);
 
     try {
+      // 1) Base card status (DB snapshot)
       const status = (await apiService.getCardStatus(trimmed)) as CardStatus;
       setCard(status);
 
@@ -110,6 +141,7 @@ export function AuditSection() {
         setTokenSymbolOverride(status.token_symbol.trim());
       }
 
+      // 2) Live native SOL balance
       try {
         const res = await fetch(`/card-balance/${encodeURIComponent(trimmed)}`);
         if (res.ok) {
@@ -120,11 +152,25 @@ export function AuditSection() {
         console.error('AuditSection: failed to fetch card-balance', err);
       }
 
+      // 3) Full funding sync (SOL + SPL tokens with Jupiter pricing)
+      try {
+        const res = await fetch(`/sync-card-funding/${encodeURIComponent(trimmed)}`, {
+          method: 'POST',
+        });
+        if (res.ok) {
+          const fund = (await res.json()) as SyncFundingResponse;
+          setFunding(fund);
+        }
+      } catch (err) {
+        console.error('AuditSection: failed to sync card funding', err);
+      }
+
       toast.success('On-chain audit loaded.');
     } catch (err: any) {
       console.error('AuditSection: failed to load card status', err);
       setCard(null);
       setBalance(null);
+      setFunding(null);
       setTokenMint('');
       setTokenSymbolOverride(null);
       toast.error(err?.message || 'Card not found. Check the Card ID.');
@@ -150,39 +196,61 @@ export function AuditSection() {
 
     const isTokenCard = !!card.token_mint;
 
-    // --- Separate token amount and SOL amount ---
+    // --- SOL value (from sync-card-funding) ---
 
-    let tokenAmount = 0; // in token units (Peepo, CRYPTOCARDS, etc.)
-    let onChainSol = 0; // in SOL
-    const currency = card.currency || 'USD';
+    let solValue = 0; // total SOL-equivalent (SOL + SPL) for display
+    let nativeSol = 0; // raw native SOL balance at deposit at sync time
+
+    if (funding) {
+      if (typeof funding.total_value_sol === 'number' && funding.total_value_sol > 0) {
+        solValue = funding.total_value_sol;
+      } else if (typeof funding.sol === 'number' && funding.sol > 0) {
+        solValue = funding.sol;
+      }
+
+      if (typeof funding.sol_native === 'number' && funding.sol_native > 0) {
+        nativeSol = funding.sol_native;
+      }
+    }
+
+    // fallback to live native SOL from /card-balance if needed
+    if (solValue <= 0 && typeof balance?.sol === 'number' && balance.sol > 0) {
+      solValue = balance.sol;
+    }
+
+    // --- Token amount (units) ---
+
+    let tokenAmount = 0;
 
     if (isTokenCard) {
-      // For SPL token cards, treat card.token_amount as token units (snapshot),
-      // and only use live SOL balance for the deposit wallet.
-      const tokenFromStatus =
-        typeof card.token_amount === 'number' && card.token_amount > 0
-          ? card.token_amount
-          : 0;
+      // Prefer token units from token_portfolio (same as FundingPanel)
+      const primary =
+        funding?.token_portfolio?.tokens && funding.token_portfolio.tokens[0]
+          ? funding.token_portfolio.tokens[0]
+          : null;
 
-      const solFromBalance =
-        typeof balance?.sol === 'number' && balance.sol > 0 ? balance.sol : 0;
-
-      tokenAmount = tokenFromStatus;
-
-      // After claim, deposit wallet is usually empty – don't pretend there's SOL.
-      onChainSol = card.claimed ? 0 : solFromBalance;
+      if (primary && typeof primary.amount_ui === 'number' && primary.amount_ui > 0) {
+        tokenAmount = primary.amount_ui;
+      } else if (typeof card.token_amount === 'number' && card.token_amount > 0) {
+        // Fallback: old DB value if we don't have portfolio detail
+        tokenAmount = card.token_amount;
+      } else {
+        tokenAmount = 0;
+      }
     } else {
-      // SOL-only cards: token amount === SOL amount
-      const solFromStatus =
-        typeof card.token_amount === 'number' && card.token_amount > 0
-          ? card.token_amount
-          : 0;
-      const solFromBalance =
-        typeof balance?.sol === 'number' && balance.sol > 0 ? balance.sol : 0;
-
-      onChainSol = solFromBalance || solFromStatus;
-      tokenAmount = onChainSol; // "token" is just SOL here
+      // SOL-only card: "token" is just SOL
+      if (solValue > 0) {
+        tokenAmount = solValue;
+      } else if (typeof card.token_amount === 'number' && card.token_amount > 0) {
+        tokenAmount = card.token_amount;
+      } else {
+        tokenAmount = 0;
+      }
     }
+
+    // --- Fiat value ---
+
+    const currency = card.currency || 'USD';
 
     const fiatFromDb =
       typeof card.amount_fiat === 'number' && card.amount_fiat > 0
@@ -192,8 +260,8 @@ export function AuditSection() {
     let fiat = 0;
     if (fiatFromDb !== null) {
       fiat = fiatFromDb;
-    } else if (solPrice && onChainSol > 0) {
-      fiat = onChainSol * solPrice;
+    } else if (solPrice && solValue > 0) {
+      fiat = solValue * solPrice;
     }
 
     const statusLabel = card.claimed
@@ -227,22 +295,28 @@ export function AuditSection() {
     const tokenSymbol =
       typeof rawSymbol === 'string' && rawSymbol.trim().length > 0
         ? rawSymbol.trim()
-        : !isTokenCard && onChainSol > 0
+        : !isTokenCard && solValue > 0
         ? 'SOL'
         : 'TOKEN';
 
+    // Ensure numeric fallbacks
+    const safeTokenAmount = Number.isFinite(tokenAmount) ? tokenAmount : 0;
+    const safeSolValue = Number.isFinite(solValue) ? solValue : 0;
+    const safeFiat = Number.isFinite(fiat) ? fiat : 0;
+
     return {
       isTokenCard,
-      tokenAmount,
-      onChainSol,
-      fiat,
+      tokenAmount: safeTokenAmount,
+      solValue: safeSolValue,
+      nativeSol,
+      fiat: safeFiat,
       currency,
       statusLabel,
       statusColor,
       onChainAddress,
       tokenSymbol,
     };
-  }, [card, balance, solPrice, tokenInfo, tokenSymbolOverride]);
+  }, [card, balance, funding, solPrice, tokenInfo, tokenSymbolOverride]);
 
   const timeline: TimelineEvent[] = useMemo(() => {
     if (!card || !derived) return [];
@@ -255,12 +329,12 @@ export function AuditSection() {
       // Always show token amount
       parts.push(`${derived.tokenAmount.toFixed(6)} ${derived.tokenSymbol}`);
 
-      // Only show SOL amount if we have a sane value (> 0)
-      if (!derived.isTokenCard || derived.onChainSol > 0) {
-        parts.push(`${derived.onChainSol.toFixed(6)} SOL`);
+      // Show SOL-equivalent value when we have it
+      if (derived.solValue > 0) {
+        parts.push(`${derived.solValue.toFixed(6)} SOL`);
       }
 
-      // Only show fiat if we actually have something > 0
+      // Show fiat if we have it
       if (derived.fiat > 0) {
         parts.push(`${derived.currency} ${derived.fiat.toFixed(2)}`);
       }
@@ -276,10 +350,10 @@ export function AuditSection() {
       at: card.created_at || null,
     });
 
-    // Funded: show if card was ever funded / locked / claimed / refunded and has amount
+    // Funded: show if card was ever funded and has non-zero token or SOL value
     const hasFundingHistory =
       (card.funded || card.locked || card.claimed || card.refunded) &&
-      derived.tokenAmount > 0;
+      (derived.tokenAmount > 0 || derived.solValue > 0);
 
     if (hasFundingHistory) {
       events.push({
@@ -475,10 +549,10 @@ export function AuditSection() {
                 </div>
 
                 <div className="mt-1 text-[8px] uppercase tracking-wide text-muted-foreground">
-                  SOL amount
+                  SOL value (total)
                 </div>
                 <div className="text-[10px] font-semibold">
-                  {derived.onChainSol.toFixed(6)} SOL
+                  {derived.solValue.toFixed(6)} SOL
                 </div>
 
                 <div className="mt-1 text-[8px] uppercase tracking-wide text-muted-foreground">
@@ -535,11 +609,8 @@ export function AuditSection() {
                 </div>
                 <div className="text-[9px] font-semibold">
                   {derived.tokenAmount.toFixed(6)} {derived.tokenSymbol}
-                  {(!derived.isTokenCard || derived.onChainSol > 0) && (
-                    <>
-                      {' '}
-                      • {derived.onChainSol.toFixed(6)} SOL
-                    </>
+                  {derived.solValue > 0 && (
+                    <> • {derived.solValue.toFixed(6)} SOL</>
                   )}
                   {derived.fiat > 0 && (
                     <>
