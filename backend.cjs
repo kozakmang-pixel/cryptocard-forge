@@ -35,8 +35,11 @@ const BURN_THRESHOLD_SOL = Number(
 
 // 🔥 External burn worker (Railway) config
 const BURN_WORKER_URL = process.env.BURN_WORKER_URL || '';
-const BURN_WORKER_AUTH_TOKEN =
-  process.env.BURN_WORKER_AUTH_TOKEN || '';
+// Use BURN_AUTH_TOKEN as the single source of truth; support old env name as fallback
+const BURN_AUTH_TOKEN =
+  process.env.BURN_AUTH_TOKEN ||
+  process.env.BURN_WORKER_AUTH_TOKEN ||
+  '';
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   console.error('Missing SUPABASE_URL or SUPABASE_SERVICE_KEY in .env');
@@ -372,9 +375,9 @@ function normalizeSolFromTokenAmount(raw) {
  */
 async function callBurnWorkerRunBurn() {
   try {
-    if (!BURN_WORKER_URL || !BURN_WORKER_AUTH_TOKEN) {
+    if (!BURN_WORKER_URL || !BURN_AUTH_TOKEN) {
       console.warn(
-        '[BURN] Burn worker not configured (BURN_WORKER_URL / BURN_WORKER_AUTH_TOKEN missing)'
+        '[BURN] Burn worker not configured (BURN_WORKER_URL / BURN_AUTH_TOKEN missing)'
       );
       return {
         ok: false,
@@ -391,7 +394,7 @@ async function callBurnWorkerRunBurn() {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-burn-auth': BURN_WORKER_AUTH_TOKEN,
+        'x-burn-auth': BURN_AUTH_TOKEN,
       },
       body: JSON.stringify({}),
     });
@@ -591,7 +594,7 @@ app.get('/burnwalletstatus', async (_req, res) => {
 
     // Interpret "hasBurnWalletSecret" in old UI as "external worker configured"
     const workerConfigured =
-      !!BURN_WORKER_URL && !!BURN_WORKER_AUTH_TOKEN;
+      !!BURN_WORKER_URL && !!BURN_AUTH_TOKEN;
 
     const workerHealth = await getBurnWorkerHealth();
     const workerWallet = workerHealth?.wallet || null;
@@ -640,7 +643,7 @@ app.get('/burn-wallet-swap', async (_req, res) => {
 
     if (!result.ok) {
       const status =
-        result.reason === 'below_threshold' ? 400 : 500;
+        result.error === 'below_threshold' ? 400 : 500;
       return res.status(status).json(result);
     }
 
@@ -2358,8 +2361,8 @@ app.get('/public-activity', async (_req, res) => {
     res.json({ events: events.slice(0, 50) });
   } catch (err) {
     console.error(
-      'Error in /public-activity:',
-      err
+        'Error in /public-activity:',
+        err
     );
     res.status(500).json({
       error: 'Failed to load public activity',
