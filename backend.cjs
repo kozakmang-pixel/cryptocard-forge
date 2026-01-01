@@ -465,6 +465,16 @@ async function getUserFromRequest(req) {
   }
 }
 
+// Small helper for metrics/activity sanitization
+function sanitizeSolValue(v) {
+  const n = Number(v || 0);
+  if (!Number.isFinite(n)) return 0;
+  if (n < 0) return 0;
+  // Hard cap obviously insane values
+  if (Math.abs(n) > 10000) return 0;
+  return n;
+}
+
 // ----- AUTH ROUTES -----
 
 // REGISTER: username + password required, email OPTIONAL
@@ -1423,7 +1433,7 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
     const { data: card, error } = await supabase
       .from('cards')
       .select(
-        'deposit_address, funded, locked, token_amount, currency, amount_fiat'
+        'deposit_address, funded, locked, claimed, token_amount, currency, amount_fiat'
       )
       .eq('public_id', publicId)
       .maybeSingle();
@@ -1446,6 +1456,36 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
       return res
         .status(400)
         .json({ error: 'Card has no deposit address' });
+    }
+
+    // IMPORTANT:
+    // If the card is already CLAIMED we DO NOT override the on-chain snapshot.
+    // We just return the stored token_amount / amount_fiat so stats & UI stay correct.
+    if (card.claimed) {
+      const snapshotSol =
+        typeof card.token_amount === 'number' && card.token_amount > 0
+          ? card.token_amount
+          : 0;
+      const snapshotFiat =
+        typeof card.amount_fiat === 'number' && card.amount_fiat > 0
+          ? card.amount_fiat
+          : null;
+
+      return res.json({
+        public_id: publicId,
+        deposit_address: card.deposit_address,
+        lamports: 0,
+        sol: snapshotSol,
+        sol_native: 0,
+        tokens_total_value_sol: 0,
+        total_value_sol: snapshotSol,
+        funded: !!card.funded,
+        locked: !!card.locked,
+        hasDeposit: !!card.deposit_address,
+        token_portfolio: null,
+        amount_fiat: snapshotFiat,
+        currency: card.currency || 'USD',
+      });
     }
 
     const pubkey = new web3.PublicKey(
@@ -1844,17 +1884,25 @@ app.post('/claim-card', async (req, res) => {
       }
     }
 
-    // 9) Update card in DB: mark claimed, clear funded
+    // 9) Update card in DB: mark claimed, clear funded, PRESERVE snapshot value
     const nowIso = new Date().toISOString();
-    const newTokenAmount =
-      totalTokenUi > 0 ? totalTokenUi : solSent || card.token_amount || 0;
+
+    const existingTokenAmount =
+      typeof card.token_amount === 'number' && card.token_amount > 0
+        ? card.token_amount
+        : 0;
+
+    let snapshotTokenAmount = existingTokenAmount;
+    if (snapshotTokenAmount <= 0) {
+      snapshotTokenAmount = solSent > 0 ? solSent : 0;
+    }
 
     const { error: updateError } = await supabase
       .from('cards')
       .update({
         claimed: true,
         funded: false,
-        token_amount: newTokenAmount,
+        token_amount: snapshotTokenAmount,
         updated_at: nowIso,
       })
       .eq('public_id', public_id);
@@ -1862,8 +1910,6 @@ app.post('/claim-card', async (req, res) => {
     if (updateError) {
       console.error('Supabase /claim-card update error:', updateError);
     }
-
-    // Optional: Telegram notification (you can re-add your previous one here if desired)
 
     return res.json({
       success: true,
@@ -1922,15 +1968,17 @@ app.get('/public-metrics', async (_req, res) => {
     let totalVolumeClaimedSol = 0;
 
     for (const row of data || []) {
-      const sol = Number(row.token_amount || 0);
+      const sol = sanitizeSolValue(row.token_amount);
 
       // Count any card that has ever held value as "funded"
       if (row.funded || row.locked || row.claimed) {
-        totalCardsFunded += 1;
-        totalVolumeFundedSol += sol;
+        if (sol > 0) {
+          totalCardsFunded += 1;
+          totalVolumeFundedSol += sol;
+        }
       }
 
-      if (row.claimed) {
+      if (row.claimed && sol > 0) {
         totalVolumeClaimedSol += sol;
       }
     }
@@ -1964,7 +2012,7 @@ app.get('/public-metrics', async (_req, res) => {
       } else if (burnData && burnData.length > 0) {
         protocolBurnsSol = burnData.reduce(
           (sum, row) =>
-            sum + Number(row.burn_sol || 0),
+            sum + sanitizeSolValue(row.burn_sol),
           0
         );
       } else {
@@ -1981,6 +2029,7 @@ app.get('/public-metrics', async (_req, res) => {
         totalVolumeFundedSol * 0.015;
     }
 
+    protocolBurnsSol = sanitizeSolValue(protocolBurnsSol);
     const protocolBurnsFiat =
       protocolBurnsSol * price;
 
@@ -2010,15 +2059,15 @@ app.get('/public-metrics', async (_req, res) => {
 
 /**
  * Public activity feed built directly from the cards table.
- * No extra tables needed. We derive CREATED / FUNDED / LOCKED / CLAIMED
- * events from the card flags + timestamps.
+ * No extra tables needed. We derive CREATED / FUNDED / LOCKED / CLAIMED / REFUNDED
+ * events from the card flags + timestamps using the snapshot value.
  */
 app.get('/public-activity', async (_req, res) => {
   try {
     const { data, error } = await supabase
       .from('cards')
       .select(
-        'public_id, token_amount, amount_fiat, currency, funded, locked, claimed, created_at, updated_at'
+        'public_id, token_amount, amount_fiat, currency, funded, locked, claimed, refunded, created_at, updated_at, token_mint, token_symbol'
       )
       .order('created_at', { ascending: false })
       .limit(50);
@@ -2032,11 +2081,10 @@ app.get('/public-activity', async (_req, res) => {
     }
 
     const events = [];
-
     const nowIso = new Date().toISOString();
 
     for (const card of data || []) {
-      const sol = Number(card.token_amount || 0);
+      const sol = sanitizeSolValue(card.token_amount);
       const fiat =
         typeof card.amount_fiat === 'number'
           ? card.amount_fiat
@@ -2048,57 +2096,60 @@ app.get('/public-activity', async (_req, res) => {
         nowIso;
       const updatedAt = card.updated_at || createdAt;
 
-      // CREATED
-      events.push({
+      const basePayload = {
         card_id: card.public_id,
-        type: 'CREATED',
         token_amount: sol,
         sol_amount: sol,
         fiat_value: fiat,
         currency,
         timestamp: createdAt,
         tx_signature: null,
+        token_mint: card.token_mint || null,
+        token_symbol: card.token_symbol || null,
+      };
+
+      // CREATED
+      events.push({
+        ...basePayload,
+        type: 'CREATED',
+        timestamp: createdAt,
       });
 
-      // FUNDED
-      if (card.funded) {
-        events.push({
-          card_id: card.public_id,
-          type: 'FUNDED',
-          token_amount: sol,
-          sol_amount: sol,
-          fiat_value: fiat,
-          currency,
-          timestamp: updatedAt,
-          tx_signature: null,
-        });
+      // FUNDED-ish (ever held value)
+      if (card.funded || card.locked || card.claimed || card.refunded) {
+        if (sol > 0) {
+          events.push({
+            ...basePayload,
+            type: 'FUNDED',
+            timestamp: updatedAt,
+          });
+        }
       }
 
       // LOCKED
       if (card.locked) {
         events.push({
-          card_id: card.public_id,
+          ...basePayload,
           type: 'LOCKED',
-          token_amount: sol,
-          sol_amount: sol,
-          fiat_value: fiat,
-          currency,
           timestamp: updatedAt,
-          tx_signature: null,
         });
       }
 
       // CLAIMED
       if (card.claimed) {
         events.push({
-          card_id: card.public_id,
+          ...basePayload,
           type: 'CLAIMED',
-          token_amount: sol,
-          sol_amount: sol,
-          fiat_value: fiat,
-          currency,
           timestamp: updatedAt,
-          tx_signature: null,
+        });
+      }
+
+      // REFUNDED
+      if (card.refunded) {
+        events.push({
+          ...basePayload,
+          type: 'REFUNDED',
+          timestamp: updatedAt,
         });
       }
     }
