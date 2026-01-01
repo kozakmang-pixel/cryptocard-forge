@@ -73,11 +73,6 @@ let lastSolPriceFetchedAt = 0;
 
 /**
  * Get SOL price in USD with multiple providers + 2 min in-memory cache.
- * Providers:
- * - Binance
- * - CryptoCompare
- * - CoinPaprika
- * - Coingecko
  */
 async function getSolPriceUsd() {
   const now = Date.now();
@@ -89,7 +84,6 @@ async function getSolPriceUsd() {
   const fetch = (await import('node-fetch')).default;
   let lastError = null;
 
-  // Binance
   async function fromBinance() {
     const url =
       'https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT';
@@ -106,7 +100,6 @@ async function getSolPriceUsd() {
     return price;
   }
 
-  // CryptoCompare
   async function fromCryptoCompare() {
     const url =
       'https://min-api.cryptocompare.com/data/price?fsym=SOL&tsyms=USD';
@@ -126,7 +119,6 @@ async function getSolPriceUsd() {
     return price;
   }
 
-  // CoinPaprika
   async function fromCoinPaprika() {
     const url =
       'https://api.coinpaprika.com/v1/tickers/sol-solana';
@@ -146,7 +138,6 @@ async function getSolPriceUsd() {
     return price;
   }
 
-  // Coingecko (last resort)
   async function fromCoingecko() {
     const url =
       'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd';
@@ -480,14 +471,22 @@ async function maybeTriggerBurnSwap() {
       };
     }
 
-    // Leave a small fee buffer in SOL so future swaps / txns don't fail.
+    // --- NEW: be conservative so Jupiter doesn't run out of lamports in route ---
+
+    // Leave a decent fee buffer in SOL so future swaps / txns don't fail.
+    const FEE_RESERVE_SOL = 0.01;       // keep ~0.01 SOL in the wallet
+    const SAFETY_FRACTION = 0.85;       // only swap ~85% of spendable balance
+
     const feeReserveLamports = Math.floor(
-      0.005 * web3.LAMPORTS_PER_SOL
-    ); // ~0.005 SOL
-    const swapLamports = lamports - feeReserveLamports;
-    if (swapLamports <= 0) {
+      FEE_RESERVE_SOL * web3.LAMPORTS_PER_SOL
+    );
+
+    let spendableLamports = lamports - feeReserveLamports;
+
+    if (spendableLamports <= 0) {
       console.warn(
-        'maybeTriggerBurnSwap: not enough SOL after fee reserve; skipping'
+        'maybeTriggerBurnSwap: not enough SOL after fee reserve; skipping',
+        { lamports, feeReserveLamports }
       );
       return {
         success: false,
@@ -495,14 +494,35 @@ async function maybeTriggerBurnSwap() {
         burnWallet: BURN_WALLET,
         solBalance,
         thresholdSol: BURN_THRESHOLD_SOL,
+        lamports,
+        feeReserveLamports,
+      };
+    }
+
+    const swapLamports = Math.floor(spendableLamports * SAFETY_FRACTION);
+
+    if (swapLamports <= 0) {
+      console.warn(
+        'maybeTriggerBurnSwap: swapLamports <= 0 after safety fraction; skipping',
+        { lamports, spendableLamports, SAFETY_FRACTION }
+      );
+      return {
+        success: false,
+        reason: 'insufficient_after_safety_margin',
+        burnWallet: BURN_WALLET,
+        solBalance,
+        thresholdSol: BURN_THRESHOLD_SOL,
+        lamports,
+        spendableLamports,
+        feeReserveLamports,
+        safetyFraction: SAFETY_FRACTION,
       };
     }
 
     const fetch = (await import('node-fetch')).default;
 
     // 1) Get a quote from Jupiter (SOL -> $CRYPTOCARDS)
-    // NOTE: Jupiter migrated from quote-api.jup.ag/v6 to lite-api.jup.ag/swap/v1
-    const quoteUrl = `https://lite-api.jup.ag/swap/v1/quote?inputMint=${encodeURIComponent(
+    const quoteUrl = `https://quote-api.jup.ag/v6/quote?inputMint=${encodeURIComponent(
       SOL_MINT_ADDRESS
     )}&outputMint=${encodeURIComponent(
       CRYPTOCARDS_MINT
@@ -536,7 +556,7 @@ async function maybeTriggerBurnSwap() {
       };
     }
 
-    // 2) Build swap transaction via Jupiter Swap API (legacy swap/v1)
+    // 2) Build swap transaction via Jupiter v6 swap API
     const swapBody = {
       quoteResponse,
       userPublicKey: burnPubkey.toBase58(),
@@ -549,7 +569,7 @@ async function maybeTriggerBurnSwap() {
     }
 
     const swapRes = await fetch(
-      'https://lite-api.jup.ag/swap/v1/swap',
+      'https://quote-api.jup.ag/v6/swap',
       {
         method: 'POST',
         headers,
@@ -630,10 +650,21 @@ async function maybeTriggerBurnSwap() {
       'maybeTriggerBurnSwap: unexpected error:',
       err
     );
+
+    let errorMessage = err?.message || String(err);
+
+    // If web3 SendTransactionError attached logs, include them (this is what you saw).
+    if (err?.transactionMessage || err?.transactionLogs) {
+      errorMessage =
+        (err.transactionMessage || errorMessage) +
+        '\nLogs:\n' +
+        JSON.stringify(err.transactionLogs || [], null, 2);
+    }
+
     return {
       success: false,
       reason: 'exception',
-      error: err?.message || String(err),
+      error: errorMessage,
     };
   }
 }
