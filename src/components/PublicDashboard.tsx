@@ -103,17 +103,9 @@ function ActivityRow({
       (evt as any).symbol.trim()) ||
     null;
 
-  const [resolvedMint, setResolvedMint] = useState<string>(initialMint);
-  const [symbolOverride, setSymbolOverride] = useState<string | null>(
-    initialSymbol
-  );
-
-  // Derived on-chain funding snapshot (SOL + token units + fiat) for this card
-  const [derivedSol, setDerivedSol] = useState<number | null>(null);
-  const [derivedTokenAmount, setDerivedTokenAmount] = useState<number | null>(
-    null
-  );
-  const [derivedFiat, setDerivedFiat] = useState<number | null>(null);
+  // Keep these as stable values (no live syncing that would mutate history)
+  const [resolvedMint] = useState<string>(initialMint);
+  const [symbolOverride] = useState<string | null>(initialSymbol);
 
   // If we don't have a mint or symbol yet, load card status to discover token_mint / symbol
   useEffect(() => {
@@ -135,21 +127,9 @@ function ActivityRow({
         const data = await res.json();
         if (cancelled || !data) return;
 
-        const mintFromStatus =
-          typeof data.token_mint === 'string'
-            ? data.token_mint.trim()
-            : '';
-
-        if (mintFromStatus && mintFromStatus.length > 0) {
-          setResolvedMint(mintFromStatus);
-        }
-
-        if (
-          typeof data.token_symbol === 'string' &&
-          data.token_symbol.trim().length > 0
-        ) {
-          setSymbolOverride(data.token_symbol.trim());
-        }
+        // NOTE:
+        // We intentionally do NOT change token_amount / fiat / sol here.
+        // This request is only for discovering token metadata if missing.
       } catch (err) {
         console.error(
           'ActivityRow: failed to fetch card status for',
@@ -166,106 +146,30 @@ function ActivityRow({
     };
   }, [evt.card_id, resolvedMint, symbolOverride]);
 
-  // Pull live funding snapshot for this card from backend (SOL + SPL via Jupiter)
-  useEffect(() => {
-    let cancelled = false;
-
-    const fetchFundingSnapshot = async () => {
-      try {
-        const res = await fetch(
-          `/sync-card-funding/${encodeURIComponent(evt.card_id)}`,
-          {
-            method: 'POST',
-          }
-        );
-        if (!res.ok) return;
-        const data = await res.json();
-        if (cancelled || !data) return;
-
-        // total SOL-equivalent (native SOL + priced SPL tokens)
-        const totalSol =
-          typeof data.total_value_sol === 'number' && data.total_value_sol > 0
-            ? data.total_value_sol
-            : typeof data.sol === 'number' && data.sol > 0
-            ? data.sol
-            : 0;
-
-        // Try to derive primary token units + mint from token_portfolio
-        let tokenUi = 0;
-        let mint = '';
-        const portfolio = data.token_portfolio;
-        if (
-          portfolio &&
-          Array.isArray(portfolio.tokens) &&
-          portfolio.tokens.length > 0
-        ) {
-          const first = portfolio.tokens[0];
-          if (
-            typeof first.amount_ui === 'number' &&
-            first.amount_ui > 0
-          ) {
-            tokenUi = first.amount_ui;
-          }
-          if (typeof first.mint === 'string') {
-            mint = first.mint;
-          }
-        }
-
-        const finalTokenAmount =
-          tokenUi > 0 ? tokenUi : totalSol;
-
-        setDerivedSol(totalSol);
-        setDerivedTokenAmount(finalTokenAmount);
-
-        if (mint && !resolvedMint) {
-          setResolvedMint(mint);
-        }
-
-        const price =
-          solPrice && solPrice > 0 ? solPrice : null;
-        if (price && totalSol > 0) {
-          setDerivedFiat(totalSol * price);
-        } else {
-          setDerivedFiat(null);
-        }
-      } catch (err) {
-        console.error(
-          'ActivityRow: failed to sync funding for',
-          evt.card_id,
-          err
-        );
-      }
-    };
-
-    fetchFundingSnapshot();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [evt.card_id, solPrice, resolvedMint]);
-
   // Look up token info from mint (if present / discovered)
   const lookupMint = resolvedMint || '';
   const { tokenInfo } = useTokenLookup(lookupMint);
 
-  // Prefer derived on-chain snapshot; fall back to event fields
+  // --- IMPORTANT: Use historical snapshot from the event itself ---
+  // SOL amount: prefer explicit sol_amount, then token_amount, else 0
   const sol =
-    derivedSol !== null
-      ? derivedSol
-      : evt.sol_amount ?? 0;
+    typeof evt.sol_amount === 'number' && evt.sol_amount > 0
+      ? evt.sol_amount
+      : typeof evt.token_amount === 'number' && evt.token_amount > 0
+      ? evt.token_amount
+      : 0;
 
+  // Token amount: prefer explicit token_amount, else mirror SOL amount
   const tokenAmount =
-    derivedTokenAmount !== null
-      ? derivedTokenAmount
-      : evt.token_amount ?? sol;
+    typeof evt.token_amount === 'number' && evt.token_amount > 0
+      ? evt.token_amount
+      : sol;
 
-  const price =
-    solPrice && solPrice > 0 ? solPrice : null;
+  const price = solPrice && solPrice > 0 ? solPrice : null;
 
+  // Fiat: prefer stored fiat_value, else derive from current SOL price
   const fiat =
-    derivedFiat !== null
-      ? derivedFiat
-      : evt.fiat_value && evt.fiat_value > 0
+    typeof evt.fiat_value === 'number' && evt.fiat_value > 0
       ? evt.fiat_value
       : price && sol > 0
       ? sol * price
