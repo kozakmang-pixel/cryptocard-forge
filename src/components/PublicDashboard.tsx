@@ -39,7 +39,6 @@ interface PublicActivityEvent {
   timestamp: string;
   tx_signature?: string | null;
   token_mint?: string | null;
-  // backend may also send a symbol; we keep type loose so we can read it
   token_symbol?: string | null;
 }
 
@@ -109,12 +108,18 @@ function ActivityRow({
     initialSymbol
   );
 
-  // If we don't have a mint or symbol yet, load card status to discover token_mint
+  // Derived on-chain funding snapshot (SOL + token units + fiat) for this card
+  const [derivedSol, setDerivedSol] = useState<number | null>(null);
+  const [derivedTokenAmount, setDerivedTokenAmount] = useState<number | null>(
+    null
+  );
+  const [derivedFiat, setDerivedFiat] = useState<number | null>(null);
+
+  // If we don't have a mint or symbol yet, load card status to discover token_mint / symbol
   useEffect(() => {
     let cancelled = false;
 
     const maybeFetchCardStatus = async () => {
-      // If we already have a mint or a symbol, don't bother
       if (
         (resolvedMint && resolvedMint.length > 0) ||
         (symbolOverride && symbolOverride.length > 0)
@@ -139,7 +144,6 @@ function ActivityRow({
           setResolvedMint(mintFromStatus);
         }
 
-        // If backend ever adds a symbol here, we can capture it too
         if (
           typeof data.token_symbol === 'string' &&
           data.token_symbol.trim().length > 0
@@ -162,16 +166,106 @@ function ActivityRow({
     };
   }, [evt.card_id, resolvedMint, symbolOverride]);
 
+  // Pull live funding snapshot for this card from backend (SOL + SPL via Jupiter)
+  useEffect(() => {
+    let cancelled = false;
+
+    const fetchFundingSnapshot = async () => {
+      try {
+        const res = await fetch(
+          `/sync-card-funding/${encodeURIComponent(evt.card_id)}`,
+          {
+            method: 'POST',
+          }
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled || !data) return;
+
+        // total SOL-equivalent (native SOL + priced SPL tokens)
+        const totalSol =
+          typeof data.total_value_sol === 'number' && data.total_value_sol > 0
+            ? data.total_value_sol
+            : typeof data.sol === 'number' && data.sol > 0
+            ? data.sol
+            : 0;
+
+        // Try to derive primary token units + mint from token_portfolio
+        let tokenUi = 0;
+        let mint = '';
+        const portfolio = data.token_portfolio;
+        if (
+          portfolio &&
+          Array.isArray(portfolio.tokens) &&
+          portfolio.tokens.length > 0
+        ) {
+          const first = portfolio.tokens[0];
+          if (
+            typeof first.amount_ui === 'number' &&
+            first.amount_ui > 0
+          ) {
+            tokenUi = first.amount_ui;
+          }
+          if (typeof first.mint === 'string') {
+            mint = first.mint;
+          }
+        }
+
+        const finalTokenAmount =
+          tokenUi > 0 ? tokenUi : totalSol;
+
+        setDerivedSol(totalSol);
+        setDerivedTokenAmount(finalTokenAmount);
+
+        if (mint && !resolvedMint) {
+          setResolvedMint(mint);
+        }
+
+        const price =
+          solPrice && solPrice > 0 ? solPrice : null;
+        if (price && totalSol > 0) {
+          setDerivedFiat(totalSol * price);
+        } else {
+          setDerivedFiat(null);
+        }
+      } catch (err) {
+        console.error(
+          'ActivityRow: failed to sync funding for',
+          evt.card_id,
+          err
+        );
+      }
+    };
+
+    fetchFundingSnapshot();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [evt.card_id, solPrice, resolvedMint]);
+
   // Look up token info from mint (if present / discovered)
   const lookupMint = resolvedMint || '';
   const { tokenInfo } = useTokenLookup(lookupMint);
 
-  const sol = evt.sol_amount ?? 0;
-  const tokenAmount = evt.token_amount ?? sol;
+  // Prefer derived on-chain snapshot; fall back to event fields
+  const sol =
+    derivedSol !== null
+      ? derivedSol
+      : evt.sol_amount ?? 0;
 
-  const price = solPrice && solPrice > 0 ? solPrice : null;
+  const tokenAmount =
+    derivedTokenAmount !== null
+      ? derivedTokenAmount
+      : evt.token_amount ?? sol;
+
+  const price =
+    solPrice && solPrice > 0 ? solPrice : null;
+
   const fiat =
-    evt.fiat_value && evt.fiat_value > 0
+    derivedFiat !== null
+      ? derivedFiat
+      : evt.fiat_value && evt.fiat_value > 0
       ? evt.fiat_value
       : price && sol > 0
       ? sol * price
@@ -327,7 +421,7 @@ export function PublicDashboard() {
             const stats = await statsRes.json();
             setMetrics({
               total_cards_funded: stats.total_cards_funded ?? 0,
-              // NOTE: this line was in your code; leaving it as-is to avoid changing behavior
+              // Keep your existing fallback behavior here
               total_volume_funded_sol: stats.total_cards_funded ?? 0,
               total_volume_funded_fiat: stats.total_volume_funded_fiat ?? 0,
               total_volume_claimed_sol: stats.total_volume_claimed_sol ?? 0,
@@ -378,31 +472,56 @@ export function PublicDashboard() {
   const enrichedMetrics = useMemo(() => {
     if (!metrics) return null;
 
-    const price = solPrice && solPrice > 0 ? solPrice : null;
+    const price =
+      solPrice && solPrice > 0 ? solPrice : null;
+
+    // Soft-sanitize obviously insane SOL totals from older rows
+    const sanitizeSol = (v: number | undefined | null) => {
+      const n = typeof v === 'number' ? v : 0;
+      // If someone accidentally recorded hundreds of thousands of SOL,
+      // just treat it as 0 for public display.
+      if (!Number.isFinite(n)) return 0;
+      if (Math.abs(n) > 100000) return 0;
+      return n;
+    };
+
+    const fundedSol = sanitizeSol(
+      metrics.total_volume_funded_sol
+    );
+    const claimedSol = sanitizeSol(
+      metrics.total_volume_claimed_sol
+    );
+    const burnsSol = sanitizeSol(metrics.protocol_burns_sol);
 
     const fundedFiat =
-      metrics.total_volume_funded_fiat && metrics.total_volume_funded_fiat > 0
+      metrics.total_volume_funded_fiat &&
+      metrics.total_volume_funded_fiat > 0
         ? metrics.total_volume_funded_fiat
-        : price && metrics.total_volume_funded_sol > 0
-        ? metrics.total_volume_funded_sol * price
+        : price && fundedSol > 0
+        ? fundedSol * price
         : 0;
 
     const claimedFiat =
-      metrics.total_volume_claimed_fiat && metrics.total_volume_claimed_fiat > 0
+      metrics.total_volume_claimed_fiat &&
+      metrics.total_volume_claimed_fiat > 0
         ? metrics.total_volume_claimed_fiat
-        : price && metrics.total_volume_claimed_sol > 0
-        ? metrics.total_volume_claimed_sol * price
+        : price && claimedSol > 0
+        ? claimedSol * price
         : 0;
 
     const burnsFiat =
-      metrics.protocol_burns_fiat && metrics.protocol_burns_fiat > 0
+      metrics.protocol_burns_fiat &&
+      metrics.protocol_burns_fiat > 0
         ? metrics.protocol_burns_fiat
-        : price && metrics.protocol_burns_sol > 0
-        ? metrics.protocol_burns_sol * price
+        : price && burnsSol > 0
+        ? burnsSol * price
         : 0;
 
     return {
       ...metrics,
+      total_volume_funded_sol: fundedSol,
+      total_volume_claimed_sol: claimedSol,
+      protocol_burns_sol: burnsSol,
       fundedFiat,
       claimedFiat,
       burnsFiat,
