@@ -70,7 +70,6 @@ async function getSolPriceUsd() {
     return lastSolPriceUsd;
   }
 
-  const fetch = (await import('node-fetch')).default;
   let lastError = null;
 
   // Binance
@@ -205,8 +204,9 @@ async function getSolPriceUsd() {
  */
 async function getTokenPriceInSol(mintAddress) {
   try {
-    const fetch = (await import('node-fetch')).default;
-    const url = `https://price.jup.ag/v6/price?ids=${mintAddress}&vsToken=${SOL_MINT_ADDRESS}`;
+    const url = `https://price.jup.ag/v6/price?ids=${encodeURIComponent(
+      mintAddress
+    )}&vsToken=${SOL_MINT_ADDRESS}`;
     const res = await fetch(url);
     if (!res.ok) {
       console.error('getTokenPriceInSol error: status', res.status);
@@ -401,7 +401,6 @@ async function notifyTelegram(message) {
   }
 
   try {
-    const fetch = (await import('node-fetch')).default;
     await fetch(
       `https://api.telegram.org/bot${token}/sendMessage`,
       {
