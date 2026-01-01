@@ -78,6 +78,14 @@ interface TimelineEvent {
   at: string | null;
 }
 
+interface AmountView {
+  tokenAmount: number;
+  solValue: number;
+  fiat: number;
+  currency: string;
+  tokenSymbol: string;
+}
+
 export function AuditSection() {
   const { t } = useLanguage();
 
@@ -93,6 +101,9 @@ export function AuditSection() {
   const [tokenSymbolOverride, setTokenSymbolOverride] = useState<string | null>(null);
 
   const { tokenInfo } = useTokenLookup(tokenMint || '');
+
+  // Snapshot of the funding values at the time we first detect non-zero amounts (pre-claim)
+  const [fundingSnapshot, setFundingSnapshot] = useState<AmountView | null>(null);
 
   const fetchSolPrice = async () => {
     try {
@@ -122,6 +133,7 @@ export function AuditSection() {
     setFunding(null);
     setTokenMint('');
     setTokenSymbolOverride(null);
+    setFundingSnapshot(null);
 
     try {
       // 1) Base card status (DB snapshot)
@@ -173,6 +185,7 @@ export function AuditSection() {
       setFunding(null);
       setTokenMint('');
       setTokenSymbolOverride(null);
+      setFundingSnapshot(null);
       toast.error(err?.message || 'Card not found. Check the Card ID.');
     } finally {
       setLoading(false);
@@ -232,7 +245,7 @@ export function AuditSection() {
       if (primary && typeof primary.amount_ui === 'number' && primary.amount_ui > 0) {
         tokenAmount = primary.amount_ui;
       } else if (typeof card.token_amount === 'number' && card.token_amount > 0) {
-        // Fallback: old DB value if we don't have portfolio detail
+        // Fallback: DB value if we don't have portfolio detail
         tokenAmount = card.token_amount;
       } else {
         tokenAmount = 0;
@@ -318,28 +331,67 @@ export function AuditSection() {
     };
   }, [card, balance, funding, solPrice, tokenInfo, tokenSymbolOverride]);
 
+  // Snapshot the first non-zero funding view while card is NOT claimed
+  useEffect(() => {
+    if (!card || !derived) return;
+    if (card.claimed) return; // don't overwrite snapshot after claim
+
+    const hasNonZero =
+      derived.tokenAmount > 0 || derived.solValue > 0 || derived.fiat > 0;
+
+    if (!hasNonZero) return;
+
+    // Only set once per audit pull, keep the earliest "funded" snapshot
+    setFundingSnapshot((prev) => {
+      if (prev) return prev;
+      return {
+        tokenAmount: derived.tokenAmount,
+        solValue: derived.solValue,
+        fiat: derived.fiat,
+        currency: derived.currency,
+        tokenSymbol: derived.tokenSymbol,
+      };
+    });
+  }, [card, derived]);
+
   const timeline: TimelineEvent[] = useMemo(() => {
     if (!card || !derived) return [];
 
     const events: TimelineEvent[] = [];
 
-    const formatAmountLine = (prefix: string) => {
+    const formatAmountLine = (prefix: string, view: AmountView) => {
       const parts: string[] = [];
 
       // Always show token amount
-      parts.push(`${derived.tokenAmount.toFixed(6)} ${derived.tokenSymbol}`);
+      parts.push(`${view.tokenAmount.toFixed(6)} ${view.tokenSymbol}`);
 
       // Show SOL-equivalent value when we have it
-      if (derived.solValue > 0) {
-        parts.push(`${derived.solValue.toFixed(6)} SOL`);
+      if (view.solValue > 0) {
+        parts.push(`${view.solValue.toFixed(6)} SOL`);
       }
 
       // Show fiat if we have it
-      if (derived.fiat > 0) {
-        parts.push(`${derived.currency} ${derived.fiat.toFixed(2)}`);
+      if (view.fiat > 0) {
+        parts.push(`${view.currency} ${view.fiat.toFixed(2)}`);
       }
 
       return `${prefix}: ${parts.join(' • ')}.`;
+    };
+
+    const fundedView: AmountView = fundingSnapshot || {
+      tokenAmount: derived.tokenAmount,
+      solValue: derived.solValue,
+      fiat: derived.fiat,
+      currency: derived.currency,
+      tokenSymbol: derived.tokenSymbol,
+    };
+
+    const claimedView: AmountView = {
+      tokenAmount: derived.tokenAmount,
+      solValue: derived.solValue,
+      fiat: derived.fiat,
+      currency: derived.currency,
+      tokenSymbol: derived.tokenSymbol,
     };
 
     // Created
@@ -350,16 +402,17 @@ export function AuditSection() {
       at: card.created_at || null,
     });
 
-    // Funded: show if card was ever funded and has non-zero token or SOL value
+    // Funded: show if card was ever funded / locked / claimed / refunded and has amount
     const hasFundingHistory =
       (card.funded || card.locked || card.claimed || card.refunded) &&
-      (derived.tokenAmount > 0 || derived.solValue > 0);
+      (fundedView.tokenAmount > 0 || fundedView.solValue > 0 || fundedView.fiat > 0);
 
     if (hasFundingHistory) {
       events.push({
         type: 'funded',
         label: 'Funded',
-        detail: formatAmountLine('On-chain funding detected'),
+        // USE SNAPSHOT if available so it doesn't change after claim
+        detail: formatAmountLine('On-chain funding detected', fundedView),
         at: card.updated_at || card.created_at || null,
       });
     }
@@ -378,7 +431,8 @@ export function AuditSection() {
       events.push({
         type: 'claimed',
         label: 'Claimed',
-        detail: formatAmountLine('Final claimed amount'),
+        // Claimed uses the current derived view (final values)
+        detail: formatAmountLine('Final claimed amount', claimedView),
         at: card.updated_at || null,
       });
     }
@@ -393,7 +447,7 @@ export function AuditSection() {
     }
 
     return events;
-  }, [card, derived]);
+  }, [card, derived, fundingSnapshot]);
 
   const dotClassForType = (type: TimelineType) => {
     switch (type) {
@@ -411,6 +465,19 @@ export function AuditSection() {
         return 'bg-primary shadow-[0_0_0_3px_rgba(59,130,246,0.25)]';
     }
   };
+
+  // Choose which view to show in the "Card amount (snapshot)" box:
+  const snapshotView: AmountView | null = useMemo(() => {
+    if (!derived) return null;
+    if (fundingSnapshot) return fundingSnapshot;
+    return {
+      tokenAmount: derived.tokenAmount,
+      solValue: derived.solValue,
+      fiat: derived.fiat,
+      currency: derived.currency,
+      tokenSymbol: derived.tokenSymbol,
+    };
+  }, [derived, fundingSnapshot]);
 
   return (
     <section className="glass-card rounded-xl p-3 mt-5 shadow-card hover:shadow-card-hover transition-all">
@@ -602,24 +669,26 @@ export function AuditSection() {
                 )}
               </div>
 
-              {/* Card amount snapshot (token / SOL / fiat) */}
-              <div className="mt-1">
-                <div className="text-[8px] uppercase tracking-wide text-muted-foreground mb-0.5">
-                  Card amount (snapshot)
+              {/* Card amount snapshot (use funding snapshot if present) */}
+              {snapshotView && (
+                <div className="mt-1">
+                  <div className="text-[8px] uppercase tracking-wide text-muted-foreground mb-0.5">
+                    Card amount (snapshot)
+                  </div>
+                  <div className="text-[9px] font-semibold">
+                    {snapshotView.tokenAmount.toFixed(6)} {snapshotView.tokenSymbol}
+                    {snapshotView.solValue > 0 && (
+                      <> • {snapshotView.solValue.toFixed(6)} SOL</>
+                    )}
+                    {snapshotView.fiat > 0 && (
+                      <>
+                        {' '}
+                        • {snapshotView.currency} {snapshotView.fiat.toFixed(2)}
+                      </>
+                    )}
+                  </div>
                 </div>
-                <div className="text-[9px] font-semibold">
-                  {derived.tokenAmount.toFixed(6)} {derived.tokenSymbol}
-                  {derived.solValue > 0 && (
-                    <> • {derived.solValue.toFixed(6)} SOL</>
-                  )}
-                  {derived.fiat > 0 && (
-                    <>
-                      {' '}
-                      • {derived.currency} {derived.fiat.toFixed(2)}
-                    </>
-                  )}
-                </div>
-              </div>
+              )}
 
               {derived.onChainAddress && (
                 <div className="mt-2">
