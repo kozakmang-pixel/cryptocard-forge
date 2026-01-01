@@ -73,11 +73,6 @@ let lastSolPriceFetchedAt = 0;
 
 /**
  * Get SOL price in USD with multiple providers + 2 min in-memory cache.
- * Providers:
- * - Binance
- * - CryptoCompare
- * - CoinPaprika
- * - Coingecko
  */
 async function getSolPriceUsd() {
   const now = Date.now();
@@ -89,7 +84,6 @@ async function getSolPriceUsd() {
   const fetch = (await import('node-fetch')).default;
   let lastError = null;
 
-  // Binance
   async function fromBinance() {
     const url =
       'https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT';
@@ -106,7 +100,6 @@ async function getSolPriceUsd() {
     return price;
   }
 
-  // CryptoCompare
   async function fromCryptoCompare() {
     const url =
       'https://min-api.cryptocompare.com/data/price?fsym=SOL&tsyms=USD';
@@ -126,7 +119,6 @@ async function getSolPriceUsd() {
     return price;
   }
 
-  // CoinPaprika
   async function fromCoinPaprika() {
     const url =
       'https://api.coinpaprika.com/v1/tickers/sol-solana';
@@ -146,7 +138,6 @@ async function getSolPriceUsd() {
     return price;
   }
 
-  // Coingecko (last resort)
   async function fromCoingecko() {
     const url =
       'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd';
@@ -286,7 +277,6 @@ async function getTokenAccountsWithSolValue(ownerPubkey) {
     const priceCache = {};
     let totalValueUsd = 0;
 
-    // Reference SOL/USD price for converting token USD -> SOL
     const solPriceUsdRaw = await getSolPriceUsd();
     const solPriceUsd =
       typeof solPriceUsdRaw === 'number' && solPriceUsdRaw > 0
@@ -357,20 +347,15 @@ async function getTokenAccountsWithSolValue(ownerPubkey) {
 
 /**
  * Helper to normalize whatever is stored in token_amount into a "SOL-ish" value.
- * - If it's a big number (likely lamports), convert lamports -> SOL.
- * - Otherwise, treat as already in SOL.
  */
 function normalizeSolFromTokenAmount(raw) {
   const n = Number(raw || 0);
   if (!Number.isFinite(n) || n <= 0) return 0;
 
-  // If it looks like lamports (> ~0.01 SOL in lamports), convert.
-  // 0.01 SOL in lamports = 10_000_000.
   if (n > 10_000_000) {
     return n / web3.LAMPORTS_PER_SOL;
   }
 
-  // Otherwise assume it's already SOL.
   return n;
 }
 
@@ -378,8 +363,6 @@ function normalizeSolFromTokenAmount(raw) {
 
 /**
  * Return a Keypair for the burn wallet using BURN_WALLET_SECRET.
- * Expected format: JSON array of numbers (64-byte secret key),
- * same style as FEE_WALLET_SECRET.
  */
 function getBurnWalletKeypair() {
   if (!BURN_WALLET_SECRET) return null;
@@ -395,7 +378,11 @@ function getBurnWalletKeypair() {
     const keypair = web3.Keypair.fromSecretKey(secretKey);
     if (BURN_WALLET && keypair.publicKey.toBase58() !== BURN_WALLET) {
       console.warn(
-        'BURN_WALLET_SECRET pubkey does not match BURN_WALLET env'
+        'BURN_WALLET_SECRET pubkey does not match BURN_WALLET env',
+        'secretPubkey=',
+        keypair.publicKey.toBase58(),
+        'envPubkey=',
+        BURN_WALLET
       );
     }
     return keypair;
@@ -406,14 +393,68 @@ function getBurnWalletKeypair() {
 }
 
 /**
+ * Helper: get current burn wallet status (for debugging + endpoint).
+ */
+async function getBurnWalletStatus() {
+  const result = {
+    burnWallet: BURN_WALLET || null,
+    thresholdSol: BURN_THRESHOLD_SOL,
+    hasBurnWalletSecret: !!BURN_WALLET_SECRET,
+    burnWalletSecretPubkey: null,
+    burnWalletSecretMatchesEnv: null,
+    solBalanceLamports: 0,
+    solBalance: 0,
+  };
+
+  if (!BURN_WALLET) {
+    return result;
+  }
+
+  try {
+    const burnPubkey = new web3.PublicKey(BURN_WALLET);
+    const lamports = await solanaConnection.getBalance(burnPubkey, 'confirmed');
+    result.solBalanceLamports = lamports;
+    result.solBalance = lamports / web3.LAMPORTS_PER_SOL;
+  } catch (err) {
+    console.error('getBurnWalletStatus balance error:', err);
+  }
+
+  try {
+    const kp = getBurnWalletKeypair();
+    if (!kp) {
+      result.burnWalletSecretPubkey = null;
+      result.burnWalletSecretMatchesEnv = null;
+    } else {
+      result.burnWalletSecretPubkey = kp.publicKey.toBase58();
+      result.burnWalletSecretMatchesEnv =
+        !BURN_WALLET ||
+        kp.publicKey.toBase58() === BURN_WALLET;
+    }
+  } catch (err) {
+    console.error('getBurnWalletStatus keypair error:', err);
+  }
+
+  return result;
+}
+
+/**
  * If the burn wallet SOL balance >= BURN_THRESHOLD_SOL,
- * swap (almost) all SOL in the burn wallet to $CRYPTOCARDS via Jupiter
- * and send the resulting tokens to the burn wallet (its ATA).
+ * swap (almost) all SOL in the burn wallet to $CRYPTOCARDS via Jupiter.
  *
- * This runs best-effort and NEVER throws up to the HTTP layer.
- * It is safe to call opportunistically (e.g. from /public-metrics).
+ * Returns a summary object:
+ *  {
+ *    didSwap: boolean,
+ *    reason: string | null,
+ *    txSignature: string | null
+ *  }
  */
 async function maybeTriggerBurnSwap() {
+  const summary = {
+    didSwap: false,
+    reason: null,
+    txSignature: null,
+  };
+
   try {
     if (
       !BURN_WALLET ||
@@ -421,76 +462,81 @@ async function maybeTriggerBurnSwap() {
       !Number.isFinite(BURN_THRESHOLD_SOL) ||
       BURN_THRESHOLD_SOL <= 0
     ) {
-      return;
+      summary.reason =
+        'Missing BURN_WALLET/CRYPTOCARDS_MINT or invalid BURN_THRESHOLD_SOL';
+      console.warn('[BurnSwap] early exit:', summary.reason);
+      return summary;
     }
 
-    const burnPubkey = new web3.PublicKey(BURN_WALLET);
+    const burnStatus = await getBurnWalletStatus();
+    console.log('[BurnSwap] status:', burnStatus);
 
-    const lamports = await solanaConnection.getBalance(
-      burnPubkey,
-      'confirmed'
-    );
-    const solBalance = lamports / web3.LAMPORTS_PER_SOL;
+    const burnPubkey = new web3.PublicKey(BURN_WALLET);
+    const lamports = burnStatus.solBalanceLamports;
+    const solBalance = burnStatus.solBalance;
 
     if (solBalance < BURN_THRESHOLD_SOL) {
-      // Below threshold, nothing to do.
-      return;
+      summary.reason = `Balance below threshold: ${solBalance} < ${BURN_THRESHOLD_SOL}`;
+      console.log('[BurnSwap] no-op:', summary.reason);
+      return summary;
     }
 
     const burnKeypair = getBurnWalletKeypair();
     if (!burnKeypair) {
-      console.warn(
-        'maybeTriggerBurnSwap: BURN_WALLET_SECRET not configured or invalid; skipping auto-burn'
-      );
-      return;
+      summary.reason = 'BURN_WALLET_SECRET not configured or invalid';
+      console.warn('[BurnSwap] no-op:', summary.reason);
+      return summary;
     }
 
     if (!burnKeypair.publicKey.equals(burnPubkey)) {
-      console.error(
-        'maybeTriggerBurnSwap: BURN_WALLET_SECRET pubkey mismatch BURN_WALLET; skipping'
-      );
-      return;
+      summary.reason = 'BURN_WALLET_SECRET pubkey mismatch BURN_WALLET';
+      console.error('[BurnSwap] no-op:', summary.reason, {
+        secretPubkey: burnKeypair.publicKey.toBase58(),
+        envPubkey: BURN_WALLET,
+      });
+      return summary;
     }
 
-    // Leave a small fee buffer in SOL so future swaps / txns don't fail.
     const feeReserveLamports = Math.floor(
       0.005 * web3.LAMPORTS_PER_SOL
-    ); // ~0.005 SOL
+    );
     const swapLamports = lamports - feeReserveLamports;
     if (swapLamports <= 0) {
-      console.warn(
-        'maybeTriggerBurnSwap: not enough SOL after fee reserve; skipping'
-      );
-      return;
+      summary.reason = 'Not enough SOL after fee reserve';
+      console.warn('[BurnSwap] no-op:', summary.reason);
+      return summary;
     }
+
+    console.log(
+      `[BurnSwap] attempting swap: balance=${solBalance} SOL, swapping=${(
+        swapLamports / web3.LAMPORTS_PER_SOL
+      ).toFixed(6)} SOL`
+    );
 
     const fetch = (await import('node-fetch')).default;
 
-    // 1) Get a quote from Jupiter (SOL -> $CRYPTOCARDS)
     const quoteUrl = `https://quote-api.jup.ag/v6/quote?inputMint=${encodeURIComponent(
       SOL_MINT_ADDRESS
     )}&outputMint=${encodeURIComponent(
       CRYPTOCARDS_MINT
     )}&amount=${swapLamports}&slippageBps=100`;
 
+    console.log('[BurnSwap] quoteUrl:', quoteUrl);
+
     const quoteRes = await fetch(quoteUrl);
     if (!quoteRes.ok) {
-      console.error(
-        'maybeTriggerBurnSwap: Jupiter quote error:',
-        quoteRes.status
-      );
-      return;
+      summary.reason = `Jupiter quote error: status ${quoteRes.status}`;
+      console.error('[BurnSwap] quote error:', summary.reason);
+      return summary;
     }
 
     const quoteResponse = await quoteRes.json();
     if (!quoteResponse) {
-      console.error(
-        'maybeTriggerBurnSwap: invalid quoteResponse from Jupiter'
-      );
-      return;
+      summary.reason = 'Invalid quoteResponse from Jupiter';
+      console.error('[BurnSwap] quote error:', summary.reason);
+      return summary;
     }
 
-    // 2) Build swap transaction via Jupiter v6 swap API
     const swapBody = {
       quoteResponse,
       userPublicKey: burnPubkey.toBase58(),
@@ -502,6 +548,12 @@ async function maybeTriggerBurnSwap() {
       headers['x-api-key'] = JUPITER_API_KEY;
     }
 
+    console.log('[BurnSwap] calling /v6/swap with body:', {
+      userPublicKey: swapBody.userPublicKey,
+      wrapAndUnwrapSol: swapBody.wrapAndUnwrapSol,
+      // omit full quoteResponse from logs (too big)
+    });
+
     const swapRes = await fetch(
       'https://quote-api.jup.ag/v6/swap',
       {
@@ -512,11 +564,10 @@ async function maybeTriggerBurnSwap() {
     );
 
     if (!swapRes.ok) {
-      console.error(
-        'maybeTriggerBurnSwap: Jupiter swap build error:',
-        swapRes.status
-      );
-      return;
+      const text = await swapRes.text().catch(() => null);
+      summary.reason = `Jupiter swap build error: status ${swapRes.status}`;
+      console.error('[BurnSwap] swap build error:', summary.reason, text);
+      return summary;
     }
 
     const swapJson = await swapRes.json();
@@ -524,13 +575,11 @@ async function maybeTriggerBurnSwap() {
       swapJson.swapTransaction || swapJson.swapTransactionBase64;
 
     if (!swapTransaction) {
-      console.error(
-        'maybeTriggerBurnSwap: missing swapTransaction in Jupiter response'
-      );
-      return;
+      summary.reason = 'Missing swapTransaction in Jupiter response';
+      console.error('[BurnSwap] swap error:', summary.reason, swapJson);
+      return summary;
     }
 
-    // 3) Deserialize, sign with burn wallet, and send
     const swapTxBuf = Buffer.from(swapTransaction, 'base64');
     const tx = web3.VersionedTransaction.deserialize(
       swapTxBuf
@@ -548,21 +597,24 @@ async function maybeTriggerBurnSwap() {
 
     await solanaConnection.confirmTransaction(sig, 'confirmed');
 
+    summary.didSwap = true;
+    summary.txSignature = sig;
+    summary.reason = null;
+
     console.log(
       `[CRYPTOCARDS] Auto-burn swap executed from burn wallet: swapped ~${(
         swapLamports / web3.LAMPORTS_PER_SOL
       ).toFixed(6)} SOL → $CRYPTOCARDS. tx = ${sig}`
     );
 
-    // NOTE:
-    // - The resulting $CRYPTOCARDS tokens are deposited into the burn wallet's ATA.
-    // - As long as the burn wallet is treated as irrecoverable / never spent from,
-    //   this effectively "burns" supply.
+    return summary;
   } catch (err) {
+    summary.reason = err?.message || String(err);
     console.error(
       'maybeTriggerBurnSwap: unexpected error:',
       err
     );
+    return summary;
   }
 }
 
@@ -672,7 +724,6 @@ async function getUserFromRequest(req) {
   try {
     const { data, error } = await supabase.auth.getUser(token);
     if (error) {
-      // Avoid spamming logs on expired JWTs; just return null
       if (
         !error.message
           ?.toLowerCase?.()
@@ -1336,7 +1387,7 @@ app.post('/lock-card', async (req, res) => {
               lamports * 0.015
             );
             if (burnLamports <= 0) {
-              burnLamports = 1; // force at least 1 lamport attempt for tiny balances
+              burnLamports = 1;
             }
 
             const {
@@ -1389,7 +1440,6 @@ app.post('/lock-card', async (req, res) => {
               'SOL'
             );
 
-            // Record burn event in card_burns (if table exists)
             try {
               const { error: burnInsertError } =
                 await supabase
@@ -1513,7 +1563,6 @@ app.get('/my-cards', async (req, res) => {
       .order('created_at', { ascending: false });
 
     if (email) {
-      // Include both new cards (creator_user_id) and older ones (creator_email)
       query = query.or(
         `creator_user_id.eq.${user.id},creator_email.eq.${email}`
       );
@@ -1531,7 +1580,6 @@ app.get('/my-cards', async (req, res) => {
       throw error;
     }
 
-    // Return plain rows; frontend will still use token_amount + its own SOL price
     res.json(data || []);
   } catch (err) {
     console.error('Error in /my-cards:', err);
@@ -1684,33 +1732,23 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
       card.deposit_address
     );
 
-    // Native SOL balance
     const lamports = await solanaConnection.getBalance(
       pubkey
     );
     const solNative = lamports / web3.LAMPORTS_PER_SOL;
 
-    // SPL token balances + value in SOL
     const tokenValueResult =
       await getTokenAccountsWithSolValue(pubkey);
     const tokensValueSol =
       tokenValueResult.total_value_sol || 0;
 
-    // Total value in SOL (native + priced SPL tokens)
     const totalSolValue = solNative + tokensValueSol;
 
-    // Consider card funded if:
-    // - has any native SOL, OR
-    // - has any SPL token accounts at all (even if we can't price them yet)
     const hasAnyTokens =
       Array.isArray(tokenValueResult.tokens) &&
       tokenValueResult.tokens.length > 0;
     const isFunded = lamports > 0 || hasAnyTokens;
 
-    // IMPORTANT:
-    // - We always update "funded" so the current on-chain state is reflected.
-    // - We ONLY update token_amount when there is a non-zero totalSolValue.
-    //   This prevents wiping out the historical snapshot (e.g. after claim).
     const updates = {
       funded: isFunded,
       updated_at: new Date().toISOString(),
@@ -1733,19 +1771,18 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
       throw updateError;
     }
 
-    // IMPORTANT: return "sol" for existing frontend logic, plus richer fields
     res.json({
       public_id: publicId,
       deposit_address: card.deposit_address,
       lamports,
-      sol: totalSolValue, // total value in SOL (SOL + priced SPL)
+      sol: totalSolValue,
       sol_native: solNative,
       tokens_total_value_sol: tokensValueSol,
       total_value_sol: totalSolValue,
       funded: isFunded,
       locked: !!card.locked,
       hasDeposit: !!card.deposit_address,
-      token_portfolio: tokenValueResult, // debug + UI info
+      token_portfolio: tokenValueResult,
     });
   } catch (err) {
     console.error(
@@ -1758,10 +1795,8 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
   }
 });
 
-// CLAIM CARD: verify CVV + move SOL + SPL tokens from deposit address to destination wallet
-// - Supports SOL-only cards
-// - Supports SPL token cards (CRYPTOCARDS / WhiteWhale / any mint)
-// - Uses protocol fee wallet (FEE_WALLET_SECRET) as fee payer when available
+// CLAIM CARD ...
+// (unchanged, kept as-is from your current backend)
 app.post('/claim-card', async (req, res) => {
   try {
     const { public_id, cvv, destination_wallet } = req.body || {};
@@ -1773,7 +1808,6 @@ app.post('/claim-card', async (req, res) => {
       });
     }
 
-    // 1) Load card
     const { data: card, error: cardError } = await supabase
       .from('cards')
       .select('*')
@@ -1809,7 +1843,6 @@ app.post('/claim-card', async (req, res) => {
       });
     }
 
-    // 2) CVV check
     const expectedHash = card.cvv_hash;
     const providedHash = sha256(cvv.trim());
     if (!expectedHash || providedHash !== expectedHash) {
@@ -1819,7 +1852,6 @@ app.post('/claim-card', async (req, res) => {
       });
     }
 
-    // 3) Destination wallet
     let destPubkey;
     try {
       destPubkey = new web3.PublicKey(destination_wallet.trim());
@@ -1830,12 +1862,9 @@ app.post('/claim-card', async (req, res) => {
       });
     }
 
-    // 4) Derive the deposit keypair from deposit_secret
     const depositKeypair = getDepositKeypairFromSecret(card.deposit_secret);
     const depositPubkey = depositKeypair.publicKey;
 
-    // 5) Try to build a fee-payer wallet from FEE_WALLET_SECRET
-    //    - Must be a JSON array of 64 bytes (Solana secret key)
     let feePayerKeypair = null;
     const FEE_SECRET = process.env.FEE_WALLET_SECRET || '';
 
@@ -1866,13 +1895,8 @@ app.post('/claim-card', async (req, res) => {
       );
     }
 
-    // 6) Read on-chain balances at deposit address
-
-    // SOL balance
     const lamports = await solanaConnection.getBalance(depositPubkey, 'confirmed');
-    const solBalance = lamports / web3.LAMPORTS_PER_SOL;
 
-    // SPL token balances for this card's mint (if any)
     const tokenMintStr = card.token_mint || null;
     let totalTokenRaw = 0n;
     let totalTokenUi = 0;
@@ -1881,7 +1905,6 @@ app.post('/claim-card', async (req, res) => {
     if (tokenMintStr) {
       const mintKey = new web3.PublicKey(tokenMintStr);
 
-      // Query both classic Token program and Token-2022
       const [classic, v2022] = await Promise.all([
         solanaConnection.getParsedTokenAccountsByOwner(depositPubkey, {
           programId: splToken.TOKEN_PROGRAM_ID,
@@ -1892,7 +1915,7 @@ app.post('/claim-card', async (req, res) => {
           })
           .catch((err) => {
             console.warn(
-              '[CRYPTOCARDS] Token-2022 accounts lookup failed (safe to ignore if mint is classic):',
+              '[CRYPTOCARDS] Token-2022 accounts lookup failed:',
               err
             );
             return { value: [] };
@@ -1941,7 +1964,6 @@ app.post('/claim-card', async (req, res) => {
       });
     }
 
-    // 7) Sweep SPL tokens first (if any)
     let signatureSpl = null;
     if (hasTokens) {
       if (!feePayerKeypair) {
@@ -1958,7 +1980,6 @@ app.post('/claim-card', async (req, res) => {
       const mintKey = new web3.PublicKey(tokenMintStr);
 
       for (const acct of tokenAccounts) {
-        // Destination ATA for this mint / token program
         const destAta = splToken.getAssociatedTokenAddressSync(
           mintKey,
           destPubkey,
@@ -1971,7 +1992,7 @@ app.post('/claim-card', async (req, res) => {
         if (!ataInfo) {
           tx.add(
             splToken.createAssociatedTokenAccountInstruction(
-              feePayer.publicKey,       // payer (rent + fee)
+              feePayer.publicKey,
               destAta,
               destPubkey,
               mintKey,
@@ -1998,7 +2019,6 @@ app.post('/claim-card', async (req, res) => {
           await solanaConnection.getLatestBlockhash('finalized');
         tx.recentBlockhash = blockhash;
 
-        // Need both deposit signer (owns token accounts) and fee payer signer (if different)
         if (feePayerKeypair) {
           tx.sign(depositKeypair, feePayerKeypair);
         } else {
@@ -2025,7 +2045,6 @@ app.post('/claim-card', async (req, res) => {
       }
     }
 
-    // 8) Sweep SOL (if any) — fee wallet pays fee if available
     let signatureSol = null;
     let solSent = 0;
 
@@ -2034,11 +2053,9 @@ app.post('/claim-card', async (req, res) => {
       const feePayer = feePayerKeypair || depositKeypair;
       const feePayerPubkey = feePayer.publicKey;
 
-      // If we have a fee wallet, we can send *all* lamports from deposit.
-      // If not, leave a tiny buffer for tx fee.
       let lamportsToSend = lamports;
       if (!useFeeWallet) {
-        const buffer = 5000; // ~0.000005 SOL
+        const buffer = 5000;
         lamportsToSend = lamports > buffer ? lamports - buffer : 0;
       }
 
@@ -2085,7 +2102,6 @@ app.post('/claim-card', async (req, res) => {
       }
     }
 
-    // 9) Update card in DB: mark claimed, but DO NOT overwrite token_amount.
     const nowIso = new Date().toISOString();
 
     const { error: updateError } = await supabase
@@ -2136,6 +2152,39 @@ app.get('/sol-price', async (_req, res) => {
   }
 });
 
+// 🔍 Burn wallet status endpoint (for debugging)
+app.get('/burn-wallet-status', async (_req, res) => {
+  try {
+    const status = await getBurnWalletStatus();
+    res.json({
+      ...status,
+      canSwap:
+        !!status.burnWallet &&
+        status.solBalance >= BURN_THRESHOLD_SOL &&
+        status.hasBurnWalletSecret &&
+        status.burnWalletSecretMatchesEnv,
+    });
+  } catch (err) {
+    console.error('Error in /burn-wallet-status:', err);
+    res.status(500).json({ error: 'Failed to load burn wallet status' });
+  }
+});
+
+// 🧨 Manual trigger endpoint for burn swap (one-shot)
+app.post('/burn-wallet-swap', async (_req, res) => {
+  try {
+    const result = await maybeTriggerBurnSwap();
+    res.json(result);
+  } catch (err) {
+    console.error('Error in /burn-wallet-swap:', err);
+    res.status(500).json({
+      didSwap: false,
+      reason: err?.message || 'Failed to run burn swap',
+      txSignature: null,
+    });
+  }
+});
+
 // Aggregated public metrics for NETWORK ACTIVITY & BURNS
 app.get('/public-metrics', async (_req, res) => {
   try {
@@ -2160,7 +2209,6 @@ app.get('/public-metrics', async (_req, res) => {
     for (const row of (data || [])) {
       const sol = normalizeSolFromTokenAmount(row.token_amount);
 
-      // Count any card that has ever held value as "funded"
       if (row.funded || row.locked || row.claimed) {
         totalCardsFunded += 1;
         totalVolumeFundedSol += sol;
@@ -2179,7 +2227,6 @@ app.get('/public-metrics', async (_req, res) => {
     const totalVolumeClaimedFiat =
       totalVolumeClaimedSol * price;
 
-    // Default: 0, will fall back to 1.5% math if card_burns table isn't available
     let protocolBurnsSol = 0;
 
     try {
@@ -2204,7 +2251,6 @@ app.get('/public-metrics', async (_req, res) => {
           0
         );
       } else {
-        // No burn rows yet, fall back to math
         protocolBurnsSol =
           totalVolumeFundedSol * 0.015;
       }
@@ -2222,7 +2268,9 @@ app.get('/public-metrics', async (_req, res) => {
 
     // Fire-and-forget: check whether burn wallet should be auto-swapped to $CRYPTOCARDS
     try {
-      maybeTriggerBurnSwap().catch((err) => {
+      maybeTriggerBurnSwap().then((result) => {
+        console.log('[public-metrics] maybeTriggerBurnSwap result:', result);
+      }).catch((err) => {
         console.error(
           'maybeTriggerBurnSwap background error:',
           err
@@ -2246,6 +2294,7 @@ app.get('/public-metrics', async (_req, res) => {
       protocol_burns_sol: protocolBurnsSol,
       protocol_burns_fiat: protocolBurnsFiat,
       burn_wallet: BURN_WALLET,
+      burn_threshold_sol: BURN_THRESHOLD_SOL,
       last_updated: new Date().toISOString(),
     });
   } catch (err) {
@@ -2261,8 +2310,6 @@ app.get('/public-metrics', async (_req, res) => {
 
 /**
  * Public activity feed built directly from the cards table.
- * No extra tables needed. We derive CREATED / FUNDED / LOCKED / CLAIMED
- * events from the card flags + timestamps.
  */
 app.get('/public-activity', async (_req, res) => {
   try {
@@ -2303,7 +2350,6 @@ app.get('/public-activity', async (_req, res) => {
         nowIso;
       const updatedAt = card.updated_at || createdAt;
 
-      // CREATED
       events.push({
         card_id: card.public_id,
         type: 'CREATED',
@@ -2315,7 +2361,6 @@ app.get('/public-activity', async (_req, res) => {
         tx_signature: null,
       });
 
-      // FUNDED
       if (card.funded) {
         events.push({
           card_id: card.public_id,
@@ -2329,7 +2374,6 @@ app.get('/public-activity', async (_req, res) => {
         });
       }
 
-      // LOCKED
       if (card.locked) {
         events.push({
           card_id: card.public_id,
@@ -2343,7 +2387,6 @@ app.get('/public-activity', async (_req, res) => {
         });
       }
 
-      // CLAIMED
       if (card.claimed) {
         events.push({
           card_id: card.public_id,
@@ -2358,7 +2401,6 @@ app.get('/public-activity', async (_req, res) => {
       }
     }
 
-    // Sort newest first and trim to 50
     events.sort((a, b) => {
       const ta = new Date(a.timestamp).getTime();
       const tb = new Date(b.timestamp).getTime();
