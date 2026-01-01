@@ -512,7 +512,7 @@ export function FundingPanel({
             ) : (
               <span className="inline-flex items-center gap-2">
                 <RefreshCcw className="w-3 h-3" />
-                Check on-chain funding
+                CHECK ON-CHAIN FUNDING
               </span>
             )}
           </Button>
