@@ -9,7 +9,6 @@ const cors = require('cors');
 const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 const web3 = require('@solana/web3.js');
-const splToken = require('@solana/spl-token');
 
 // --- Env + config ---
 
@@ -22,43 +21,6 @@ const FRONTEND_URL = process.env.FRONTEND_URL || 'https://cryptocards.fun';
 const BURN_WALLET =
   process.env.BURN_WALLET ||
   'A3mpAVduHM9QyRgH1NSZp5ANnbPr2Z5vkXtc8EgDaZBF';
-
-// Fee wallet (for gas + rent)
-const FEE_WALLET_SECRET = process.env.FEE_WALLET_SECRET || null;
-let feeWalletKeypair = null;
-
-function getFeeWalletKeypair() {
-  if (!FEE_WALLET_SECRET) return null;
-  if (!feeWalletKeypair) {
-    const seed = crypto
-      .createHash('sha256')
-      .update(String(FEE_WALLET_SECRET))
-      .digest()
-      .subarray(0, 32);
-    feeWalletKeypair = web3.Keypair.fromSeed(seed);
-  }
-  return feeWalletKeypair;
-}
-
-// Log fee wallet status on startup
-if (FEE_WALLET_SECRET) {
-  try {
-    const fw = getFeeWalletKeypair();
-    console.log(
-      '[CRYPTOCARDS] Fee wallet configured. Public key:',
-      fw.publicKey.toBase58()
-    );
-  } catch (err) {
-    console.error(
-      '[CRYPTOCARDS] Failed to initialize fee wallet:',
-      err
-    );
-  }
-} else {
-  console.log(
-    '[CRYPTOCARDS] No FEE_WALLET_SECRET set. Deposit wallets will pay transaction fees.'
-  );
-}
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   console.error('Missing SUPABASE_URL or SUPABASE_SERVICE_KEY in .env');
@@ -73,8 +35,15 @@ const SOLANA_RPC_URL =
 const solanaConnection = new web3.Connection(SOLANA_RPC_URL, 'confirmed');
 
 const SOL_MINT_ADDRESS = 'So11111111111111111111111111111111111111112';
+
+// Classic SPL Token program
 const TOKEN_PROGRAM_ID = new web3.PublicKey(
   'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
+);
+
+// Token-2022 program (many new SPL mints use this)
+const TOKEN_2022_PROGRAM_ID = new web3.PublicKey(
+  'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
 );
 
 // --- SOL price helpers (multi-provider + cache) ---
@@ -88,6 +57,11 @@ let lastSolPriceFetchedAt = 0;
 
 /**
  * Get SOL price in USD with multiple providers + 2 min in-memory cache.
+ * Providers:
+ * - Binance
+ * - CryptoCompare
+ * - CoinPaprika
+ * - Coingecko
  */
 async function getSolPriceUsd() {
   const now = Date.now();
@@ -99,54 +73,92 @@ async function getSolPriceUsd() {
   const fetch = (await import('node-fetch')).default;
   let lastError = null;
 
+  // Binance
   async function fromBinance() {
-    const url = 'https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT';
+    const url =
+      'https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT';
     const res = await fetch(url);
-    if (!res.ok) throw new Error(`binance status ${res.status}`);
+    if (!res.ok) {
+      console.error(
+        'getSolPriceUsd error: binance status',
+        res.status
+      );
+      throw new Error(`binance status ${res.status}`);
+    }
     const body = await res.json();
     const price = parseFloat(body?.price);
-    if (!price || !Number.isFinite(price)) throw new Error('binance invalid price');
+    if (!price || !Number.isFinite(price)) {
+      throw new Error('binance missing or invalid price');
+    }
     return price;
   }
 
+  // CryptoCompare
   async function fromCryptoCompare() {
-    const url = 'https://min-api.cryptocompare.com/data/price?fsym=SOL&tsyms=USD';
+    const url =
+      'https://min-api.cryptocompare.com/data/price?fsym=SOL&tsyms=USD';
     const res = await fetch(url);
-    if (!res.ok) throw new Error(`cryptocompare status ${res.status}`);
+    if (!res.ok) {
+      console.error(
+        'getSolPriceUsd error: cryptocompare status',
+        res.status
+      );
+      throw new Error(`cryptocompare status ${res.status}`);
+    }
     const body = await res.json();
     const price = body?.USD;
     if (typeof price !== 'number' || !Number.isFinite(price)) {
-      throw new Error('cryptocompare invalid price');
+      throw new Error('cryptocompare missing or invalid price');
     }
     return price;
   }
 
+  // CoinPaprika
   async function fromCoinPaprika() {
-    const url = 'https://api.coinpaprika.com/v1/tickers/sol-solana';
+    const url =
+      'https://api.coinpaprika.com/v1/tickers/sol-solana';
     const res = await fetch(url);
-    if (!res.ok) throw new Error(`coinpaprika status ${res.status}`);
+    if (!res.ok) {
+      console.error(
+        'getSolPriceUsd error: coinpaprika status',
+        res.status
+      );
+      throw new Error(`coinpaprika status ${res.status}`);
+    }
     const body = await res.json();
     const price = body?.quotes?.USD?.price;
     if (typeof price !== 'number' || !Number.isFinite(price)) {
-      throw new Error('coinpaprika invalid price');
+      throw new Error('coinpaprika missing or invalid price');
     }
     return price;
   }
 
+  // Coingecko (last resort)
   async function fromCoingecko() {
     const url =
       'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd';
     const res = await fetch(url);
-    if (!res.ok) throw new Error(`coingecko status ${res.status}`);
+    if (!res.ok) {
+      console.error(
+        'getSolPriceUsd error: coingecko status',
+        res.status
+      );
+      throw new Error(`coingecko status ${res.status}`);
+    }
     const body = await res.json();
     const price = body?.solana?.usd;
     if (typeof price !== 'number' || !Number.isFinite(price)) {
-      throw new Error('coingecko invalid price');
+      throw new Error('coingecko missing or invalid price');
     }
     return price;
   }
 
-  const providers = [fromBinance, fromCryptoCompare, fromCoinPaprika, fromCoingecko];
+  const providers = [
+    fromBinance,
+    fromCryptoCompare,
+    fromCoinPaprika,
+    fromCoingecko,
+  ];
 
   for (const provider of providers) {
     try {
@@ -159,14 +171,19 @@ async function getSolPriceUsd() {
       }
     } catch (err) {
       lastError = err;
-      console.error('getSolPriceUsd provider failed:', err.message || err);
+      console.error(
+        'getSolPriceUsd provider failed:',
+        err.message || err
+      );
     }
   }
 
   if (lastSolPriceUsd) {
     console.warn(
       'getSolPriceUsd: providers failed, using cached value =',
-      lastSolPriceUsd
+      lastSolPriceUsd,
+      'Last error:',
+      lastError && (lastError.message || lastError)
     );
     return lastSolPriceUsd;
   }
@@ -184,6 +201,7 @@ async function getSolPriceUsd() {
 
 /**
  * Get token price in SOL using Jupiter price API.
+ * Returns null if price can't be determined.
  */
 async function getTokenPriceInSol(mintAddress) {
   try {
@@ -197,31 +215,61 @@ async function getTokenPriceInSol(mintAddress) {
     const body = await res.json();
     const entry = body?.data?.[mintAddress];
     const price = entry?.price;
-    if (typeof price === 'number' && Number.isFinite(price) && price > 0) {
+    if (
+      typeof price === 'number' &&
+      Number.isFinite(price) &&
+      price > 0
+    ) {
+      // price = how many SOL for 1 token (vsToken = SOL)
       return price;
     }
     return null;
   } catch (err) {
-    console.error('getTokenPriceInSol exception:', err.message || err);
+    console.error(
+      'getTokenPriceInSol exception:',
+      err.message || err
+    );
     return null;
   }
 }
 
 /**
- * Enumerate SPL token accounts for an owner and estimate their value in SOL.
+ * Enumerate SPL token accounts (classic + Token-2022) for an owner
+ * and estimate their value in SOL using Jupiter prices.
  */
 async function getTokenAccountsWithSolValue(ownerPubkey) {
   try {
-    const parsed = await solanaConnection.getParsedTokenAccountsByOwner(
-      ownerPubkey,
-      { programId: TOKEN_PROGRAM_ID }
-    );
+    // Query BOTH:
+    // - Classic SPL Token program
+    // - Token-2022 program (used by many new mints, likely CRYPTOCARDS)
+    const [classic, v2022] = await Promise.all([
+      solanaConnection.getParsedTokenAccountsByOwner(ownerPubkey, {
+        programId: TOKEN_PROGRAM_ID,
+      }),
+      solanaConnection
+        .getParsedTokenAccountsByOwner(ownerPubkey, {
+          programId: TOKEN_2022_PROGRAM_ID,
+        })
+        .catch((err) => {
+          console.error(
+            'getTokenAccountsWithSolValue: token-2022 query failed:',
+            err.message || err
+          );
+          // If token-2022 RPC call fails, just treat as "no accounts"
+          return { value: [] };
+        }),
+    ]);
+
+    const allEntries = [
+      ...(classic?.value || []),
+      ...(v2022?.value || []),
+    ];
 
     const tokens = [];
     const priceCache = {};
     let totalValueSol = 0;
 
-    for (const entry of parsed?.value || []) {
+    for (const entry of allEntries || []) {
       const acc = entry?.account;
       const parsedData = acc?.data?.parsed;
       const info = parsedData?.info;
@@ -258,13 +306,25 @@ async function getTokenAccountsWithSolValue(ownerPubkey) {
       });
     }
 
+    console.log(
+      '[CRYPTOCARDS] getTokenAccountsWithSolValue:',
+      ownerPubkey.toBase58(),
+      'tokens:',
+      tokens.length,
+      'total_value_sol:',
+      totalValueSol
+    );
+
     return {
       owner: ownerPubkey.toBase58(),
       tokens,
       total_value_sol: totalValueSol,
     };
   } catch (err) {
-    console.error('getTokenAccountsWithSolValue exception:', err.message || err);
+    console.error(
+      'getTokenAccountsWithSolValue exception:',
+      err.message || err
+    );
     return {
       owner: ownerPubkey.toBase58(),
       tokens: [],
@@ -283,8 +343,7 @@ app.use(express.json());
 const distPath = path.join(__dirname, 'dist');
 app.use(express.static(distPath));
 
-// Utility helpers
-
+// Utility hash helper
 function sha256(str) {
   return crypto.createHash('sha256').update(str).digest('hex');
 }
@@ -332,26 +391,35 @@ function generateCVV() {
 function maskIdentifier(value) {
   if (!value || typeof value !== 'string') return null;
   if (value.length <= 2) return value[0] + '*';
-  return value.slice(0, 2) + '*'.repeat(Math.max(1, value.length - 4)) + value.slice(-2);
+  return (
+    value.slice(0, 2) +
+    '*'.repeat(Math.max(1, value.length - 4)) +
+    value.slice(-2)
+  );
 }
 
 async function notifyTelegram(message) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
 
-  if (!token || !chatId) return;
+  if (!token || !chatId) {
+    return;
+  }
 
   try {
     const fetch = (await import('node-fetch')).default;
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: message,
-        parse_mode: 'Markdown',
-      }),
-    });
+    await fetch(
+      `https://api.telegram.org/bot${token}/sendMessage`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: message,
+          parse_mode: 'Markdown',
+        }),
+      }
+    );
   } catch (err) {
     console.error('Failed to send Telegram notification:', err);
   }
@@ -360,14 +428,23 @@ async function notifyTelegram(message) {
 async function getUserFromRequest(req) {
   const authHeader = req.headers['authorization'] || '';
   const parts = authHeader.split(' ');
-  if (parts.length !== 2 || parts[0].toLowerCase() !== 'bearer') return null;
+  if (
+    parts.length !== 2 ||
+    parts[0].toLowerCase() !== 'bearer'
+  )
+    return null;
   const token = parts[1];
   if (!token) return null;
 
   try {
     const { data, error } = await supabase.auth.getUser(token);
     if (error) {
-      if (!error.message?.toLowerCase?.().includes('token is expired')) {
+      // Avoid spamming logs on expired JWTs; just return null
+      if (
+        !error.message
+          ?.toLowerCase?.()
+          .includes('token is expired')
+      ) {
         console.error('getUserFromRequest error:', error);
       }
       return null;
@@ -380,8 +457,8 @@ async function getUserFromRequest(req) {
 }
 
 // ----- AUTH ROUTES -----
-// (unchanged auth block from your last backend, trimmed for brevity)
 
+// REGISTER: username + password required, email OPTIONAL
 app.post('/auth/register', async (req, res) => {
   try {
     const { username, password, email } = req.body || {};
@@ -393,7 +470,9 @@ app.post('/auth/register', async (req, res) => {
     }
 
     const trimmedUsername = String(username).trim();
-    if (!/^[a-zA-Z0-9_\-]{3,20}$/.test(trimmedUsername)) {
+    if (
+      !/^[a-zA-Z0-9_\-]{3,20}$/.test(trimmedUsername)
+    ) {
       return res.status(400).json({
         success: false,
         error:
@@ -401,14 +480,19 @@ app.post('/auth/register', async (req, res) => {
       });
     }
 
-    const { data: existingUsers, error: existingError } =
-      await supabase.auth.admin.listUsers({
-        page: 1,
-        perPage: 1000,
-      });
+    const {
+      data: existingUsers,
+      error: existingError,
+    } = await supabase.auth.admin.listUsers({
+      page: 1,
+      perPage: 1000,
+    });
 
     if (existingError) {
-      console.error('Error in /auth/register listUsers:', existingError);
+      console.error(
+        'Error in /auth/register listUsers:',
+        existingError
+      );
       return res.status(500).json({
         success: false,
         error: 'Failed to check existing users',
@@ -417,28 +501,39 @@ app.post('/auth/register', async (req, res) => {
 
     const usernameTaken =
       existingUsers?.users?.some((u) => {
-        const metaUsername = u.user_metadata?.username || u.email?.split('@')[0];
+        const metaUsername =
+          u.user_metadata?.username ||
+          u.email?.split('@')[0];
         return (
           metaUsername &&
-          metaUsername.toLowerCase() === trimmedUsername.toLowerCase()
+          metaUsername.toLowerCase() ===
+            trimmedUsername.toLowerCase()
         );
       }) || false;
 
     if (usernameTaken) {
       return res.status(400).json({
         success: false,
-        error: 'Username is already taken. Please choose a different one.',
+        error:
+          'Username is already taken. Please choose a different one.',
       });
     }
 
     const redirectTo = FRONTEND_URL
-      ? `${FRONTEND_URL.replace(/\/+$/, '')}/`
+      ? `${FRONTEND_URL.replace(
+          /\/+$/,
+          ''
+        )}/`
       : undefined;
 
     let user = null;
     let error = null;
 
-    if (email && typeof email === 'string' && email.includes('@')) {
+    if (
+      email &&
+      typeof email === 'string' &&
+      email.includes('@')
+    ) {
       const signUp = await supabase.auth.signUp({
         email,
         password,
@@ -495,16 +590,337 @@ app.post('/auth/register', async (req, res) => {
     });
   } catch (err) {
     console.error('Exception in /auth/register:', err);
-    res.status(500).json({ success: false, error: 'Internal server error' });
+    res
+      .status(500)
+      .json({ success: false, error: 'Internal server error' });
   }
 });
 
-// LOGIN, /auth/me, /auth/update-email, /auth/email-change-complete, /auth/forgot-password
-// keep them exactly as in your previous backend (no change).
+// LOGIN: USERNAME + PASSWORD
+app.post('/auth/login', async (req, res) => {
+  try {
+    const { username, password } = req.body || {};
+    if (!username || !password) {
+      return res.status(400).json({
+        success: false,
+        error: 'username and password are required',
+      });
+    }
+
+    const identifier = String(username).trim();
+
+    const {
+      data: usersPage,
+      error: listError,
+    } = await supabase.auth.admin.listUsers({
+      page: 1,
+      perPage: 1000,
+    });
+
+    if (listError) {
+      console.error(
+        'Error in /auth/login listUsers:',
+        listError
+      );
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to look up user',
+      });
+    }
+
+    const matchedUser =
+      usersPage?.users?.find((u) => {
+        const uname = u.user_metadata?.username;
+        return (
+          typeof uname === 'string' &&
+          uname.toLowerCase() ===
+            identifier.toLowerCase()
+        );
+      }) || null;
+
+    if (!matchedUser || !matchedUser.email) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Invalid credentials' });
+    }
+
+    const signIn =
+      await supabase.auth.signInWithPassword({
+        email: matchedUser.email,
+        password,
+      });
+
+    if (
+      signIn.error ||
+      !signIn.data?.user ||
+      !signIn.data?.session
+    ) {
+      const msg = signIn.error?.message || '';
+      if (
+        msg
+          .toLowerCase()
+          .includes('confirm') &&
+        msg.toLowerCase().includes('email')
+      ) {
+        return res.status(403).json({
+          success: false,
+          error:
+            'Please confirm your email before logging in.',
+        });
+      }
+
+      return res.status(401).json({
+        success: false,
+        error:
+          signIn.error?.message || 'Invalid credentials',
+      });
+    }
+
+    const { user, session } = signIn.data;
+    const token = session.access_token;
+    const refreshToken = session.refresh_token;
+
+    const responseUser = {
+      id: user.id,
+      username:
+        user.user_metadata?.username ||
+        matchedUser.email.split('@')[0],
+      email:
+        user.user_metadata?.notification_email ||
+        matchedUser.email,
+    };
+
+    res.json({
+      success: true,
+      token,
+      refreshToken,
+      user: responseUser,
+    });
+  } catch (err) {
+    console.error('Exception in /auth/login:', err);
+    res
+      .status(500)
+      .json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// CURRENT USER
+app.get('/auth/me', async (req, res) => {
+  try {
+    const user = await getUserFromRequest(req);
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        error: 'Not authenticated',
+      });
+    }
+
+    const meta = user.user_metadata || {};
+    const responseUser = {
+      id: user.id,
+      username: meta.username || user.email,
+      email: meta.notification_email || user.email,
+    };
+
+    res.json({ success: true, user: responseUser });
+  } catch (err) {
+    console.error('Exception in /auth/me:', err);
+    res
+      .status(500)
+      .json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// UPDATE EMAIL METADATA (notification email)
+app.post('/auth/update-email', async (req, res) => {
+  try {
+    const user = await getUserFromRequest(req);
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        error: 'Not authenticated',
+      });
+    }
+
+    const { newEmail } = req.body || {};
+    if (!newEmail || typeof newEmail !== 'string') {
+      return res.status(400).json({
+        success: false,
+        error: 'newEmail is required',
+      });
+    }
+
+    const { data, error } =
+      await supabase.auth.admin.updateUserById(
+        user.id,
+        {
+          user_metadata: {
+            ...(user.user_metadata || {}),
+            notification_email: newEmail,
+          },
+        }
+      );
+
+    if (error) {
+      console.error('Error in /auth/update-email:', error);
+      return res.status(400).json({
+        success: false,
+        error:
+          error.message || 'Failed to update email',
+      });
+    }
+
+    const updated = data.user;
+    const meta = updated.user_metadata || {};
+    const responseUser = {
+      id: updated.id,
+      username: meta.username || updated.email,
+      email: meta.notification_email || updated.email,
+    };
+
+    res.json({ success: true, user: responseUser });
+  } catch (err) {
+    console.error(
+      'Exception in /auth/update-email:',
+      err
+    );
+    res
+      .status(500)
+      .json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// EMAIL CHANGE COMPLETE WEBHOOK (secure change)
+app.post('/auth/email-change-complete', async (req, res) => {
+  try {
+    const { user_id, new_email } = req.body || {};
+    if (!user_id || !new_email) {
+      return res.status(400).json({
+        success: false,
+        error:
+          'user_id and new_email are required',
+      });
+    }
+
+    const { data, error } =
+      await supabase.auth.admin.getUserById(user_id);
+
+    if (error || !data.user) {
+      console.error(
+        'Error in /auth/email-change-complete getUserById:',
+        error
+      );
+      return res.status(400).json({
+        success: false,
+        error: 'User not found',
+      });
+    }
+
+    const updatedUser = data.user;
+    const meta = updatedUser.user_metadata || {};
+
+    const newMeta = {
+      ...meta,
+      notification_email: new_email,
+    };
+
+    const {
+      data: updateData,
+      error: updateError,
+    } = await supabase.auth.admin.updateUserById(
+      user_id,
+      {
+        user_metadata: newMeta,
+      }
+    );
+
+    if (updateError) {
+      console.error(
+        'Error in /auth/email-change-complete update:',
+        updateError
+      );
+      return res.status(400).json({
+        success: false,
+        error:
+          updateError.message ||
+          'Failed to finalize email change',
+      });
+    }
+
+    const updated = updateData.user;
+    const responseUser = {
+      id: updated.id,
+      username: meta.username || updated.email,
+      email: new_email,
+    };
+
+    res.json({ success: true, user: responseUser });
+  } catch (err) {
+    console.error(
+      'Exception in /auth/email-change-complete:',
+      err
+    );
+    res
+      .status(500)
+      .json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// FORGOT PASSWORD -> Supabase reset email
+app.post('/auth/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body || {};
+    if (
+      !email ||
+      typeof email !== 'string' ||
+      !email.includes('@')
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: 'Valid email is required',
+      });
+    }
+
+    const redirectTo = FRONTEND_URL
+      ? `${FRONTEND_URL.replace(
+          /\/+$/,
+          ''
+        )}/reset-password`
+      : undefined;
+
+    const { error } =
+      await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo,
+      });
+
+    if (error) {
+      console.error(
+        'Error in /auth/forgot-password:',
+        error
+      );
+      return res.status(400).json({
+        success: false,
+        error:
+          error.message ||
+          'Failed to send reset email',
+      });
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error(
+      'Exception in /auth/forgot-password:',
+      err
+    );
+    res
+      .status(500)
+      .json({ success: false, error: 'Internal server error' });
+  }
+});
 
 // ----- CARD + STATS ROUTES -----
 
-// CREATE CARD (unchanged except for using helpers)
+// CREATE CARD
 app.post('/create-card', async (req, res) => {
   try {
     const user = await getUserFromRequest(req);
@@ -520,14 +936,16 @@ app.post('/create-card', async (req, res) => {
 
     if (!message || !template_url || !currency) {
       return res.status(400).json({
-        error: 'message, currency, and template_url are required',
+        error:
+          'message, currency, and template_url are required',
       });
     }
 
     const public_id = generatePublicId();
     const cvv = generateCVV();
     const deposit_secret = generateDepositSecret();
-    const deposit_address = generateDepositAddress(deposit_secret);
+    const deposit_address =
+      generateDepositAddress(deposit_secret);
     const now = new Date().toISOString();
 
     const insertPayload = {
@@ -557,11 +975,16 @@ app.post('/create-card', async (req, res) => {
       .insert(insertPayload);
 
     if (insertError) {
-      console.error('Supabase insert error /create-card:', insertError);
+      console.error(
+        'Supabase insert error /create-card:',
+        insertError
+      );
       throw insertError;
     }
 
-    const creatorLabel = user ? maskIdentifier(user.email || user.id) : 'anonymous';
+    const creatorLabel = user
+      ? maskIdentifier(user.email || user.id)
+      : 'anonymous';
 
     const tgLines = [
       '*🆕 New CRYPTOCARD Created*',
@@ -570,7 +993,9 @@ app.post('/create-card', async (req, res) => {
       `*Creator:* ${creatorLabel}`,
       '',
       `*Currency:* ${currency}`,
-      amount_fiat != null ? `*Fiat Amount:* ${amount_fiat}` : null,
+      amount_fiat != null
+        ? `*Fiat Amount:* ${amount_fiat}`
+        : null,
     ].filter(Boolean);
 
     await notifyTelegram(tgLines.join('\n'));
@@ -582,11 +1007,13 @@ app.post('/create-card', async (req, res) => {
     });
   } catch (err) {
     console.error('Error in /create-card:', err);
-    res.status(500).json({ error: err.message });
+    res
+      .status(500)
+      .json({ error: err.message });
   }
 });
 
-// CARD STATUS
+// CARD STATUS (for audit + claim)
 app.get('/card-status/:publicId', async (req, res) => {
   try {
     const publicId = req.params.publicId;
@@ -598,127 +1025,156 @@ app.get('/card-status/:publicId', async (req, res) => {
       .maybeSingle();
 
     if (error) {
-      console.error('Supabase /card-status error:', error);
+      console.error(
+        'Supabase /card-status error:',
+        error
+      );
       throw error;
     }
 
     if (!data) {
-      return res.status(404).json({ error: 'Card not found' });
+      return res
+        .status(404)
+        .json({ error: 'Card not found' });
     }
 
     res.json(data);
   } catch (err) {
     console.error('Error in /card-status:', err);
-    res.status(500).json({ error: err.message });
+    res
+      .status(500)
+      .json({ error: err.message });
   }
 });
 
-// LOCK CARD (protocol tax, with fee-wallet fallback)
+// LOCK CARD (logical lock + protocol SOL tax on lock + burn tracking, always attempt)
 app.post('/lock-card', async (req, res) => {
   try {
     const { public_id } = req.body || {};
     if (!public_id) {
-      return res.status(400).json({ error: 'public_id is required' });
+      return res
+        .status(400)
+        .json({ error: 'public_id is required' });
     }
 
-    const { data: card, error: fetchError } = await supabase
-      .from('cards')
-      .select('*')
-      .eq('public_id', public_id)
-      .maybeSingle();
+    const { data: card, error: fetchError } =
+      await supabase
+        .from('cards')
+        .select('*')
+        .eq('public_id', public_id)
+        .maybeSingle();
 
     if (fetchError) {
-      console.error('Supabase /lock-card fetch error:', fetchError);
+      console.error(
+        'Supabase /lock-card fetch error:',
+        fetchError
+      );
       throw fetchError;
     }
 
     if (!card) {
-      return res.status(404).json({ error: 'Card not found' });
+      return res
+        .status(404)
+        .json({ error: 'Card not found' });
     }
 
     if (card.locked) {
-      return res.status(400).json({ error: 'Card is already locked' });
+      return res
+        .status(400)
+        .json({ error: 'Card is already locked' });
     }
 
-    // Protocol tax: 1.5% of SOL in deposit wallet
+    // Attempt protocol tax on lock (1.5% of current SOL balance, always attempt if > 0)
     try {
       if (card.deposit_secret && card.deposit_address) {
-        const depositKeypair = getDepositKeypairFromSecret(card.deposit_secret);
-        const depositPubkey = depositKeypair.publicKey;
+        const depositKeypair =
+          getDepositKeypairFromSecret(
+            card.deposit_secret
+          );
+        const depositPubkey =
+          depositKeypair.publicKey;
 
-        if (depositPubkey.toBase58() === card.deposit_address) {
-          const lamports = await solanaConnection.getBalance(depositPubkey);
+        if (
+          depositPubkey.toBase58() ===
+          card.deposit_address
+        ) {
+          const lamports =
+            await solanaConnection.getBalance(
+              depositPubkey
+            );
 
           if (lamports > 0) {
-            let burnLamports = Math.floor(lamports * 0.015);
-            if (burnLamports <= 0) burnLamports = 1;
-
-            const { blockhash, lastValidBlockHeight } =
-              await solanaConnection.getLatestBlockhash('finalized');
-
-            const feeWallet = getFeeWalletKeypair();
-            let feePayer = depositPubkey;
-            if (feeWallet) {
-              const feeBal = await solanaConnection.getBalance(
-                feeWallet.publicKey
-              );
-              if (feeBal > 5_000) {
-                feePayer = feeWallet.publicKey;
-              } else {
-                console.warn(
-                  '[CRYPTOCARDS] Fee wallet low balance for /lock-card; using deposit wallet as fee payer'
-                );
-              }
+            let burnLamports = Math.floor(
+              lamports * 0.015
+            );
+            if (burnLamports <= 0) {
+              burnLamports = 1; // force at least 1 lamport attempt for tiny balances
             }
 
+            const {
+              blockhash,
+              lastValidBlockHeight,
+            } =
+              await solanaConnection.getLatestBlockhash(
+                'finalized'
+              );
+
             const burnTx = new web3.Transaction({
-              feePayer,
+              feePayer: depositPubkey,
               recentBlockhash: blockhash,
             }).add(
               web3.SystemProgram.transfer({
                 fromPubkey: depositPubkey,
-                toPubkey: new web3.PublicKey(BURN_WALLET),
+                toPubkey: new web3.PublicKey(
+                  BURN_WALLET
+                ),
                 lamports: burnLamports,
               })
             );
 
-            if (feePayer.equals(depositPubkey)) {
-              burnTx.sign(depositKeypair);
-            } else {
-              const feeWallet = getFeeWalletKeypair();
-              burnTx.sign(feeWallet, depositKeypair);
-            }
+            burnTx.sign(depositKeypair);
 
             const raw = burnTx.serialize();
-            const signature = await solanaConnection.sendRawTransaction(raw, {
-              skipPreflight: false,
-            });
+            const signature =
+              await solanaConnection.sendRawTransaction(
+                raw,
+                {
+                  skipPreflight: false,
+                }
+              );
 
             await solanaConnection.confirmTransaction(
-              { signature, blockhash, lastValidBlockHeight },
+              {
+                signature,
+                blockhash,
+                lastValidBlockHeight,
+              },
               'confirmed'
             );
 
-            const burnSol = burnLamports / web3.LAMPORTS_PER_SOL;
+            const burnSol =
+              burnLamports / web3.LAMPORTS_PER_SOL;
+
             console.log(
               `Protocol tax on lock applied for card ${public_id}:`,
               burnSol,
-              'SOL (fee payer:',
-              feePayer.toBase58(),
-              ')'
+              'SOL'
             );
 
+            // Record burn event in card_burns (if table exists)
             try {
-              const { error: burnInsertError } = await supabase
-                .from('card_burns')
-                .insert({
-                  card_public_id: public_id,
-                  burn_lamports: burnLamports,
-                  burn_sol: burnSol,
-                  tx_signature: signature,
-                  burn_wallet: BURN_WALLET,
-                  created_at: new Date().toISOString(),
-                });
+              const { error: burnInsertError } =
+                await supabase
+                  .from('card_burns')
+                  .insert({
+                    card_public_id: public_id,
+                    burn_lamports: burnLamports,
+                    burn_sol: burnSol,
+                    tx_signature: signature,
+                    burn_wallet: BURN_WALLET,
+                    created_at:
+                      new Date().toISOString(),
+                  });
 
               if (burnInsertError) {
                 console.error(
@@ -741,7 +1197,10 @@ app.post('/lock-card', async (req, res) => {
         }
       }
     } catch (taxErr) {
-      console.error('Error applying protocol tax in /lock-card:', taxErr);
+      console.error(
+        'Error applying protocol tax in /lock-card:',
+        taxErr
+      );
     }
 
     const { error: updateError } = await supabase
@@ -753,14 +1212,19 @@ app.post('/lock-card', async (req, res) => {
       .eq('public_id', public_id);
 
     if (updateError) {
-      console.error('Supabase /lock-card update error:', updateError);
+      console.error(
+        'Supabase /lock-card update error:',
+        updateError
+      );
       throw updateError;
     }
 
     res.json({ success: true });
   } catch (err) {
     console.error('Error in /lock-card:', err);
-    res.status(500).json({ error: err.message });
+    res
+      .status(500)
+      .json({ error: err.message });
   }
 });
 
@@ -772,7 +1236,10 @@ app.get('/stats', async (_req, res) => {
       .select('amount_fiat, refunded');
 
     if (error) {
-      console.error('Supabase /stats error:', error);
+      console.error(
+        'Supabase /stats error:',
+        error
+      );
       throw error;
     }
 
@@ -782,7 +1249,9 @@ app.get('/stats', async (_req, res) => {
     for (const row of data || []) {
       const amt = row.amount_fiat || 0;
       totalFunded += amt;
-      if (row.refunded) totalBurned += amt;
+      if (row.refunded) {
+        totalBurned += amt;
+      }
     }
 
     res.json({
@@ -791,11 +1260,13 @@ app.get('/stats', async (_req, res) => {
     });
   } catch (err) {
     console.error('Error in /stats:', err);
-    res.status(500).json({ error: err.message });
+    res
+      .status(500)
+      .json({ error: err.message });
   }
 });
 
-// MY CARDS
+// MY CARDS (for UserDashboard)
 app.get('/my-cards', async (req, res) => {
   try {
     const user = await getUserFromRequest(req);
@@ -813,18 +1284,23 @@ app.get('/my-cards', async (req, res) => {
       .order('created_at', { ascending: false });
 
     if (error) {
-      console.error('Supabase /my-cards error:', error);
+      console.error(
+        'Supabase /my-cards error:',
+        error
+      );
       throw error;
     }
 
     res.json(data || []);
   } catch (err) {
     console.error('Error in /my-cards:', err);
-    res.status(500).json({ error: err.message });
+    res
+      .status(500)
+      .json({ error: err.message });
   }
 });
 
-// CARD BALANCE (native SOL)
+// CARD BALANCE (live Solana balance for deposit address)
 app.get('/card-balance/:publicId', async (req, res) => {
   try {
     const publicId = req.params.publicId;
@@ -836,20 +1312,31 @@ app.get('/card-balance/:publicId', async (req, res) => {
       .maybeSingle();
 
     if (error) {
-      console.error('Supabase /card-balance error:', error);
+      console.error(
+        'Supabase /card-balance error:',
+        error
+      );
       throw error;
     }
 
     if (!card) {
-      return res.status(404).json({ error: 'Card not found' });
+      return res
+        .status(404)
+        .json({ error: 'Card not found' });
     }
 
     if (!card.deposit_address) {
-      return res.status(400).json({ error: 'Card has no deposit address' });
+      return res
+        .status(400)
+        .json({ error: 'Card has no deposit address' });
     }
 
-    const pubkey = new web3.PublicKey(card.deposit_address);
-    const lamports = await solanaConnection.getBalance(pubkey);
+    const pubkey = new web3.PublicKey(
+      card.deposit_address
+    );
+    const lamports = await solanaConnection.getBalance(
+      pubkey
+    );
     const sol = lamports / web3.LAMPORTS_PER_SOL;
 
     res.json({
@@ -860,11 +1347,13 @@ app.get('/card-balance/:publicId', async (req, res) => {
     });
   } catch (err) {
     console.error('Error in /card-balance:', err);
-    res.status(500).json({ error: err.message });
+    res
+      .status(500)
+      .json({ error: err.message });
   }
 });
 
-// CARD TOKEN VALUE (token portfolio)
+// CARD TOKEN VALUE (SPL tokens + estimated SOL value)
 app.get('/card-token-value/:publicId', async (req, res) => {
   try {
     const publicId = req.params.publicId;
@@ -876,20 +1365,30 @@ app.get('/card-token-value/:publicId', async (req, res) => {
       .maybeSingle();
 
     if (error) {
-      console.error('Supabase /card-token-value select error:', error);
+      console.error(
+        'Supabase /card-token-value select error:',
+        error
+      );
       throw error;
     }
 
     if (!card) {
-      return res.status(404).json({ error: 'Card not found' });
+      return res
+        .status(404)
+        .json({ error: 'Card not found' });
     }
 
     if (!card.deposit_address) {
-      return res.status(400).json({ error: 'Card has no deposit address' });
+      return res
+        .status(400)
+        .json({ error: 'Card has no deposit address' });
     }
 
-    const ownerPubkey = new web3.PublicKey(card.deposit_address);
-    const result = await getTokenAccountsWithSolValue(ownerPubkey);
+    const ownerPubkey = new web3.PublicKey(
+      card.deposit_address
+    );
+    const result =
+      await getTokenAccountsWithSolValue(ownerPubkey);
 
     res.json({
       public_id: publicId,
@@ -897,8 +1396,13 @@ app.get('/card-token-value/:publicId', async (req, res) => {
       ...result,
     });
   } catch (err) {
-    console.error('Error in /card-token-value:', err);
-    res.status(500).json({ error: err.message });
+    console.error(
+      'Error in /card-token-value:',
+      err
+    );
+    res
+      .status(500)
+      .json({ error: err.message });
   }
 });
 
@@ -909,33 +1413,54 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
 
     const { data: card, error } = await supabase
       .from('cards')
-      .select('deposit_address, funded, token_amount, currency, amount_fiat')
+      .select(
+        'deposit_address, funded, token_amount, currency, amount_fiat'
+      )
       .eq('public_id', publicId)
       .maybeSingle();
 
     if (error) {
-      console.error('Supabase /sync-card-funding select error:', error);
+      console.error(
+        'Supabase /sync-card-funding select error:',
+        error
+      );
       throw error;
     }
 
     if (!card) {
-      return res.status(404).json({ error: 'Card not found' });
+      return res
+        .status(404)
+        .json({ error: 'Card not found' });
     }
 
     if (!card.deposit_address) {
-      return res.status(400).json({ error: 'Card has no deposit address' });
+      return res
+        .status(400)
+        .json({ error: 'Card has no deposit address' });
     }
 
-    const pubkey = new web3.PublicKey(card.deposit_address);
+    const pubkey = new web3.PublicKey(
+      card.deposit_address
+    );
 
-    const lamports = await solanaConnection.getBalance(pubkey);
+    // Native SOL balance
+    const lamports = await solanaConnection.getBalance(
+      pubkey
+    );
     const solNative = lamports / web3.LAMPORTS_PER_SOL;
 
-    const tokenValueResult = await getTokenAccountsWithSolValue(pubkey);
-    const tokensValueSol = tokenValueResult.total_value_sol || 0;
+    // SPL token balances + value in SOL
+    const tokenValueResult =
+      await getTokenAccountsWithSolValue(pubkey);
+    const tokensValueSol =
+      tokenValueResult.total_value_sol || 0;
 
+    // Total value in SOL (native + priced SPL tokens)
     const totalSolValue = solNative + tokensValueSol;
 
+    // Consider card funded if:
+    // - has any native SOL, OR
+    // - has any SPL token accounts at all (even if we can't price them yet)
     const hasAnyTokens =
       Array.isArray(tokenValueResult.tokens) &&
       tokenValueResult.tokens.length > 0;
@@ -951,42 +1476,58 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
       .eq('public_id', publicId);
 
     if (updateError) {
-      console.error('Supabase /sync-card-funding update error:', updateError);
+      console.error(
+        'Supabase /sync-card-funding update error:',
+        updateError
+      );
       throw updateError;
     }
 
+    // IMPORTANT: return "sol" for existing frontend logic
     res.json({
       public_id: publicId,
       deposit_address: card.deposit_address,
       lamports,
-      sol: totalSolValue,
+      sol: totalSolValue, // total value in SOL (SOL + priced SPL)
       sol_native: solNative,
       tokens_total_value_sol: tokensValueSol,
       total_value_sol: totalSolValue,
       funded: isFunded,
-      token_portfolio: tokenValueResult,
+      token_portfolio: tokenValueResult, // debug info
     });
   } catch (err) {
-    console.error('Error in /sync-card-funding:', err);
-    res.status(500).json({ error: err.message });
+    console.error(
+      'Error in /sync-card-funding:',
+      err
+    );
+    res
+      .status(500)
+      .json({ error: err.message });
   }
 });
 
-// CLAIM CARD: SOL + SPL tokens, with fee-wallet fallback
+// CLAIM CARD: verify CVV + move SOL from deposit address to destination wallet
 app.post('/claim-card', async (req, res) => {
   try {
-    const { public_id, cvv, destination_wallet } = req.body || {};
+    const {
+      public_id,
+      cvv,
+      destination_wallet,
+    } = req.body || {};
 
     if (!public_id || !cvv || !destination_wallet) {
       return res.status(400).json({
         success: false,
-        error: 'public_id, cvv, and destination_wallet are required',
+        error:
+          'public_id, cvv, and destination_wallet are required',
       });
     }
 
     let destPubkey;
     try {
-      destPubkey = new web3.PublicKey(destination_wallet);
+      destPubkey = new web3.PublicKey(
+        destination_wallet
+      );
     } catch (_e) {
       return res.status(400).json({
         success: false,
@@ -1001,7 +1542,10 @@ app.post('/claim-card', async (req, res) => {
       .maybeSingle();
 
     if (error) {
-      console.error('Supabase /claim-card select error:', error);
+      console.error(
+        'Supabase /claim-card select error:',
+        error
+      );
       throw error;
     }
 
@@ -1015,28 +1559,32 @@ app.post('/claim-card', async (req, res) => {
     if (card.claimed) {
       return res.status(400).json({
         success: false,
-        error: 'Card has already been claimed',
+        error:
+          'Card has already been claimed',
       });
     }
 
     if (card.refunded) {
       return res.status(400).json({
         success: false,
-        error: 'Card has already been refunded',
+        error:
+          'Card has already been refunded',
       });
     }
 
     if (!card.locked) {
       return res.status(400).json({
         success: false,
-        error: 'Card must be locked before claiming',
+        error:
+          'Card must be locked before claiming',
       });
     }
 
     if (!card.deposit_secret || !card.deposit_address) {
       return res.status(400).json({
         success: false,
-        error: 'Card has no deposit wallet configured',
+        error:
+          'Card has no deposit wallet configured',
       });
     }
 
@@ -1049,198 +1597,121 @@ app.post('/claim-card', async (req, res) => {
       });
     }
 
-    const depositKeypair = getDepositKeypairFromSecret(card.deposit_secret);
-    const depositPubkey = depositKeypair.publicKey;
+    const depositKeypair =
+      getDepositKeypairFromSecret(
+        card.deposit_secret
+      );
+    const depositPubkey =
+      depositKeypair.publicKey;
 
-    if (depositPubkey.toBase58() !== card.deposit_address) {
-      console.error('Deposit address mismatch for card', public_id);
-      return res.status(400).json({
-        success: false,
-        error: 'Card deposit address mismatch',
-      });
-    }
-
-    // Balances
-    const lamports = await solanaConnection.getBalance(depositPubkey);
-
-    const tokenValueResult = await getTokenAccountsWithSolValue(depositPubkey);
-    const tokensValueSol = Number(tokenValueResult.total_value_sol || 0);
-    const hasTokensToSend =
-      Array.isArray(tokenValueResult.tokens) &&
-      tokenValueResult.tokens.some((t) => Number(t.amount_ui || 0) > 0);
-
-    const feeWallet = getFeeWalletKeypair();
-    let feePayer = depositPubkey;
-    let useFeeWallet = false;
-
-    if (feeWallet) {
-      const feeBal = await solanaConnection.getBalance(feeWallet.publicKey);
-      if (feeBal > 20_000) {
-        feePayer = feeWallet.publicKey;
-        useFeeWallet = true;
-      } else {
-        console.warn(
-          '[CRYPTOCARDS] Fee wallet low balance for /claim-card; using deposit wallet as fee payer where possible'
-        );
-      }
-    }
-
-    const feeBufferLamports = 5_000;
-    let lamportsToSend = 0;
-
-    if (useFeeWallet) {
-      // fee wallet pays gas ⇒ deposit can send full balance
-      lamportsToSend = lamports;
-    } else if (lamports > feeBufferLamports) {
-      // deposit wallet must pay gas ⇒ leave a buffer
-      lamportsToSend = lamports - feeBufferLamports;
-    } else {
-      lamportsToSend = 0;
-    }
-
-    // If we have no SOL and we can't use a funded fee wallet, SPL-only claim is impossible
-    if (!useFeeWallet && hasTokensToSend && lamports === 0) {
+    if (
+      depositPubkey.toBase58() !==
+      card.deposit_address
+    ) {
+      console.error(
+        'Deposit address mismatch for card',
+        public_id
+      );
       return res.status(400).json({
         success: false,
         error:
-          'Card holds tokens but the protocol fee wallet has insufficient SOL to cover network fees. Please try again later.',
+          'Card deposit address mismatch',
       });
     }
 
-    if (lamportsToSend <= 0 && !hasTokensToSend) {
+    const lamports =
+      await solanaConnection.getBalance(
+        depositPubkey
+      );
+    if (lamports <= 0) {
       return res.status(400).json({
         success: false,
-        error: 'Card has no balance to claim',
+        error:
+          'Card has no balance to claim',
       });
     }
 
-    const { blockhash, lastValidBlockHeight } =
-      await solanaConnection.getLatestBlockhash('finalized');
+    // Leave a small buffer for fees
+    const feeBufferLamports = 5000;
+    const lamportsToSend =
+      lamports > feeBufferLamports
+        ? lamports - feeBufferLamports
+        : 0;
+
+    if (lamportsToSend <= 0) {
+      return res.status(400).json({
+        success: false,
+        error:
+          'Balance is too low to claim after fees',
+      });
+    }
+
+    const {
+      blockhash,
+      lastValidBlockHeight,
+    } =
+      await solanaConnection.getLatestBlockhash(
+        'finalized'
+      );
 
     const tx = new web3.Transaction({
-      feePayer,
+      feePayer: depositPubkey,
       recentBlockhash: blockhash,
-    });
+    }).add(
+      web3.SystemProgram.transfer({
+        fromPubkey: depositPubkey,
+        toPubkey: destPubkey,
+        lamports: lamportsToSend,
+      })
+    );
 
-    // 1) Native SOL transfer
-    if (lamportsToSend > 0) {
-      tx.add(
-        web3.SystemProgram.transfer({
-          fromPubkey: depositPubkey,
-          toPubkey: destPubkey,
-          lamports: lamportsToSend,
-        })
-      );
-    }
-
-    // 2) SPL token transfers
-    if (hasTokensToSend) {
-      const parsed = await solanaConnection.getParsedTokenAccountsByOwner(
-        depositPubkey,
-        { programId: TOKEN_PROGRAM_ID }
-      );
-
-      for (const entry of parsed?.value || []) {
-        const acc = entry?.account;
-        const parsedData = acc?.data?.parsed;
-        const info = parsedData?.info;
-        const mint = info?.mint;
-        const tokenAmount = info?.tokenAmount;
-
-        if (!mint || !tokenAmount) continue;
-
-        const uiAmount = Number(tokenAmount.uiAmount || 0);
-        if (uiAmount <= 0) continue;
-
-        const amountRawStr = tokenAmount.amount;
-        if (!amountRawStr) continue;
-
-        const mintPubkey = new web3.PublicKey(mint);
-        const fromTokenAccount =
-          entry.pubkey instanceof web3.PublicKey
-            ? entry.pubkey
-            : new web3.PublicKey(entry.pubkey);
-
-        const destAta = await splToken.getAssociatedTokenAddress(
-          mintPubkey,
-          destPubkey,
-          false,
-          TOKEN_PROGRAM_ID,
-          splToken.ASSOCIATED_TOKEN_PROGRAM_ID
-        );
-
-        const ataInfo = await solanaConnection.getAccountInfo(destAta);
-
-        if (!ataInfo) {
-          tx.add(
-            splToken.createAssociatedTokenAccountInstruction(
-              feePayer,
-              destAta,
-              destPubkey,
-              mintPubkey,
-              TOKEN_PROGRAM_ID,
-              splToken.ASSOCIATED_TOKEN_PROGRAM_ID
-            )
-          );
-        }
-
-        tx.add(
-          splToken.createTransferInstruction(
-            fromTokenAccount,
-            destAta,
-            depositPubkey,
-            BigInt(amountRawStr),
-            [],
-            TOKEN_PROGRAM_ID
-          )
-        );
-      }
-    }
-
-    // Sign + send
-    if (useFeeWallet) {
-      tx.sign(feeWallet, depositKeypair);
-    } else {
-      tx.sign(depositKeypair);
-    }
+    tx.sign(depositKeypair);
 
     const raw = tx.serialize();
-    const signature = await solanaConnection.sendRawTransaction(raw, {
-      skipPreflight: false,
-    });
+    const signature =
+      await solanaConnection.sendRawTransaction(
+        raw,
+        {
+          skipPreflight: false,
+        }
+      );
 
     await solanaConnection.confirmTransaction(
       { signature, blockhash, lastValidBlockHeight },
       'confirmed'
     );
 
-    const solSent = lamportsToSend / web3.LAMPORTS_PER_SOL;
-    const totalValueSol = solSent + tokensValueSol;
+    const solSent =
+      lamportsToSend / web3.LAMPORTS_PER_SOL;
 
     const { error: updateError } = await supabase
       .from('cards')
       .update({
         claimed: true,
         funded: false,
-        token_amount: totalValueSol,
+        token_amount: solSent,
         updated_at: new Date().toISOString(),
       })
       .eq('public_id', public_id);
 
     if (updateError) {
-      console.error('Supabase /claim-card update error:', updateError);
+      console.error(
+        'Supabase /claim-card update error:',
+        updateError
+      );
       throw updateError;
     }
 
-    const maskedDest = maskIdentifier(destPubkey.toBase58());
+    const maskedDest = maskIdentifier(
+      destPubkey.toBase58()
+    );
 
     await notifyTelegram(
       [
         '*🎁 CRYPTOCARD Claimed*',
         '',
         `*Card ID:* \`${public_id}\``,
-        `*Native SOL sent:* ${solSent.toFixed(6)} SOL`,
-        `*Total value (SOL + tokens):* ${totalValueSol.toFixed(6)} SOL`,
+        `*Amount:* ${solSent.toFixed(6)} SOL`,
         `*To:* \`${maskedDest}\``,
         '',
         `[Solscan](https://solscan.io/tx/${signature})`,
@@ -1251,39 +1722,47 @@ app.post('/claim-card', async (req, res) => {
       success: true,
       signature,
       amount_sol: solSent,
-      total_value_sol: totalValueSol,
       destination_wallet: destPubkey.toBase58(),
-      fee_payer: feePayer.toBase58(),
     });
   } catch (err) {
     console.error('Error in /claim-card:', err);
     res.status(500).json({
       success: false,
-      error: err.message || 'Internal server error',
+      error:
+        err.message || 'Internal server error',
     });
   }
 });
 
-// ----- PUBLIC METRICS + ACTIVITY -----
+// ----- PUBLIC SOL PRICE + METRICS + ACTIVITY FOR DASHBOARD -----
 
+// SOL price endpoint used by PublicDashboard
 app.get('/sol-price', async (_req, res) => {
   try {
     const price = await getSolPriceUsd();
     res.json({ price_usd: price });
   } catch (err) {
     console.error('Error in /sol-price:', err);
-    res.status(500).json({ error: 'Failed to fetch SOL price' });
+    res
+      .status(500)
+      .json({ error: 'Failed to fetch SOL price' });
   }
 });
 
+// Aggregated public metrics for NETWORK ACTIVITY & BURNS
 app.get('/public-metrics', async (_req, res) => {
   try {
     const { data, error } = await supabase
       .from('cards')
-      .select('funded, locked, claimed, refunded, token_amount, amount_fiat, currency');
+      .select(
+        'funded, locked, claimed, refunded, token_amount, amount_fiat, currency'
+      );
 
     if (error) {
-      console.error('Supabase /public-metrics error:', error);
+      console.error(
+        'Supabase /public-metrics error:',
+        error
+      );
       throw error;
     }
 
@@ -1294,6 +1773,7 @@ app.get('/public-metrics', async (_req, res) => {
     for (const row of data || []) {
       const sol = Number(row.token_amount || 0);
 
+      // Count any card that has ever held value as "funded"
       if (row.funded || row.locked || row.claimed) {
         totalCardsFunded += 1;
         totalVolumeFundedSol += sol;
@@ -1307,56 +1787,81 @@ app.get('/public-metrics', async (_req, res) => {
     const solPrice = await getSolPriceUsd();
     const price = solPrice || FALLBACK_SOL_PRICE_USD;
 
-    const totalVolumeFundedFiat = totalVolumeFundedSol * price;
-    const totalVolumeClaimedFiat = totalVolumeClaimedSol * price;
+    const totalVolumeFundedFiat =
+      totalVolumeFundedSol * price;
+    const totalVolumeClaimedFiat =
+      totalVolumeClaimedSol * price;
 
+    // Default: 0, will fall back to 1.5% math if card_burns table isn't available
     let protocolBurnsSol = 0;
 
     try {
-      const { data: burnData, error: burnError } = await supabase
+      const {
+        data: burnData,
+        error: burnError,
+      } = await supabase
         .from('card_burns')
         .select('burn_sol');
 
       if (burnError) {
-        console.error('Supabase /public-metrics card_burns error:', burnError);
-        protocolBurnsSol = totalVolumeFundedSol * 0.015;
+        console.error(
+          'Supabase /public-metrics card_burns error:',
+          burnError
+        );
+        protocolBurnsSol =
+          totalVolumeFundedSol * 0.015;
       } else if (burnData && burnData.length > 0) {
         protocolBurnsSol = burnData.reduce(
-          (sum, row) => sum + Number(row.burn_sol || 0),
+          (sum, row) =>
+            sum + Number(row.burn_sol || 0),
           0
         );
       } else {
-        protocolBurnsSol = totalVolumeFundedSol * 0.015;
+        // No burn rows yet, fall back to math
+        protocolBurnsSol =
+          totalVolumeFundedSol * 0.015;
       }
     } catch (burnCatchErr) {
       console.error(
         'Exception reading card_burns in /public-metrics:',
         burnCatchErr
       );
-      protocolBurnsSol = totalVolumeFundedSol * 0.015;
+      protocolBurnsSol =
+        totalVolumeFundedSol * 0.015;
     }
 
-    const protocolBurnsFiat = protocolBurnsSol * price;
+    const protocolBurnsFiat =
+      protocolBurnsSol * price;
 
     res.json({
       total_cards_funded: totalCardsFunded,
       total_volume_funded_sol: totalVolumeFundedSol,
-      total_volume_funded_fiat: totalVolumeFundedFiat,
+      total_volume_funded_fiat:
+        totalVolumeFundedFiat,
       total_volume_claimed_sol: totalVolumeClaimedSol,
-      total_volume_claimed_fiat: totalVolumeClaimedFiat,
+      total_volume_claimed_fiat:
+        totalVolumeClaimedFiat,
       protocol_burns_sol: protocolBurnsSol,
       protocol_burns_fiat: protocolBurnsFiat,
       burn_wallet: BURN_WALLET,
       last_updated: new Date().toISOString(),
     });
   } catch (err) {
-    console.error('Error in /public-metrics:', err);
+    console.error(
+      'Error in /public-metrics:',
+      err
+    );
     res.status(500).json({
       error: 'Failed to load public metrics',
     });
   }
 });
 
+/**
+ * Public activity feed built directly from the cards table.
+ * No extra tables needed. We derive CREATED / FUNDED / LOCKED / CLAIMED
+ * events from the card flags + timestamps.
+ */
 app.get('/public-activity', async (_req, res) => {
   try {
     const { data, error } = await supabase
@@ -1368,20 +1873,31 @@ app.get('/public-activity', async (_req, res) => {
       .limit(50);
 
     if (error) {
-      console.error('Supabase /public-activity error:', error);
+      console.error(
+        'Supabase /public-activity error:',
+        error
+      );
       throw error;
     }
 
     const events = [];
+
     const nowIso = new Date().toISOString();
 
     for (const card of data || []) {
       const sol = Number(card.token_amount || 0);
-      const fiat = typeof card.amount_fiat === 'number' ? card.amount_fiat : null;
+      const fiat =
+        typeof card.amount_fiat === 'number'
+          ? card.amount_fiat
+          : null;
       const currency = card.currency || 'USD';
-      const createdAt = card.created_at || card.updated_at || nowIso;
+      const createdAt =
+        card.created_at ||
+        card.updated_at ||
+        nowIso;
       const updatedAt = card.updated_at || createdAt;
 
+      // CREATED
       events.push({
         card_id: card.public_id,
         type: 'CREATED',
@@ -1393,6 +1909,7 @@ app.get('/public-activity', async (_req, res) => {
         tx_signature: null,
       });
 
+      // FUNDED
       if (card.funded) {
         events.push({
           card_id: card.public_id,
@@ -1406,6 +1923,7 @@ app.get('/public-activity', async (_req, res) => {
         });
       }
 
+      // LOCKED
       if (card.locked) {
         events.push({
           card_id: card.public_id,
@@ -1419,6 +1937,7 @@ app.get('/public-activity', async (_req, res) => {
         });
       }
 
+      // CLAIMED
       if (card.claimed) {
         events.push({
           card_id: card.public_id,
@@ -1433,6 +1952,7 @@ app.get('/public-activity', async (_req, res) => {
       }
     }
 
+    // Sort newest first and trim to 50
     events.sort((a, b) => {
       const ta = new Date(a.timestamp).getTime();
       const tb = new Date(b.timestamp).getTime();
@@ -1441,7 +1961,10 @@ app.get('/public-activity', async (_req, res) => {
 
     res.json({ events: events.slice(0, 50) });
   } catch (err) {
-    console.error('Error in /public-activity:', err);
+    console.error(
+      'Error in /public-activity:',
+      err
+    );
     res.status(500).json({
       error: 'Failed to load public activity',
     });
@@ -1454,5 +1977,7 @@ app.get('*', (_req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`CRYPTOCARDS backend listening on port ${PORT}`);
+  console.log(
+    `CRYPTOCARDS backend listening on port ${PORT}`
+  );
 });
