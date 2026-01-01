@@ -48,6 +48,12 @@ type EnrichedCard = DashboardCard & {
   tokenSymbol?: string;
 };
 
+type CardSnapshot = {
+  sol: number;
+  fiat: number;
+  currency: string | null;
+};
+
 function formatDateTime(iso: string) {
   if (!iso) return '-';
   const d = new Date(iso);
@@ -75,6 +81,9 @@ export function UserDashboard({
 
   // token_mint -> SYMBOL map
   const [tokenSymbols, setTokenSymbols] = useState<Record<string, string>>({});
+
+  // per-card snapshot of SOL/FIAT once non-zero (persists even if backend resets)
+  const [cardSnapshots, setCardSnapshots] = useState<Record<string, CardSnapshot>>({});
 
   // Fetch SOL price from backend
   const fetchSolPrice = async () => {
@@ -217,9 +226,63 @@ export function UserDashboard({
     });
   }, [cards, tokenSymbols]);
 
+  // Capture first non-zero SOL/FIAT per card and never overwrite with zeros
+  useEffect(() => {
+    if (!cards.length) return;
+
+    setCardSnapshots((prev) => {
+      const next: Record<string, CardSnapshot> = { ...prev };
+
+      cards.forEach((card) => {
+        const currency = card.currency || 'USD';
+
+        const hasTokenAmount =
+          typeof card.token_amount === 'number' && card.token_amount > 0;
+        const hasFiatAmount =
+          typeof card.amount_fiat === 'number' && card.amount_fiat > 0;
+
+        let sol = 0;
+        let fiat = 0;
+
+        if (hasTokenAmount) {
+          sol = card.token_amount as number;
+        }
+
+        if (hasFiatAmount) {
+          fiat = card.amount_fiat as number;
+        }
+
+        if (!hasFiatAmount && hasTokenAmount && solPrice && sol > 0) {
+          fiat = sol * solPrice;
+        }
+
+        if (!hasTokenAmount && hasFiatAmount && solPrice && fiat > 0) {
+          sol = fiat / solPrice;
+        }
+
+        const hasNonZero = sol > 0 || fiat > 0;
+        const existing = prev[card.public_id];
+
+        if (hasNonZero) {
+          if (
+            !existing ||
+            existing.sol !== sol ||
+            existing.fiat !== fiat ||
+            existing.currency !== currency
+          ) {
+            next[card.public_id] = { sol, fiat, currency };
+          }
+        }
+        // IMPORTANT: do NOT delete snapshots when values go to zero
+      });
+
+      return next;
+    });
+  }, [cards, solPrice]);
+
   const enrichedCards: EnrichedCard[] = useMemo(() => {
     return cards.map((card) => {
-      const currency = card.currency || 'USD';
+      let currency = card.currency || 'USD';
 
       const hasTokenAmount =
         typeof card.token_amount === 'number' && card.token_amount > 0;
@@ -250,6 +313,18 @@ export function UserDashboard({
         sol = fiat / solPrice;
       }
 
+      // Apply persistent snapshot for cards that have been funded/locked/claimed
+      const snapshot = cardSnapshots[card.public_id];
+      if (
+        snapshot &&
+        (card.funded || card.locked || card.claimed) &&
+        (snapshot.sol > 0 || snapshot.fiat > 0)
+      ) {
+        sol = snapshot.sol;
+        fiat = snapshot.fiat;
+        currency = snapshot.currency;
+      }
+
       const isFunded =
         card.funded ||
         card.locked ||
@@ -271,7 +346,7 @@ export function UserDashboard({
         tokenSymbol,
       };
     });
-  }, [cards, solPrice, tokenSymbols]);
+  }, [cards, solPrice, tokenSymbols, cardSnapshots]);
 
   const visibleCards = enrichedCards;
 
