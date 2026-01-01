@@ -36,6 +36,33 @@ interface CardStatusResponse {
   currency: string | null;
 }
 
+interface TokenPortfolioToken {
+  mint: string;
+  amount_raw: string;
+  amount_ui: number;
+  decimals: number;
+  price_sol_per_token: number | null;
+  total_value_sol: number | null;
+}
+
+interface TokenPortfolio {
+  owner: string;
+  tokens: TokenPortfolioToken[];
+  total_value_sol: number;
+}
+
+interface SyncFundingResponse {
+  public_id: string;
+  deposit_address: string;
+  lamports: number;
+  sol: number; // total value in SOL (native + priced SPL)
+  sol_native: number;
+  tokens_total_value_sol: number;
+  total_value_sol: number;
+  funded: boolean;
+  token_portfolio?: TokenPortfolio;
+}
+
 export function FundingPanel({
   cardId,
   cvv,
@@ -54,7 +81,10 @@ export function FundingPanel({
   const [copiedCard, setCopiedCard] = useState(false);
   const [cvvVisible, setCvvVisible] = useState(false);
 
-  // canonical funded amounts that should PERSIST even after claim
+  // Canonical balances that should persist even after claim / refresh:
+  // - tokenAmount: amount of the selected asset (e.g. WhiteWhale)
+  // - solAmount: SOL or SOL-equivalent value (used for tax + USD)
+  const [tokenAmount, setTokenAmount] = useState<number | null>(null);
   const [solAmount, setSolAmount] = useState<number | null>(null);
   const [usdAmount, setUsdAmount] = useState<number | null>(null);
   const [solPrice, setSolPrice] = useState<number | null>(null);
@@ -79,7 +109,27 @@ export function FundingPanel({
     return solPrice; // fallback to existing cached value (may be null)
   }, [solPrice]);
 
-  // initial load: pull any existing funded/claimed amounts from backend
+  // Utility: pick a primary token from the portfolio to display (largest value, fallback to first)
+  const extractPrimaryTokenAmount = (portfolio?: TokenPortfolio | null): number | null => {
+    if (!portfolio || !Array.isArray(portfolio.tokens) || portfolio.tokens.length === 0) {
+      return null;
+    }
+
+    let best = portfolio.tokens[0];
+    for (const tok of portfolio.tokens) {
+      const bestVal = best.total_value_sol ?? 0;
+      const thisVal = tok.total_value_sol ?? 0;
+      if (thisVal > bestVal) {
+        best = tok;
+      }
+    }
+
+    const ui = typeof best.amount_ui === 'number' ? best.amount_ui : Number(best.amount_ui || 0);
+    if (!Number.isFinite(ui) || ui <= 0) return null;
+    return ui;
+  };
+
+  // initial load: pull any existing funded/claimed amounts from backend (card-status + sol-price)
   useEffect(() => {
     const loadInitial = async () => {
       try {
@@ -90,6 +140,9 @@ export function FundingPanel({
 
         if (statusRes.ok) {
           const status = (await statusRes.json()) as CardStatusResponse;
+
+          // Historically token_amount was used as a single "on-chain value" bucket.
+          // We now treat it as the canonical asset amount for display.
           const tokenAmt =
             typeof status.token_amount === 'number' && status.token_amount > 0
               ? status.token_amount
@@ -100,8 +153,7 @@ export function FundingPanel({
               : null;
 
           if (tokenAmt !== null) {
-            setSolAmount(tokenAmt);
-            // this keeps the builder card preview in sync on refresh
+            setTokenAmount(tokenAmt);
             if (onFundingStatusChange) {
               onFundingStatusChange(true, tokenAmt);
             }
@@ -116,7 +168,7 @@ export function FundingPanel({
           const pd = await priceRes.json();
           if (typeof pd.price_usd === 'number') {
             setSolPrice(pd.price_usd);
-            // backfill a missing fiat value if we know SOL
+            // Backfill a missing fiat value if we know SOL-equivalent
             if (solAmount !== null && usdAmount == null) {
               setUsdAmount(solAmount * pd.price_usd);
             }
@@ -132,8 +184,8 @@ export function FundingPanel({
   }, [cardId]);
 
   // formatted display values (persist even after claim)
+  const displayToken = tokenAmount !== null ? tokenAmount : 0;
   const displaySol = solAmount !== null ? solAmount : 0;
-  const displayToken = displaySol; // token balance mirrors SOL for now
   const displayUsd =
     usdAmount !== null
       ? usdAmount
@@ -147,7 +199,7 @@ export function FundingPanel({
 
   // tax: 1.5% of SOL balance, with fiat
   const taxSol = displaySol * 0.015;
-  const taxToken = taxSol; // mirror in token units for UI
+  const taxToken = taxSol; // mirror in token units for UI when there is a SOL-equivalent
   const taxUsd = displayUsd * 0.015;
   const formattedTaxToken = taxToken.toFixed(6);
   const formattedTaxSol = taxSol.toFixed(6);
@@ -184,9 +236,9 @@ export function FundingPanel({
         throw new Error('Failed to sync card funding');
       }
 
-      const data = await res.json();
+      const data = (await res.json()) as SyncFundingResponse;
 
-      const sol =
+      const solValue =
         typeof data.sol === 'number' && data.sol > 0
           ? data.sol
           : 0;
@@ -194,28 +246,43 @@ export function FundingPanel({
       const fundedFlag =
         data && typeof data.funded === 'boolean' ? data.funded : false;
 
+      const tokenPortfolio = data.token_portfolio;
       const hasTokenPortfolio =
-        data &&
-        data.token_portfolio &&
-        Array.isArray(data.token_portfolio.tokens) &&
-        data.token_portfolio.tokens.length > 0;
+        tokenPortfolio &&
+        Array.isArray(tokenPortfolio.tokens) &&
+        tokenPortfolio.tokens.length > 0;
 
-      if (sol > 0) {
-        // fetch price (or reuse cached)
+      const primaryTokenAmount = extractPrimaryTokenAmount(tokenPortfolio);
+
+      // Case 1: We have a SOL-equivalent value (native SOL or priced SPL tokens)
+      if (solValue > 0) {
         const price = (await fetchSolPrice()) ?? solPrice;
-        const usd = price ? sol * price : displayUsd;
+        const usd = price ? solValue * price : displayUsd;
 
-        setSolAmount(sol);
+        setSolAmount(solValue);
         setUsdAmount(usd);
 
+        // If we know the actual token amount, use it for the asset line.
+        // Otherwise, mirror SOL-equivalent like before.
+        if (primaryTokenAmount !== null) {
+          setTokenAmount(primaryTokenAmount);
+        } else {
+          setTokenAmount(solValue);
+        }
+
         if (onFundingStatusChange) {
-          onFundingStatusChange(true, sol);
+          onFundingStatusChange(true, solValue);
         }
 
         toast.success('Deposit detected! Your CRYPTOCARD is now funded.');
-      } else if (fundedFlag && hasTokenPortfolio) {
-        // Card holds SPL tokens that we detected on-chain, but we have no SOL value/pricing yet.
-        // Treat as funded for UI status without forcing a fake SOL amount.
+      }
+      // Case 2: No SOL value yet, but we *do* see SPL token accounts (e.g. WhiteWhale with no price)
+      else if (fundedFlag && hasTokenPortfolio) {
+        if (primaryTokenAmount !== null) {
+          setTokenAmount(primaryTokenAmount);
+        }
+
+        // Leave solAmount/usdAmount at 0 until we actually have a price.
         if (onFundingStatusChange) {
           onFundingStatusChange(true, 0);
         }
@@ -263,13 +330,13 @@ export function FundingPanel({
               className={
                 locked
                   ? 'inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-full bg-warning/10 border border-warning/40 text-warning-foreground'
-                  : funded || solAmount
+                  : funded || tokenAmount || solAmount
                   ? 'inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-400/40 text-emerald-300'
                   : 'inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-full bg-muted/20 border border-muted/40 text-muted-foreground'
               }
             >
               <CheckCircle2 className="w-3 h-3" />
-              {funded || solAmount ? 'FUNDED' : 'NOT FUNDED'}
+              {funded || tokenAmount || solAmount ? 'FUNDED' : 'NOT FUNDED'}
             </span>
           </div>
           <div className="mt-1 text-[10px] font-mono text-emerald-300">
