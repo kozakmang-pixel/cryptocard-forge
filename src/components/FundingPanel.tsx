@@ -63,6 +63,18 @@ interface SyncFundingResponse {
   token_portfolio?: TokenPortfolio;
 }
 
+// Mapping from cleaned token symbol -> CoinGecko ID
+// (We can extend this later for other tokens)
+const COINGECKO_SYMBOL_MAP: Record<string, string> = {
+  WHITEWHALE: 'the-white-whale',
+};
+
+function normalizeSymbolForCoingecko(symbol: string | undefined): string | null {
+  if (!symbol) return null;
+  // Strip leading '$' and normalize to uppercase (e.g. '$WHITEWHALE' -> 'WHITEWHALE')
+  return symbol.replace(/^\$/, '').trim().toUpperCase() || null;
+}
+
 export function FundingPanel({
   cardId,
   cvv,
@@ -81,7 +93,7 @@ export function FundingPanel({
   const [copiedCard, setCopiedCard] = useState(false);
   const [cvvVisible, setCvvVisible] = useState(false);
 
-  // Canonical balances that should persist even after claim / refresh:
+  // Canonical balances that should persist:
   // - tokenAmount: amount of the selected asset (e.g. WhiteWhale)
   // - solAmount: SOL or SOL-equivalent value (used for tax + USD)
   const [tokenAmount, setTokenAmount] = useState<number | null>(null);
@@ -108,6 +120,38 @@ export function FundingPanel({
     }
     return solPrice; // fallback to existing cached value (may be null)
   }, [solPrice]);
+
+  // helper: fetch token USD price from CoinGecko using symbol mapping
+  const fetchTokenUsdPrice = useCallback(
+    async (symbol: string | undefined): Promise<number | null> => {
+      const normalized = normalizeSymbolForCoingecko(symbol);
+      if (!normalized) return null;
+
+      const id = COINGECKO_SYMBOL_MAP[normalized];
+      if (!id) return null;
+
+      try {
+        // Public CoinGecko simple price endpoint (no key required)
+        const url = `https://api.coingecko.com/api/v3/simple/price?ids=${encodeURIComponent(
+          id
+        )}&vs_currencies=usd`;
+        const res = await fetch(url);
+        if (!res.ok) {
+          console.error('fetchTokenUsdPrice error status:', res.status);
+          return null;
+        }
+        const body = await res.json();
+        const price = body?.[id]?.usd;
+        if (typeof price === 'number' && Number.isFinite(price) && price > 0) {
+          return price;
+        }
+      } catch (err) {
+        console.error('fetchTokenUsdPrice exception:', err);
+      }
+      return null;
+    },
+    []
+  );
 
   // Utility: pick a primary token from the portfolio to display (largest value, fallback to first)
   const extractPrimaryTokenAmount = (portfolio?: TokenPortfolio | null): number | null => {
@@ -276,19 +320,48 @@ export function FundingPanel({
 
         toast.success('Deposit detected! Your CRYPTOCARD is now funded.');
       }
-      // Case 2: No SOL value yet, but we *do* see SPL token accounts (e.g. WhiteWhale with no price)
+      // Case 2: No SOL value from backend, but we *do* see SPL token accounts (e.g. WhiteWhale)
       else if (fundedFlag && hasTokenPortfolio) {
         if (primaryTokenAmount !== null) {
           setTokenAmount(primaryTokenAmount);
         }
 
-        // Leave solAmount/usdAmount at 0 until we actually have a price.
-        if (onFundingStatusChange) {
-          onFundingStatusChange(true, 0);
+        // Try to compute SOL + USD using external price feeds (CoinGecko) for known tokens
+        try {
+          const [solUsd, tokenUsdPrice] = await Promise.all([
+            fetchSolPrice(),
+            fetchTokenUsdPrice(tokenSymbol),
+          ]);
+
+          if (
+            solUsd &&
+            tokenUsdPrice &&
+            primaryTokenAmount !== null
+          ) {
+            const approxTokenUsd = primaryTokenAmount * tokenUsdPrice;
+            const approxTokenSol = approxTokenUsd / solUsd;
+
+            setSolAmount(approxTokenSol);
+            setUsdAmount(approxTokenUsd);
+
+            if (onFundingStatusChange) {
+              onFundingStatusChange(true, approxTokenSol);
+            }
+          } else {
+            // We still treat it as funded even if we couldn't price it.
+            if (onFundingStatusChange) {
+              onFundingStatusChange(true, 0);
+            }
+          }
+        } catch (priceErr) {
+          console.error('Error computing token SOL/USD value:', priceErr);
+          if (onFundingStatusChange) {
+            onFundingStatusChange(true, 0);
+          }
         }
 
         toast.success(
-          'Deposit detected! Your CRYPTOCARD holds tokens, but SOL value is not yet available.'
+          'Deposit detected! Your CRYPTOCARD holds tokens, SOL value will update as price data becomes available.'
         );
       } else {
         // IMPORTANT: do NOT zero out our stored amounts here.
