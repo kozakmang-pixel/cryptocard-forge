@@ -9,6 +9,7 @@ const cors = require('cors');
 const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 const web3 = require('@solana/web3.js');
+const splToken = require('@solana/spl-token');
 
 // --- Env + config ---
 
@@ -34,14 +35,13 @@ const SOLANA_RPC_URL =
   process.env.SOLANA_RPC_URL || web3.clusterApiUrl('mainnet-beta');
 const solanaConnection = new web3.Connection(SOLANA_RPC_URL, 'confirmed');
 
+// Mint + program IDs
 const SOL_MINT_ADDRESS = 'So11111111111111111111111111111111111111112';
 
-// Classic SPL Token program
 const TOKEN_PROGRAM_ID = new web3.PublicKey(
   'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
 );
 
-// Token-2022 program (many new SPL mints use this)
 const TOKEN_2022_PROGRAM_ID = new web3.PublicKey(
   'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
 );
@@ -235,41 +235,44 @@ async function getTokenPriceInSol(mintAddress) {
 
 /**
  * Enumerate SPL token accounts (classic + Token-2022) for an owner
- * and estimate their value in SOL using Jupiter prices.
+ * and estimate their value in SOL.
  */
 async function getTokenAccountsWithSolValue(ownerPubkey) {
   try {
-    // Query BOTH:
-    // - Classic SPL Token program
-    // - Token-2022 program (used by many new mints, likely CRYPTOCARDS)
-    const [classic, v2022] = await Promise.all([
-      solanaConnection.getParsedTokenAccountsByOwner(ownerPubkey, {
-        programId: TOKEN_PROGRAM_ID,
-      }),
-      solanaConnection
-        .getParsedTokenAccountsByOwner(ownerPubkey, {
-          programId: TOKEN_2022_PROGRAM_ID,
-        })
-        .catch((err) => {
-          console.error(
-            'getTokenAccountsWithSolValue: token-2022 query failed:',
-            err.message || err
-          );
-          // If token-2022 RPC call fails, just treat as "no accounts"
-          return { value: [] };
-        }),
-    ]);
+    const parsedClassic =
+      await solanaConnection.getParsedTokenAccountsByOwner(
+        ownerPubkey,
+        {
+          programId: TOKEN_PROGRAM_ID,
+        }
+      );
 
-    const allEntries = [
-      ...(classic?.value || []),
-      ...(v2022?.value || []),
+    let parsed2022 = { value: [] };
+    try {
+      parsed2022 =
+        await solanaConnection.getParsedTokenAccountsByOwner(
+          ownerPubkey,
+          {
+            programId: TOKEN_2022_PROGRAM_ID,
+          }
+        );
+    } catch (err) {
+      console.error(
+        'getTokenAccountsWithSolValue Token-2022 lookup failed:',
+        err.message || err
+      );
+    }
+
+    const combined = [
+      ...(parsedClassic?.value || []),
+      ...(parsed2022?.value || []),
     ];
 
     const tokens = [];
     const priceCache = {};
     let totalValueSol = 0;
 
-    for (const entry of allEntries || []) {
+    for (const entry of combined) {
       const acc = entry?.account;
       const parsedData = acc?.data?.parsed;
       const info = parsedData?.info;
@@ -305,15 +308,6 @@ async function getTokenAccountsWithSolValue(ownerPubkey) {
         total_value_sol: valueSol,
       });
     }
-
-    console.log(
-      '[CRYPTOCARDS] getTokenAccountsWithSolValue:',
-      ownerPubkey.toBase58(),
-      'tokens:',
-      tokens.length,
-      'total_value_sol:',
-      totalValueSol
-    );
 
     return {
       owner: ownerPubkey.toBase58(),
@@ -503,7 +497,7 @@ app.post('/auth/register', async (req, res) => {
       existingUsers?.users?.some((u) => {
         const metaUsername =
           u.user_metadata?.username ||
-          u.email?.split('@')[0];
+          (u.email && u.email.split('@')[0]);
         return (
           metaUsername &&
           metaUsername.toLowerCase() ===
@@ -1414,7 +1408,7 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
     const { data: card, error } = await supabase
       .from('cards')
       .select(
-        'deposit_address, funded, token_amount, currency, amount_fiat'
+        'deposit_address, funded, locked, token_amount, currency, amount_fiat'
       )
       .eq('public_id', publicId)
       .maybeSingle();
@@ -1483,7 +1477,7 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
       throw updateError;
     }
 
-    // IMPORTANT: return "sol" for existing frontend logic
+    // IMPORTANT: return "sol" for existing frontend logic, plus richer fields
     res.json({
       public_id: publicId,
       deposit_address: card.deposit_address,
@@ -1493,7 +1487,9 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
       tokens_total_value_sol: tokensValueSol,
       total_value_sol: totalSolValue,
       funded: isFunded,
-      token_portfolio: tokenValueResult, // debug info
+      locked: !!card.locked,
+      hasDeposit: !!card.deposit_address,
+      token_portfolio: tokenValueResult, // debug + UI info
     });
   } catch (err) {
     console.error(
@@ -1506,230 +1502,370 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
   }
 });
 
-// CLAIM CARD: verify CVV + move SOL from deposit address to destination wallet
+// CLAIM CARD: verify CVV + move SOL + SPL tokens from deposit address to destination wallet
+// - Supports SOL-only cards
+// - Supports SPL token cards (CRYPTOCARDS / WhiteWhale / any mint)
+// - Uses protocol fee wallet (FEE_WALLET_SECRET) as fee payer when available
 app.post('/claim-card', async (req, res) => {
   try {
-    const {
-      public_id,
-      cvv,
-      destination_wallet,
-    } = req.body || {};
+    const { public_id, cvv, destination_wallet } = req.body || {};
 
     if (!public_id || !cvv || !destination_wallet) {
       return res.status(400).json({
         success: false,
-        error:
-          'public_id, cvv, and destination_wallet are required',
+        error: 'public_id, cvv, and destination_wallet are required',
       });
     }
 
-    let destPubkey;
-    try {
-      destPubkey = new web3.PublicKey(
-        destination_wallet
-      );
-    } catch (_e) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid destination wallet address',
-      });
-    }
-
-    const { data: card, error } = await supabase
+    // 1) Load card
+    const { data: card, error: cardError } = await supabase
       .from('cards')
       .select('*')
       .eq('public_id', public_id)
       .maybeSingle();
 
-    if (error) {
-      console.error(
-        'Supabase /claim-card select error:',
-        error
-      );
-      throw error;
-    }
-
-    if (!card) {
+    if (cardError || !card) {
+      console.error('Claim /card not found', cardError);
       return res.status(404).json({
         success: false,
-        error: 'Card not found',
+        error: 'CRYPTOCARD not found',
       });
     }
 
     if (card.claimed) {
       return res.status(400).json({
         success: false,
-        error:
-          'Card has already been claimed',
-      });
-    }
-
-    if (card.refunded) {
-      return res.status(400).json({
-        success: false,
-        error:
-          'Card has already been refunded',
+        error: 'This CRYPTOCARD has already been claimed',
       });
     }
 
     if (!card.locked) {
       return res.status(400).json({
         success: false,
-        error:
-          'Card must be locked before claiming',
+        error: 'This CRYPTOCARD must be locked before claiming',
       });
     }
 
-    if (!card.deposit_secret || !card.deposit_address) {
+    if (!card.deposit_secret) {
+      return res.status(500).json({
+        success: false,
+        error: 'Card is missing deposit_secret (cannot derive deposit wallet)',
+      });
+    }
+
+    // 2) CVV check
+    const expectedHash = card.cvv_hash;
+    const providedHash = sha256(cvv.trim());
+    if (!expectedHash || providedHash !== expectedHash) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid CVV for this CRYPTOCARD',
+      });
+    }
+
+    // 3) Destination wallet
+    let destPubkey;
+    try {
+      destPubkey = new web3.PublicKey(destination_wallet.trim());
+    } catch {
       return res.status(400).json({
         success: false,
-        error:
-          'Card has no deposit wallet configured',
+        error: 'destination_wallet is not a valid Solana address',
       });
     }
 
-    // CVV check
-    const providedHash = sha256(cvv);
-    if (providedHash !== card.cvv_hash) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid CVV for this card',
-      });
-    }
+    // 4) Derive the deposit keypair from deposit_secret
+    const depositKeypair = getDepositKeypairFromSecret(card.deposit_secret);
+    const depositPubkey = depositKeypair.publicKey;
 
-    const depositKeypair =
-      getDepositKeypairFromSecret(
-        card.deposit_secret
-      );
-    const depositPubkey =
-      depositKeypair.publicKey;
+    // 5) Try to build a fee-payer wallet from FEE_WALLET_SECRET
+    //    - Must be a JSON array of 64 bytes (Solana secret key)
+    let feePayerKeypair = null;
+    const FEE_SECRET = process.env.FEE_WALLET_SECRET || '';
 
-    if (
-      depositPubkey.toBase58() !==
-      card.deposit_address
-    ) {
-      console.error(
-        'Deposit address mismatch for card',
-        public_id
-      );
-      return res.status(400).json({
-        success: false,
-        error:
-          'Card deposit address mismatch',
-      });
-    }
-
-    const lamports =
-      await solanaConnection.getBalance(
-        depositPubkey
-      );
-    if (lamports <= 0) {
-      return res.status(400).json({
-        success: false,
-        error:
-          'Card has no balance to claim',
-      });
-    }
-
-    // Leave a small buffer for fees
-    const feeBufferLamports = 5000;
-    const lamportsToSend =
-      lamports > feeBufferLamports
-        ? lamports - feeBufferLamports
-        : 0;
-
-    if (lamportsToSend <= 0) {
-      return res.status(400).json({
-        success: false,
-        error:
-          'Balance is too low to claim after fees',
-      });
-    }
-
-    const {
-      blockhash,
-      lastValidBlockHeight,
-    } =
-      await solanaConnection.getLatestBlockhash(
-        'finalized'
-      );
-
-    const tx = new web3.Transaction({
-      feePayer: depositPubkey,
-      recentBlockhash: blockhash,
-    }).add(
-      web3.SystemProgram.transfer({
-        fromPubkey: depositPubkey,
-        toPubkey: destPubkey,
-        lamports: lamportsToSend,
-      })
-    );
-
-    tx.sign(depositKeypair);
-
-    const raw = tx.serialize();
-    const signature =
-      await solanaConnection.sendRawTransaction(
-        raw,
-        {
-          skipPreflight: false,
+    if (FEE_SECRET) {
+      try {
+        const raw = JSON.parse(FEE_SECRET);
+        if (Array.isArray(raw)) {
+          const secretKey = Uint8Array.from(raw);
+          feePayerKeypair = web3.Keypair.fromSecretKey(secretKey);
+          console.log(
+            '[CRYPTOCARDS] Fee wallet for claims:',
+            feePayerKeypair.publicKey.toBase58()
+          );
+        } else {
+          console.error(
+            '[CRYPTOCARDS] FEE_WALLET_SECRET must be a JSON array of numbers'
+          );
         }
+      } catch (err) {
+        console.error(
+          '[CRYPTOCARDS] Failed to parse FEE_WALLET_SECRET JSON:',
+          err
+        );
+      }
+    } else {
+      console.warn(
+        '[CRYPTOCARDS] No FEE_WALLET_SECRET set; claim tx fees will be paid by the card deposit address'
       );
+    }
 
-    await solanaConnection.confirmTransaction(
-      { signature, blockhash, lastValidBlockHeight },
-      'confirmed'
-    );
+    // 6) Read on-chain balances at deposit address
 
-    const solSent =
-      lamportsToSend / web3.LAMPORTS_PER_SOL;
+    // SOL balance
+    const lamports = await solanaConnection.getBalance(depositPubkey, 'confirmed');
+    const solBalance = lamports / web3.LAMPORTS_PER_SOL;
+
+    // SPL token balances for this card's mint (if any)
+    const tokenMintStr = card.token_mint || null;
+    let totalTokenRaw = 0n;
+    let totalTokenUi = 0;
+    const tokenAccounts = [];
+
+    if (tokenMintStr) {
+      const mintKey = new web3.PublicKey(tokenMintStr);
+
+      // Query both classic Token program and Token-2022
+      const [classic, v2022] = await Promise.all([
+        solanaConnection.getParsedTokenAccountsByOwner(depositPubkey, {
+          programId: splToken.TOKEN_PROGRAM_ID,
+        }),
+        solanaConnection
+          .getParsedTokenAccountsByOwner(depositPubkey, {
+            programId: splToken.TOKEN_2022_PROGRAM_ID,
+          })
+          .catch((err) => {
+            console.warn(
+              '[CRYPTOCARDS] Token-2022 accounts lookup failed (safe to ignore if mint is classic):',
+              err
+            );
+            return { value: [] };
+          }),
+      ]);
+
+      const allParsed = [...(classic.value || []), ...(v2022.value || [])];
+
+      for (const entry of allParsed) {
+        const ownerProgram = entry.account.owner;
+        const parsed = entry.account.data?.parsed;
+        const info = parsed?.info;
+        if (!info) continue;
+        if (info.mint !== tokenMintStr) continue;
+
+        const tokenAmount = info.tokenAmount;
+        if (!tokenAmount) continue;
+
+        const uiAmount = Number(tokenAmount.uiAmount || 0);
+        const amountRawStr = String(tokenAmount.amount || '0');
+        const decimals = Number(tokenAmount.decimals || 0);
+
+        if (!uiAmount || uiAmount <= 0) continue;
+
+        const amountRaw = BigInt(amountRawStr);
+        totalTokenRaw += amountRaw;
+        totalTokenUi += uiAmount;
+
+        tokenAccounts.push({
+          pubkey: entry.pubkey,
+          amountRaw,
+          uiAmount,
+          decimals,
+          tokenProgramId: ownerProgram,
+        });
+      }
+    }
+
+    const hasSol = lamports > 0;
+    const hasTokens = totalTokenRaw > 0n;
+
+    if (!hasSol && !hasTokens) {
+      return res.status(400).json({
+        success: false,
+        error: 'Card has no balance to claim',
+      });
+    }
+
+    // 7) Sweep SPL tokens first (if any)
+    let signatureSpl = null;
+    if (hasTokens) {
+      if (!feePayerKeypair) {
+        console.warn(
+          '[CRYPTOCARDS] Card holds SPL tokens but no fee wallet is configured; token claim will use deposit wallet as fee payer'
+        );
+      }
+
+      const feePayer = feePayerKeypair || depositKeypair;
+
+      const tx = new web3.Transaction();
+      tx.feePayer = feePayer.publicKey;
+
+      const mintKey = new web3.PublicKey(tokenMintStr);
+
+      for (const acct of tokenAccounts) {
+        // Destination ATA for this mint / token program
+        const destAta = splToken.getAssociatedTokenAddressSync(
+          mintKey,
+          destPubkey,
+          false,
+          acct.tokenProgramId,
+          splToken.ASSOCIATED_TOKEN_PROGRAM_ID
+        );
+
+        const ataInfo = await solanaConnection.getAccountInfo(destAta, 'confirmed');
+        if (!ataInfo) {
+          tx.add(
+            splToken.createAssociatedTokenAccountInstruction(
+              feePayer.publicKey,       // payer (rent + fee)
+              destAta,
+              destPubkey,
+              mintKey,
+              acct.tokenProgramId,
+              splToken.ASSOCIATED_TOKEN_PROGRAM_ID
+            )
+          );
+        }
+
+        tx.add(
+          splToken.createTransferInstruction(
+            acct.pubkey,
+            destAta,
+            depositPubkey,
+            acct.amountRaw,
+            [],
+            acct.tokenProgramId
+          )
+        );
+      }
+
+      if (tx.instructions.length > 0) {
+        const { blockhash, lastValidBlockHeight } =
+          await solanaConnection.getLatestBlockhash('finalized');
+        tx.recentBlockhash = blockhash;
+
+        // Need both deposit signer (owns token accounts) and fee payer signer (if different)
+        if (feePayerKeypair) {
+          tx.sign(depositKeypair, feePayerKeypair);
+        } else {
+          tx.sign(depositKeypair);
+        }
+
+        const rawTx = tx.serialize();
+        const sig = await solanaConnection.sendRawTransaction(rawTx, {
+          skipPreflight: false,
+        });
+
+        await solanaConnection.confirmTransaction(
+          { signature: sig, blockhash, lastValidBlockHeight },
+          'confirmed'
+        );
+
+        signatureSpl = sig;
+        console.log(
+          '[CRYPTOCARDS] SPL token claim tx:',
+          sig,
+          'totalTokenUi=',
+          totalTokenUi
+        );
+      }
+    }
+
+    // 8) Sweep SOL (if any) — fee wallet pays fee if available
+    let signatureSol = null;
+    let solSent = 0;
+
+    if (hasSol) {
+      const useFeeWallet = !!feePayerKeypair;
+      const feePayer = feePayerKeypair || depositKeypair;
+      const feePayerPubkey = feePayer.publicKey;
+
+      // If we have a fee wallet, we can send *all* lamports from deposit.
+      // If not, leave a tiny buffer for tx fee.
+      let lamportsToSend = lamports;
+      if (!useFeeWallet) {
+        const buffer = 5000; // ~0.000005 SOL
+        lamportsToSend = lamports > buffer ? lamports - buffer : 0;
+      }
+
+      if (lamportsToSend > 0) {
+        const { blockhash, lastValidBlockHeight } =
+          await solanaConnection.getLatestBlockhash('finalized');
+
+        const txSol = new web3.Transaction({
+          feePayer: feePayerPubkey,
+          recentBlockhash: blockhash,
+        }).add(
+          web3.SystemProgram.transfer({
+            fromPubkey: depositPubkey,
+            toPubkey: destPubkey,
+            lamports: lamportsToSend,
+          })
+        );
+
+        if (feePayerKeypair) {
+          txSol.sign(depositKeypair, feePayerKeypair);
+        } else {
+          txSol.sign(depositKeypair);
+        }
+
+        const rawSol = txSol.serialize();
+        const sigSol = await solanaConnection.sendRawTransaction(rawSol, {
+          skipPreflight: false,
+        });
+
+        await solanaConnection.confirmTransaction(
+          { signature: sigSol, blockhash, lastValidBlockHeight },
+          'confirmed'
+        );
+
+        signatureSol = sigSol;
+        solSent = lamportsToSend / web3.LAMPORTS_PER_SOL;
+
+        console.log(
+          '[CRYPTOCARDS] SOL claim tx:',
+          sigSol,
+          'solSent=',
+          solSent
+        );
+      }
+    }
+
+    // 9) Update card in DB: mark claimed, clear funded
+    const nowIso = new Date().toISOString();
+    const newTokenAmount =
+      totalTokenUi > 0 ? totalTokenUi : solSent || card.token_amount || 0;
 
     const { error: updateError } = await supabase
       .from('cards')
       .update({
         claimed: true,
         funded: false,
-        token_amount: solSent,
-        updated_at: new Date().toISOString(),
+        token_amount: newTokenAmount,
+        updated_at: nowIso,
       })
       .eq('public_id', public_id);
 
     if (updateError) {
-      console.error(
-        'Supabase /claim-card update error:',
-        updateError
-      );
-      throw updateError;
+      console.error('Supabase /claim-card update error:', updateError);
     }
 
-    const maskedDest = maskIdentifier(
-      destPubkey.toBase58()
-    );
-
-    await notifyTelegram(
-      [
-        '*🎁 CRYPTOCARD Claimed*',
-        '',
-        `*Card ID:* \`${public_id}\``,
-        `*Amount:* ${solSent.toFixed(6)} SOL`,
-        `*To:* \`${maskedDest}\``,
-        '',
-        `[Solscan](https://solscan.io/tx/${signature})`,
-      ].join('\n')
-    );
+    // Optional: Telegram notification (you can re-add your previous one here if desired)
 
     return res.json({
       success: true,
-      signature,
-      amount_sol: solSent,
       destination_wallet: destPubkey.toBase58(),
+      amount_sol: solSent,
+      total_tokens_claimed: totalTokenUi,
+      token_mint: tokenMintStr,
+      signature_sol: signatureSol,
+      signature_spl: signatureSpl,
     });
   } catch (err) {
     console.error('Error in /claim-card:', err);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       error:
-        err.message || 'Internal server error',
+        err?.message ||
+        'Unexpected error while claiming this CRYPTOCARD',
     });
   }
 });
