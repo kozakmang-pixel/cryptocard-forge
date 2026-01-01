@@ -1,3 +1,4 @@
+// src/components/FundingPanel.tsx
 import { useEffect, useState, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -36,45 +37,6 @@ interface CardStatusResponse {
   currency: string | null;
 }
 
-interface TokenPortfolioToken {
-  mint: string;
-  amount_raw: string;
-  amount_ui: number;
-  decimals: number;
-  price_sol_per_token: number | null;
-  total_value_sol: number | null;
-}
-
-interface TokenPortfolio {
-  owner: string;
-  tokens: TokenPortfolioToken[];
-  total_value_sol: number;
-}
-
-interface SyncFundingResponse {
-  public_id: string;
-  deposit_address: string;
-  lamports: number;
-  sol: number; // total value in SOL (native + priced SPL)
-  sol_native: number;
-  tokens_total_value_sol: number;
-  total_value_sol: number;
-  funded: boolean;
-  token_portfolio?: TokenPortfolio;
-}
-
-// Mapping from cleaned token symbol -> CoinGecko ID
-// (We can extend this later for other tokens)
-const COINGECKO_SYMBOL_MAP: Record<string, string> = {
-  WHITEWHALE: 'the-white-whale',
-};
-
-function normalizeSymbolForCoingecko(symbol: string | undefined): string | null {
-  if (!symbol) return null;
-  // Strip leading '$' and normalize to uppercase (e.g. '$WHITEWHALE' -> 'WHITEWHALE')
-  return symbol.replace(/^\$/, '').trim().toUpperCase() || null;
-}
-
 export function FundingPanel({
   cardId,
   cvv,
@@ -93,13 +55,17 @@ export function FundingPanel({
   const [copiedCard, setCopiedCard] = useState(false);
   const [cvvVisible, setCvvVisible] = useState(false);
 
-  // Canonical balances that should persist:
-  // - tokenAmount: amount of the selected asset (e.g. WhiteWhale)
-  // - solAmount: SOL or SOL-equivalent value (used for tax + USD)
-  const [tokenAmount, setTokenAmount] = useState<number | null>(null);
+  // canonical funded amounts that should PERSIST even after claim
+  // solAmount = value in SOL (native SOL + SPL token value in SOL)
   const [solAmount, setSolAmount] = useState<number | null>(null);
   const [usdAmount, setUsdAmount] = useState<number | null>(null);
   const [solPrice, setSolPrice] = useState<number | null>(null);
+
+  // tokenAmount = actual token units (e.g. 193.962058 CRYPTOCARDS)
+  const [tokenAmount, setTokenAmount] = useState<number | null>(() => {
+    const parsed = parseFloat(fundedAmount);
+    return Number.isFinite(parsed) ? parsed : null;
+  });
 
   const assetLabel = tokenSymbol || 'TOKEN';
 
@@ -121,59 +87,7 @@ export function FundingPanel({
     return solPrice; // fallback to existing cached value (may be null)
   }, [solPrice]);
 
-  // helper: fetch token USD price from CoinGecko using symbol mapping
-  const fetchTokenUsdPrice = useCallback(
-    async (symbol: string | undefined): Promise<number | null> => {
-      const normalized = normalizeSymbolForCoingecko(symbol);
-      if (!normalized) return null;
-
-      const id = COINGECKO_SYMBOL_MAP[normalized];
-      if (!id) return null;
-
-      try {
-        // Public CoinGecko simple price endpoint (no key required)
-        const url = `https://api.coingecko.com/api/v3/simple/price?ids=${encodeURIComponent(
-          id
-        )}&vs_currencies=usd`;
-        const res = await fetch(url);
-        if (!res.ok) {
-          console.error('fetchTokenUsdPrice error status:', res.status);
-          return null;
-        }
-        const body = await res.json();
-        const price = body?.[id]?.usd;
-        if (typeof price === 'number' && Number.isFinite(price) && price > 0) {
-          return price;
-        }
-      } catch (err) {
-        console.error('fetchTokenUsdPrice exception:', err);
-      }
-      return null;
-    },
-    []
-  );
-
-  // Utility: pick a primary token from the portfolio to display (largest value, fallback to first)
-  const extractPrimaryTokenAmount = (portfolio?: TokenPortfolio | null): number | null => {
-    if (!portfolio || !Array.isArray(portfolio.tokens) || portfolio.tokens.length === 0) {
-      return null;
-    }
-
-    let best = portfolio.tokens[0];
-    for (const tok of portfolio.tokens) {
-      const bestVal = best.total_value_sol ?? 0;
-      const thisVal = tok.total_value_sol ?? 0;
-      if (thisVal > bestVal) {
-        best = tok;
-      }
-    }
-
-    const ui = typeof best.amount_ui === 'number' ? best.amount_ui : Number(best.amount_ui || 0);
-    if (!Number.isFinite(ui) || ui <= 0) return null;
-    return ui;
-  };
-
-  // initial load: pull any existing funded/claimed amounts from backend (card-status + sol-price)
+  // initial load: pull any existing funded/claimed amounts from backend
   useEffect(() => {
     const loadInitial = async () => {
       try {
@@ -185,9 +99,8 @@ export function FundingPanel({
         if (statusRes.ok) {
           const status = (await statusRes.json()) as CardStatusResponse;
 
-          // Historically token_amount was used as a single "on-chain value" bucket.
-          // We now treat it as the canonical asset amount for display.
-          const tokenAmt =
+          // status.token_amount here is our "SOL-equivalent" tracked in DB, not token units
+          const solLike =
             typeof status.token_amount === 'number' && status.token_amount > 0
               ? status.token_amount
               : null;
@@ -196,10 +109,11 @@ export function FundingPanel({
               ? status.amount_fiat
               : null;
 
-          if (tokenAmt !== null) {
-            setTokenAmount(tokenAmt);
+          if (solLike !== null) {
+            setSolAmount(solLike);
+
             if (onFundingStatusChange) {
-              onFundingStatusChange(true, tokenAmt);
+              onFundingStatusChange(true, solLike);
             }
           }
 
@@ -212,7 +126,7 @@ export function FundingPanel({
           const pd = await priceRes.json();
           if (typeof pd.price_usd === 'number') {
             setSolPrice(pd.price_usd);
-            // Backfill a missing fiat value if we know SOL-equivalent
+            // backfill a missing fiat value if we know SOL
             if (solAmount !== null && usdAmount == null) {
               setUsdAmount(solAmount * pd.price_usd);
             }
@@ -228,8 +142,8 @@ export function FundingPanel({
   }, [cardId]);
 
   // formatted display values (persist even after claim)
-  const displayToken = tokenAmount !== null ? tokenAmount : 0;
   const displaySol = solAmount !== null ? solAmount : 0;
+  const displayToken = tokenAmount !== null ? tokenAmount : displaySol;
   const displayUsd =
     usdAmount !== null
       ? usdAmount
@@ -243,7 +157,7 @@ export function FundingPanel({
 
   // tax: 1.5% of SOL balance, with fiat
   const taxSol = displaySol * 0.015;
-  const taxToken = taxSol; // mirror in token units for UI when there is a SOL-equivalent
+  const taxToken = taxSol; // mirror in token units for UI
   const taxUsd = displayUsd * 0.015;
   const formattedTaxToken = taxToken.toFixed(6);
   const formattedTaxSol = taxSol.toFixed(6);
@@ -280,88 +194,64 @@ export function FundingPanel({
         throw new Error('Failed to sync card funding');
       }
 
-      const data = (await res.json()) as SyncFundingResponse;
+      const data: any = await res.json();
 
-      const solValue =
-        typeof data.sol === 'number' && data.sol > 0
+      // total value in SOL (native SOL + priced SPL tokens)
+      const totalSolValue =
+        typeof data.total_value_sol === 'number' && data.total_value_sol > 0
+          ? data.total_value_sol
+          : typeof data.sol === 'number' && data.sol > 0
           ? data.sol
           : 0;
 
       const fundedFlag =
         data && typeof data.funded === 'boolean' ? data.funded : false;
 
-      const tokenPortfolio = data.token_portfolio;
+      const tokenPortfolio = data?.token_portfolio;
       const hasTokenPortfolio =
         tokenPortfolio &&
         Array.isArray(tokenPortfolio.tokens) &&
         tokenPortfolio.tokens.length > 0;
 
-      const primaryTokenAmount = extractPrimaryTokenAmount(tokenPortfolio);
+      // take first token as primary (typical case: only one SPL on the card)
+      let primaryTokenAmount: number | null = null;
+      if (hasTokenPortfolio) {
+        const first = tokenPortfolio.tokens[0];
+        if (first && typeof first.amount_ui === 'number' && first.amount_ui > 0) {
+          primaryTokenAmount = first.amount_ui;
+        }
+      }
 
-      // Case 1: We have a SOL-equivalent value (native SOL or priced SPL tokens)
-      if (solValue > 0) {
+      // If Jupiter priced the token(s) or there is native SOL, we get a non-zero SOL value
+      if (totalSolValue > 0) {
         const price = (await fetchSolPrice()) ?? solPrice;
-        const usd = price ? solValue * price : displayUsd;
+        const usd = price ? totalSolValue * price : displayUsd;
 
-        setSolAmount(solValue);
+        setSolAmount(totalSolValue);
         setUsdAmount(usd);
 
-        // If we know the actual token amount, use it for the asset line.
-        // Otherwise, mirror SOL-equivalent like before.
         if (primaryTokenAmount !== null) {
           setTokenAmount(primaryTokenAmount);
-        } else {
-          setTokenAmount(solValue);
         }
 
         if (onFundingStatusChange) {
-          onFundingStatusChange(true, solValue);
+          onFundingStatusChange(true, totalSolValue);
         }
 
         toast.success('Deposit detected! Your CRYPTOCARD is now funded.');
-      }
-      // Case 2: No SOL value from backend, but we *do* see SPL token accounts (e.g. WhiteWhale)
-      else if (fundedFlag && hasTokenPortfolio) {
+      } else if (fundedFlag && hasTokenPortfolio) {
+        // Card holds SPL tokens that we detected on-chain, but we have no SOL valuation yet.
+        // Treat as funded in UI; keep SOL/USD at 0 until we can price it.
         if (primaryTokenAmount !== null) {
           setTokenAmount(primaryTokenAmount);
         }
 
-        // Try to compute SOL + USD using external price feeds (CoinGecko) for known tokens
-        try {
-          const [solUsd, tokenUsdPrice] = await Promise.all([
-            fetchSolPrice(),
-            fetchTokenUsdPrice(tokenSymbol),
-          ]);
-
-          if (
-            solUsd &&
-            tokenUsdPrice &&
-            primaryTokenAmount !== null
-          ) {
-            const approxTokenUsd = primaryTokenAmount * tokenUsdPrice;
-            const approxTokenSol = approxTokenUsd / solUsd;
-
-            setSolAmount(approxTokenSol);
-            setUsdAmount(approxTokenUsd);
-
-            if (onFundingStatusChange) {
-              onFundingStatusChange(true, approxTokenSol);
-            }
-          } else {
-            // We still treat it as funded even if we couldn't price it.
-            if (onFundingStatusChange) {
-              onFundingStatusChange(true, 0);
-            }
-          }
-        } catch (priceErr) {
-          console.error('Error computing token SOL/USD value:', priceErr);
-          if (onFundingStatusChange) {
-            onFundingStatusChange(true, 0);
-          }
+        if (onFundingStatusChange) {
+          onFundingStatusChange(true, 0);
         }
 
         toast.success(
-          'Deposit detected! Your CRYPTOCARD holds tokens, SOL value will update as price data becomes available.'
+          'Deposit detected! Your CRYPTOCARD holds tokens, but SOL value is not yet available.'
         );
       } else {
         // IMPORTANT: do NOT zero out our stored amounts here.
@@ -403,25 +293,21 @@ export function FundingPanel({
               className={
                 locked
                   ? 'inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-full bg-warning/10 border border-warning/40 text-warning-foreground'
-                  : funded || tokenAmount || solAmount
+                  : funded || solAmount
                   ? 'inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-400/40 text-emerald-300'
                   : 'inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-full bg-muted/20 border border-muted/40 text-muted-foreground'
               }
             >
               <CheckCircle2 className="w-3 h-3" />
-              {funded || tokenAmount || solAmount ? 'FUNDED' : 'NOT FUNDED'}
+              {funded || solAmount ? 'FUNDED' : 'NOT FUNDED'}
             </span>
           </div>
           <div className="mt-1 text-[10px] font-mono text-emerald-300">
             <span className="block">
               {formattedToken} {assetLabel}
             </span>
-            <span className="block">
-              {formattedSol} SOL
-            </span>
-            <span className="block">
-              ${formattedUsd} USD
-            </span>
+            <span className="block">{formattedSol} SOL</span>
+            <span className="block">${formattedUsd} USD</span>
           </div>
         </div>
 
@@ -438,7 +324,8 @@ export function FundingPanel({
             or more.
           </p>
           <p className="text-[10px] font-mono mt-1 text-orange-300">
-            Estimated tax on this CRYPTOCARD: {formattedTaxToken} {assetLabel} • {formattedTaxSol} SOL • ~${formattedTaxUsd} USD
+            Estimated tax on this CRYPTOCARD: {formattedTaxToken} {assetLabel} •{' '}
+            {formattedTaxSol} SOL • ~${formattedTaxUsd} USD
           </p>
         </div>
       </div>
@@ -497,7 +384,11 @@ export function FundingPanel({
                 className="h-7 w-7"
                 onClick={() => handleCopy(cardId, 'card')}
               >
-                {copiedCard ? <CheckCircle2 className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                {copiedCard ? (
+                  <CheckCircle2 className="w-3 h-3" />
+                ) : (
+                  <Copy className="w-3 h-3" />
+                )}
               </Button>
             </div>
           </div>
@@ -527,7 +418,11 @@ export function FundingPanel({
                 className="h-7 w-7"
                 onClick={() => handleCopy(cvv, 'cvv')}
               >
-                {copiedCvv ? <CheckCircle2 className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                {copiedCvv ? (
+                  <CheckCircle2 className="w-3 h-3" />
+                ) : (
+                  <Copy className="w-3 h-3" />
+                )}
               </Button>
             </div>
           </div>
