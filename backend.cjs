@@ -1709,6 +1709,24 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
       updated_at: new Date().toISOString(),
     };
 
+    // If this is a token card, store the REAL token units snapshot (UI amount) in `token_units`
+    // so AuditSection can display correct amounts even after claim (deposit wallet becomes empty).
+    try {
+      const mint = card.token_mint ? String(card.token_mint).trim() : '';
+      if (mint && Array.isArray(tokenValueResult.tokens)) {
+        const match = tokenValueResult.tokens.find((t) => t && t.mint === mint);
+        const unitsUi =
+          match && typeof match.amount_ui === 'number' && match.amount_ui > 0
+            ? match.amount_ui
+            : 0;
+        if (unitsUi > 0) {
+          updates.token_units = unitsUi;
+        }
+      }
+    } catch (e) {
+      // ignore token_units snapshot errors
+    }
+
     if (totalSolValue > 0) {
       updates.token_amount = totalSolValue;
     }
@@ -2087,6 +2105,8 @@ app.post('/claim-card', async (req, res) => {
         claimed: true,
         funded: false,
         updated_at: nowIso,
+        // Persist actual token units claimed (UI amount) so audit can show true amount later.
+        ...(totalTokenUi && totalTokenUi > 0 ? { token_units: totalTokenUi } : {}),
       })
       .eq('public_id', public_id);
 
