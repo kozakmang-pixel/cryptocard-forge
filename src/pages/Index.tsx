@@ -227,37 +227,36 @@ export default function Index() {
     (
       isFunded: boolean,
       solAmount: number,
-      tokenAmountFromPanel?: number,
-      fiatAmountFromPanel?: number,
-      tokenSymbolFromPanel?: string
+      tokenAmountFromPanel?: string,
+      tokenSymbolFromPanel?: string,
+      fiatValueFromPanel?: string
     ) => {
       setFunded(isFunded);
-      setCardData((prev) =>
-        prev
-          ? {
-              ...prev,
-              funded: isFunded,
-              tokenSymbol: tokenSymbolFromPanel || prev.tokenSymbol,
-              // Keep the preview showing the actual token amount (not the SOL equivalent)
-              tokenAmount:
-                typeof tokenAmountFromPanel === 'number'
-                  ? tokenAmountFromPanel.toFixed(6)
-                  : prev.tokenAmount,
-              // Still store/display SOL + USD values for the funding summary
-              solValue: solAmount.toFixed(6),
-              fiatValue:
-                typeof fiatAmountFromPanel === 'number'
-                  ? fiatAmountFromPanel.toFixed(2)
-                  : solAmount > 0 && solPrice
-                    ? (solAmount * solPrice).toFixed(2)
-                    : prev.fiatValue,
-            }
-          : null
-      );
-    },
-    [solPrice]
-  );
+      setCardData((prev) => {
+        if (!prev) return null;
 
+        const nextSymbol = tokenSymbolFromPanel || prev.tokenSymbol;
+        const isSolCard = !prev.tokenAddress || nextSymbol === 'SOL';
+
+        // If FundingPanel gives us a token amount, use it. Otherwise:
+        // - SOL cards use solAmount
+        // - token cards keep their existing tokenAmount (don’t overwrite with SOL)
+        const nextTokenAmount =
+          tokenAmountFromPanel ?? (isSolCard ? solAmount.toFixed(6) : prev.tokenAmount);
+
+        const nextFiatValue =
+          fiatValueFromPanel ??
+          (solAmount > 0 && solPrice ? (solAmount * solPrice).toFixed(2) : prev.fiatValue);
+
+        return {
+          ...prev,
+          funded: isFunded,
+          tokenSymbol: nextSymbol,
+          tokenAmount: nextTokenAmount,
+          solValue: solAmount.toFixed(6),
+          fiatValue: nextFiatValue,
+        };
+      });
     },
     [solPrice]
   );
@@ -287,7 +286,7 @@ export default function Index() {
         image: selectedImage,
         tokenAddress,
         tokenSymbol: tokenSymbol || 'TOKEN',
-        tokenAmount: '0.000000',
+        tokenAmount: '0',
         message: message || 'Gift',
         font,
         hasExpiry,
@@ -461,7 +460,7 @@ export default function Index() {
                 depositAddress={cardData.depositAddress}
                 funded={funded}
                 locked={locked}
-                fundedAmount={funded ? `${cardData.tokenAmount} ${cardData.tokenSymbol || tokenSymbol || 'TOKEN'}` : `0.000000 ${cardData.tokenSymbol || tokenSymbol || 'TOKEN'}`}
+                fundedAmount={funded ? `${cardData.solValue} SOL` : '0 SOL'}
                 tokenSymbol={cardData.tokenSymbol || tokenSymbol}
                 onFundingStatusChange={handleFundingStatusChange}
               />
