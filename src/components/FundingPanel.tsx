@@ -53,7 +53,7 @@ const loadAmountSnapshot = (cardId: string): AmountSnapshot | null => {
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return null;
-    return parsed[activeCardId] ?? null;
+    return parsed[cardId] ?? null;
   } catch {
     return null;
   }
@@ -63,7 +63,7 @@ const saveAmountSnapshot = (cardId: string, snap: AmountSnapshot) => {
   try {
     const raw = localStorage.getItem(CC_AMOUNT_SNAPSHOT_KEY);
     const parsed = raw ? JSON.parse(raw) : {};
-    const next = { ...(parsed && typeof parsed === 'object' ? parsed : {}), [activeCardId]: snap };
+    const next = { ...(parsed && typeof parsed === 'object' ? parsed : {}), [cardId]: snap };
     localStorage.setItem(CC_AMOUNT_SNAPSHOT_KEY, JSON.stringify(next));
   } catch {
     // ignore
@@ -196,6 +196,16 @@ const assetLabel = tokenSymbol || 'TOKEN';
     }
 
     const snapSol = snap.solValue ? Number(snap.solValue) : 0;
+
+    // Apply snapshot to local UI state so amounts persist visually after refresh
+    const snapToken = snap.tokenAmount ? Number(snap.tokenAmount) : null;
+    const snapFiat = snap.fiatValue ? Number(snap.fiatValue) : null;
+
+    if (Number.isFinite(snapSol)) setSolAmount(snapSol);
+    if (snapToken !== null && Number.isFinite(snapToken)) setTokenAmount(snapToken);
+    if (snapFiat !== null && Number.isFinite(snapFiat)) setUsdAmount(snapFiat);
+    setActiveFunded(true);
+
     if (onFundingStatusChange) {
       onFundingStatusChange(
         funded || true,
@@ -582,6 +592,14 @@ const assetLabel = tokenSymbol || 'TOKEN';
             <span className="text-[9px] font-semibold uppercase text-muted-foreground">
               1.5% Protocol Tax on Funded &amp; Locked CRYPTOCARDS
             </span>
+          </div>
+          <div className="mt-2 rounded-lg border border-red-500/50 bg-red-500/10 px-2 py-2">
+            <div className="text-[11px] font-extrabold tracking-wide text-red-400">
+              NOT CURRENTLY IMPLEMENTED
+            </div>
+            <div className="mt-0.5 text-[9px] text-red-200/90 leading-snug">
+              Tax estimation is displayed for transparency, but automated tax swap/burn is not live yet.
+            </div>
           </div>
           <p className="text-[9px] text-muted-foreground mt-1 leading-snug">
             A 1.5% protocol tax is applied to the SOL balance on each funded and locked
