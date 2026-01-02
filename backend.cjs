@@ -460,47 +460,6 @@ app.use(express.json());
 const distPath = path.join(__dirname, 'dist');
 app.use(express.static(distPath));
 
-/**
- * ✅ Pump.fun LIVE status proxy
- * Browser can't fetch pump.fun due to CORS; backend checks it server-side.
- * Returns: { live: true/false/null, url }
- */
-app.get('/pumpfun-live', async (_req, res) => {
-  try {
-    const mint = CRYPTOCARDS_MINT;
-    const url = `https://pump.fun/coin/${mint}`;
-
-    const fetch = (await import('node-fetch')).default;
-
-    const r = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36',
-        Accept: 'text/html',
-      },
-    });
-
-    if (!r.ok) {
-      return res.status(200).json({ live: null, url });
-    }
-
-    const html = await r.text();
-
-    // Heuristic detection (Pump.fun can change structure)
-    const live =
-      /"isLive"\s*:\s*true/i.test(html) ||
-      /"live"\s*:\s*true/i.test(html) ||
-      /live\s*now/i.test(html) ||
-      /stream\s*is\s*live/i.test(html);
-
-    return res.status(200).json({ live: !!live, url });
-  } catch (err) {
-    console.error('Error in /pumpfun-live:', err);
-    return res.status(200).json({ live: null, url: null });
-  }
-});
-
 // Utility hash helper
 function sha256(str) {
   return crypto.createHash('sha256').update(str).digest('hex');
@@ -2151,6 +2110,118 @@ app.post('/claim-card', async (req, res) => {
       error:
         err?.message ||
         'Unexpected error while claiming this CRYPTOCARD',
+    });
+  }
+});
+
+
+// ----- PUMP.FUN LIVESTREAM STATUS (for PriceBanner "LIVE/OFFLINE") -----
+
+const PUMPFUN_COIN_URL =
+  process.env.PUMPFUN_COIN_URL ||
+  `https://pump.fun/coin/${CRYPTOCARDS_MINT}`;
+
+// cache TTL: 15 seconds (avoid hammering pump.fun)
+const PUMPFUN_LIVE_TTL_MS = 15_000;
+
+let lastPumpLive = null;
+let lastPumpLiveCheckedAt = 0;
+let lastPumpTitle = null;
+
+/**
+ * Determine whether the Pump.fun coin page is currently livestreaming.
+ * We keep this simple + robust by checking the <title> for "LIVESTREAMING (LIVE)".
+ * (Pump.fun updates the title when a room is live.)
+ */
+async function getPumpfunLiveStatus() {
+  const now = Date.now();
+  if (
+    lastPumpLive !== null &&
+    now - lastPumpLiveCheckedAt < PUMPFUN_LIVE_TTL_MS
+  ) {
+    return {
+      ok: true,
+      live: lastPumpLive,
+      url: PUMPFUN_COIN_URL,
+      checked_at: new Date(lastPumpLiveCheckedAt).toISOString(),
+      title: lastPumpTitle,
+      cached: true,
+    };
+  }
+
+  try {
+    const fetch = (await import('node-fetch')).default;
+
+    const res = await fetch(PUMPFUN_COIN_URL, {
+      method: 'GET',
+      headers: {
+        // some CDNs behave better with a UA
+        'User-Agent':
+          'Mozilla/5.0 (compatible; CRYPTOCARDS-Bot/1.0; +https://cryptocards.fun)',
+        Accept: 'text/html,*/*',
+      },
+    });
+
+    const html = await res.text().catch(() => '');
+    const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+    const title = titleMatch ? String(titleMatch[1]).trim() : null;
+
+    // Primary signal (what Pump.fun uses)
+    const isLive =
+      typeof title === 'string' &&
+      title.toUpperCase().includes('LIVESTREAMING (LIVE)');
+
+    lastPumpLive = !!isLive;
+    lastPumpTitle = title;
+    lastPumpLiveCheckedAt = now;
+
+    return {
+      ok: true,
+      live: !!isLive,
+      url: PUMPFUN_COIN_URL,
+      checked_at: new Date(now).toISOString(),
+      title,
+      cached: false,
+      status: res.status,
+    };
+  } catch (err) {
+    console.error('[PUMPFUN] getPumpfunLiveStatus error:', err);
+
+    // Fail soft: return last known value if we have one
+    if (lastPumpLive !== null) {
+      return {
+        ok: true,
+        live: lastPumpLive,
+        url: PUMPFUN_COIN_URL,
+        checked_at: new Date(lastPumpLiveCheckedAt).toISOString(),
+        title: lastPumpTitle,
+        cached: true,
+        warning: 'pumpfun_fetch_failed_using_cached',
+      };
+    }
+
+    return {
+      ok: false,
+      live: false,
+      url: PUMPFUN_COIN_URL,
+      checked_at: new Date().toISOString(),
+      error: err?.message || 'pumpfun_fetch_failed',
+    };
+  }
+}
+
+// Public endpoint consumed by the frontend PriceBanner
+app.get('/pump-live', async (_req, res) => {
+  try {
+    const status = await getPumpfunLiveStatus();
+    res.json(status);
+  } catch (err) {
+    console.error('Error in /pump-live:', err);
+    res.status(500).json({
+      ok: false,
+      live: false,
+      url: PUMPFUN_COIN_URL,
+      error: err?.message || 'Failed to fetch pump.fun live status',
     });
   }
 });
