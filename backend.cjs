@@ -1648,7 +1648,7 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
     const { data: card, error } = await supabase
       .from('cards')
       .select(
-        'deposit_address, funded, locked, token_amount, currency, amount_fiat'
+        'deposit_address, funded, locked, token_amount, token_units, token_mint, token_symbol, currency, amount_fiat'
       )
       .eq('public_id', publicId)
       .maybeSingle();
@@ -1704,31 +1704,36 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
     // - We always update "funded" so the current on-chain state is reflected.
     // - We ONLY update token_amount when there is a non-zero totalSolValue.
     //   This prevents wiping out the historical snapshot (e.g. after claim).
+    // - For TOKEN cards, we ALSO persist the real token units (token_units) when we can detect them.
     const updates = {
       funded: isFunded,
       updated_at: new Date().toISOString(),
     };
 
-    // If this is a token card, store the REAL token units snapshot (UI amount) in `token_units`
-    // so AuditSection can display correct amounts even after claim (deposit wallet becomes empty).
-    try {
-      const mint = card.token_mint ? String(card.token_mint).trim() : '';
-      if (mint && Array.isArray(tokenValueResult.tokens)) {
-        const match = tokenValueResult.tokens.find((t) => t && t.mint === mint);
-        const unitsUi =
-          match && typeof match.amount_ui === 'number' && match.amount_ui > 0
-            ? match.amount_ui
-            : 0;
-        if (unitsUi > 0) {
-          updates.token_units = unitsUi;
-        }
-      }
-    } catch (e) {
-      // ignore token_units snapshot errors
-    }
-
     if (totalSolValue > 0) {
       updates.token_amount = totalSolValue;
+    }
+
+    // Persist token units snapshot (for token cards) so UI can show the real token amount after claim/reset.
+    // We only set this when:
+    // - card.token_mint exists, and
+    // - we find a matching token in the portfolio with amount_ui > 0
+    try {
+      if (card.token_mint && tokenValueResult?.tokens?.length) {
+        const match = tokenValueResult.tokens.find(
+          (t) => t && typeof t.mint === 'string' && t.mint === card.token_mint
+        );
+        const units =
+          match && typeof match.amount_ui === 'number' && match.amount_ui > 0
+            ? match.amount_ui
+            : null;
+
+        if (typeof units === 'number' && units > 0) {
+          updates.token_units = units;
+        }
+      }
+    } catch (unitsErr) {
+      console.error('Error persisting token_units snapshot in /sync-card-funding:', unitsErr);
     }
 
     const { error: updateError } = await supabase
@@ -2099,15 +2104,20 @@ app.post('/claim-card', async (req, res) => {
     // 9) Update card in DB: mark claimed, but DO NOT overwrite token_amount.
     const nowIso = new Date().toISOString();
 
+    const claimUpdates = {
+      claimed: true,
+      funded: false,
+      updated_at: nowIso,
+    };
+
+    // Persist real token units snapshot so UI can show correct token amount after claim/reset.
+    if (hasTokens && totalTokenUi && Number.isFinite(totalTokenUi) && totalTokenUi > 0) {
+      claimUpdates.token_units = totalTokenUi;
+    }
+
     const { error: updateError } = await supabase
       .from('cards')
-      .update({
-        claimed: true,
-        funded: false,
-        updated_at: nowIso,
-        // Persist actual token units claimed (UI amount) so audit can show true amount later.
-        ...(totalTokenUi && totalTokenUi > 0 ? { token_units: totalTokenUi } : {}),
-      })
+      .update(claimUpdates)
       .eq('public_id', public_id);
 
     if (updateError) {
@@ -2141,18 +2151,18 @@ const PUMPFUN_COIN_URL =
   process.env.PUMPFUN_COIN_URL ||
   `https://pump.fun/coin/${CRYPTOCARDS_MINT}`;
 
-// Prefer Pump.fun's frontend API v3 "currently-live" list (more reliable than HTML scraping)
-const PUMPFUN_CURRENTLY_LIVE_API =
-  process.env.PUMPFUN_CURRENTLY_LIVE_API ||
-  'https://frontend-api-v3.pump.fun/coins/currently-live';
-
 // cache TTL: 15 seconds (avoid hammering pump.fun)
 const PUMPFUN_LIVE_TTL_MS = 15_000;
 
 let lastPumpLive = null;
 let lastPumpLiveCheckedAt = 0;
-let lastPumpDebug = null;
+let lastPumpTitle = null;
 
+/**
+ * Determine whether the Pump.fun coin page is currently livestreaming.
+ * We keep this simple + robust by checking the <title> for "LIVESTREAMING (LIVE)".
+ * (Pump.fun updates the title when a room is live.)
+ */
 async function getPumpfunLiveStatus() {
   const now = Date.now();
   if (
@@ -2164,87 +2174,45 @@ async function getPumpfunLiveStatus() {
       live: lastPumpLive,
       url: PUMPFUN_COIN_URL,
       checked_at: new Date(lastPumpLiveCheckedAt).toISOString(),
+      title: lastPumpTitle,
       cached: true,
-      debug: lastPumpDebug,
     };
   }
 
   try {
     const fetch = (await import('node-fetch')).default;
 
-    const res = await fetch(PUMPFUN_CURRENTLY_LIVE_API, {
+    const res = await fetch(PUMPFUN_COIN_URL, {
       method: 'GET',
       headers: {
-        Accept: 'application/json',
-        Origin: 'https://pump.fun',
-        Referer: 'https://pump.fun/',
+        // some CDNs behave better with a UA
         'User-Agent':
           'Mozilla/5.0 (compatible; CRYPTOCARDS-Bot/1.0; +https://cryptocards.fun)',
+        Accept: 'text/html,*/*',
       },
     });
 
-    if (!res.ok) {
-      const txt = await res.text().catch(() => '');
-      throw new Error(`pumpfun currently-live status ${res.status} ${txt.slice(0, 120)}`);
-    }
+    const html = await res.text().catch(() => '');
+    const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+    const title = titleMatch ? String(titleMatch[1]).trim() : null;
 
-    const body = await res.json().catch(() => null);
+    // Primary signal (what Pump.fun uses)
+    const isLive =
+      typeof title === 'string' &&
+      title.toUpperCase().includes('LIVESTREAMING (LIVE)');
 
-    // Body is typically an array of coin objects; we just need to know if our mint is in it.
-    const mint = String(CRYPTOCARDS_MINT || '').trim();
-    const mLower = mint.toLowerCase();
-
-    let live = false;
-    let count = 0;
-
-    if (Array.isArray(body)) {
-      count = body.length;
-
-      live = body.some((c) => {
-        const m =
-          c?.mint ||
-          c?.mintAddress ||
-          c?.address ||
-          c?.tokenMint ||
-          null;
-        return (
-          typeof m === 'string' &&
-          m.toLowerCase() === mLower
-        );
-      });
-    } else if (body && Array.isArray(body?.coins)) {
-      count = body.coins.length;
-
-      live = body.coins.some((c) => {
-        const m =
-          c?.mint ||
-          c?.mintAddress ||
-          c?.address ||
-          c?.tokenMint ||
-          null;
-        return (
-          typeof m === 'string' &&
-          m.toLowerCase() === mLower
-        );
-      });
-    }
-
-    lastPumpLive = !!live;
+    lastPumpLive = !!isLive;
+    lastPumpTitle = title;
     lastPumpLiveCheckedAt = now;
-    lastPumpDebug = {
-      source: 'frontend-api-v3',
-      endpoint: PUMPFUN_CURRENTLY_LIVE_API,
-      response_is_array: Array.isArray(body),
-      count,
-    };
 
     return {
       ok: true,
-      live: !!live,
+      live: !!isLive,
       url: PUMPFUN_COIN_URL,
       checked_at: new Date(now).toISOString(),
+      title,
       cached: false,
-      debug: lastPumpDebug,
+      status: res.status,
     };
   } catch (err) {
     console.error('[PUMPFUN] getPumpfunLiveStatus error:', err);
@@ -2256,9 +2224,9 @@ async function getPumpfunLiveStatus() {
         live: lastPumpLive,
         url: PUMPFUN_COIN_URL,
         checked_at: new Date(lastPumpLiveCheckedAt).toISOString(),
+        title: lastPumpTitle,
         cached: true,
         warning: 'pumpfun_fetch_failed_using_cached',
-        debug: lastPumpDebug,
       };
     }
 
@@ -2475,6 +2443,9 @@ app.get('/public-activity', async (_req, res) => {
         card_id: card.public_id,
         type: 'CREATED',
         token_amount: sol,
+        token_units: card.token_units ?? null,
+        token_mint: card.token_mint ?? null,
+        token_symbol: card.token_symbol ?? null,
         sol_amount: sol,
         fiat_value: fiat,
         currency,
@@ -2488,6 +2459,9 @@ app.get('/public-activity', async (_req, res) => {
           card_id: card.public_id,
           type: 'FUNDED',
           token_amount: sol,
+          token_units: card.token_units ?? null,
+          token_mint: card.token_mint ?? null,
+          token_symbol: card.token_symbol ?? null,
           sol_amount: sol,
           fiat_value: fiat,
           currency,
@@ -2502,6 +2476,9 @@ app.get('/public-activity', async (_req, res) => {
           card_id: card.public_id,
           type: 'LOCKED',
           token_amount: sol,
+          token_units: card.token_units ?? null,
+          token_mint: card.token_mint ?? null,
+          token_symbol: card.token_symbol ?? null,
           sol_amount: sol,
           fiat_value: fiat,
           currency,
@@ -2516,6 +2493,9 @@ app.get('/public-activity', async (_req, res) => {
           card_id: card.public_id,
           type: 'CLAIMED',
           token_amount: sol,
+          token_units: card.token_units ?? null,
+          token_mint: card.token_mint ?? null,
+          token_symbol: card.token_symbol ?? null,
           sol_amount: sol,
           fiat_value: fiat,
           currency,
