@@ -360,7 +360,7 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
   };
 
   // Build preview CardData with correct amounts
-  const { cardData, previewTriple, previewSymbol, previewNumbers } = useMemo(() => {
+  const { cardData, previewTriple, previewSymbol || 'TOKEN', previewNumbers } = useMemo(() => {
     if (!pulledCard) return { cardData: null, previewTriple: null, previewSymbol: 'SOL', previewNumbers: null };
 
     const anyCard: any = pulledCard;
@@ -469,14 +469,19 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
 
   // Helper to render a clean amount line
   const renderAmountTriple = (
-    tokenAmount: number,
-    tokenSymbol: string,
-    solAmount: number,
-    usdAmount: number
+    tokenAmount: number | null | undefined,
+    tokenSymbol: string | null | undefined,
+    solAmount: number | null | undefined,
+    usdAmount: number | null | undefined
   ) => {
-    return `${tokenAmount.toFixed(6)} ${tokenSymbol} • ${solAmount.toFixed(
+    const ta = Number(tokenAmount);
+    const sa = Number(solAmount);
+    const ua = Number(usdAmount);
+    const sym = (tokenSymbol || 'TOKEN').toString();
+
+    return `${(Number.isFinite(ta) ? ta : 0).toFixed(6)} ${sym} • ${(Number.isFinite(sa) ? sa : 0).toFixed(
       6
-    )} SOL • $${usdAmount.toFixed(2)} USD`;
+    )} SOL • $${(Number.isFinite(ua) ? ua : 0).toFixed(2)} USD`;
   };
 
   return (
@@ -553,10 +558,10 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
                   <span className="font-semibold">On-chain amount: </span>
                   <span>
                     {renderAmountTriple(
-                      previewTriple.tokenAmount,
-                      previewSymbol,
-                      previewTriple.solAmount,
-                      previewTriple.usdAmount
+                      previewTriple?.tokenAmount,
+                      previewSymbol || 'TOKEN',
+                      previewTriple?.solAmount,
+                      previewTriple?.usdAmount
                     )}
                   </span>
                 </div>
@@ -611,10 +616,10 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
                 <span className="font-semibold">Amount claimed: </span>
                 <span>
                   {renderAmountTriple(
-                    claimSummary.tokenAmount,
-                    claimSummary.tokenSymbol,
-                    claimSummary.solAmount,
-                    claimSummary.usdAmount
+                    claimSummary?.tokenAmount,
+                    claimSummary?.tokenSymbol,
+                    claimSummary?.solAmount,
+                    claimSummary?.usdAmount
                   )}
                 </span>
               </div>
