@@ -1648,7 +1648,7 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
     const { data: card, error } = await supabase
       .from('cards')
       .select(
-        'deposit_address, funded, locked, token_amount, currency, amount_fiat'
+        'deposit_address, funded, locked, token_amount, token_units, token_mint, currency, amount_fiat'
       )
       .eq('public_id', publicId)
       .maybeSingle();
@@ -1686,6 +1686,22 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
     // SPL token balances + value in SOL
     const tokenValueResult =
       await getTokenAccountsWithSolValue(pubkey);
+
+    // If this is a token card, snapshot the REAL token units for the card's mint.
+    // This persists in DB even after claim empties the deposit wallet.
+    let tokenUnits = 0;
+    if (card.token_mint && typeof card.token_mint === 'string') {
+      const mintStr = card.token_mint.trim();
+      const match =
+        Array.isArray(tokenValueResult.tokens) && mintStr
+          ? tokenValueResult.tokens.find((t) => t && t.mint === mintStr)
+          : null;
+
+      if (match && typeof match.amount_ui === 'number' && match.amount_ui > 0) {
+        tokenUnits = match.amount_ui;
+      }
+    }
+
     const tokensValueSol =
       tokenValueResult.total_value_sol || 0;
 
@@ -1713,6 +1729,11 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
       updates.token_amount = totalSolValue;
     }
 
+    // Persist REAL token units snapshot for token cards (do not wipe it out to 0).
+    if (tokenUnits > 0) {
+      updates.token_units = tokenUnits;
+    }
+
     const { error: updateError } = await supabase
       .from('cards')
       .update(updates)
@@ -1738,6 +1759,7 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
       funded: isFunded,
       locked: !!card.locked,
       hasDeposit: !!card.deposit_address,
+      token_units: tokenUnits > 0 ? tokenUnits : null,
       token_portfolio: tokenValueResult, // debug + UI info
     });
   } catch (err) {
