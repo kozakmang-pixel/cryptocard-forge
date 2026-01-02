@@ -30,18 +30,23 @@ interface UserDashboardProps {
 interface DashboardCard {
   public_id: string;
   created_at: string;
+  updated_at?: string;
   funded: boolean;
   locked: boolean;
   claimed: boolean;
-  token_amount: number | null;
+  refunded?: boolean;
+  token_amount: number | null; // backend normalized SOL-equivalent snapshot
+  token_units?: number | null; // REAL token units snapshot (persists)
   amount_fiat: number | null;
   currency: string | null;
   token_mint?: string | null; // optional mint from backend (if present)
+  token_symbol?: string | null; // optional symbol snapshot from backend (if present)
 }
 
 type EnrichedCard = DashboardCard & {
-  sol: number;
-  fiat: number;
+  tokenUnits: number; // what to show in the TOKEN column (units)
+  solValue: number; // what to show in the SOL column (SOL-equivalent)
+  fiatValue: number; // what to show in the FIAT column
   isFunded: boolean;
   currency: string | null;
   tokenMint?: string | null;
@@ -49,9 +54,11 @@ type EnrichedCard = DashboardCard & {
 };
 
 type CardSnapshot = {
-  sol: number;
-  fiat: number;
+  tokenUnits: number;
+  solValue: number;
+  fiatValue: number;
   currency: string | null;
+  tokenSymbol?: string;
 };
 
 function formatDateTime(iso: string) {
@@ -64,6 +71,46 @@ function formatDateTime(iso: string) {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+// --- token meta lookup helpers (Dexscreener -> Jupiter fallback) ---
+
+async function fetchTokenSymbolByMint(mint: string): Promise<string | null> {
+  const clean = (mint || '').trim();
+  if (!clean || clean.length < 32) return null;
+
+  // 1) Dexscreener
+  try {
+    const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${clean}`);
+    if (res.ok) {
+      const data = await res.json();
+      const pairs: any = (data && (data.pairs || data.pair || data.data)) as any;
+      if (Array.isArray(pairs) && pairs.length > 0 && pairs[0]?.baseToken) {
+        const sym =
+          pairs[0]?.baseToken?.symbol ||
+          pairs[0]?.baseToken?.name ||
+          pairs[0]?.quoteToken?.symbol ||
+          null;
+        if (typeof sym === 'string' && sym.trim().length > 0) return sym.trim();
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  // 2) Jupiter token list (best-effort)
+  try {
+    const res = await fetch(`https://lite-api.jup.ag/tokens/v1/token/${encodeURIComponent(clean)}`);
+    if (res.ok) {
+      const body = await res.json();
+      const sym = body?.symbol || body?.name || null;
+      if (typeof sym === 'string' && sym.trim().length > 0) return sym.trim();
+    }
+  } catch {
+    // ignore
+  }
+
+  return null;
 }
 
 export function UserDashboard({
@@ -82,7 +129,7 @@ export function UserDashboard({
   // token_mint -> SYMBOL map
   const [tokenSymbols, setTokenSymbols] = useState<Record<string, string>>({});
 
-  // per-card snapshot of SOL/FIAT once non-zero (persists even if backend resets)
+  // per-card snapshot of TOKEN_UNITS / SOL_VALUE / FIAT once non-zero (persists even if backend resets)
   const [cardSnapshots, setCardSnapshots] = useState<Record<string, CardSnapshot>>({});
 
   // Fetch SOL price from backend
@@ -117,7 +164,31 @@ export function UserDashboard({
         throw new Error('Failed to load cards');
       }
       const data = (await res.json()) as DashboardCard[];
-      setCards(Array.isArray(data) ? data : []);
+
+      // ✅ DEDUPE: ensure exactly one row per public_id (fixes "new column per action")
+      const map = new Map<string, DashboardCard>();
+      for (const row of Array.isArray(data) ? data : []) {
+        if (!row?.public_id) continue;
+        const prev = map.get(row.public_id);
+        if (!prev) {
+          map.set(row.public_id, row);
+          continue;
+        }
+        // Prefer the most recently updated row if duplicates ever appear
+        const prevT = new Date(prev.updated_at || prev.created_at || 0).getTime();
+        const nextT = new Date(row.updated_at || row.created_at || 0).getTime();
+        if (nextT >= prevT) {
+          map.set(row.public_id, row);
+        }
+      }
+
+      const unique = Array.from(map.values()).sort((a, b) => {
+        const ta = new Date(a.created_at || 0).getTime();
+        const tb = new Date(b.created_at || 0).getTime();
+        return tb - ta;
+      });
+
+      setCards(unique);
     } catch (err: any) {
       console.error('UserDashboard: failed to fetch cards', err);
       toast.error(err?.message || 'Failed to load your cards');
@@ -182,7 +253,7 @@ export function UserDashboard({
     }
   };
 
-  // Look up token symbols by mint using DexScreener
+  // Look up token symbols by mint (prefer DB snapshot, else dexscreener/jupiter)
   useEffect(() => {
     const mints = Array.from(
       new Set(
@@ -196,37 +267,22 @@ export function UserDashboard({
     if (!missing.length) return;
 
     missing.forEach(async (mint) => {
-      try {
-        const res = await fetch(
-          `https://api.dexscreener.com/latest/dex/tokens/${mint}`
-        );
-        if (!res.ok) {
-          setTokenSymbols((prev) =>
-            prev[mint] ? prev : { ...prev, [mint]: 'TOKEN' }
-          );
-          return;
-        }
-        const data = await res.json();
-        let symbol: string | null = null;
-
-        const pairs: any = (data && (data.pairs || data.pair || data.data)) as any;
-        if (Array.isArray(pairs) && pairs.length > 0 && pairs[0].baseToken) {
-          symbol = pairs[0].baseToken.symbol || pairs[0].baseToken.name || null;
-        }
-
-        setTokenSymbols((prev) => ({
-          ...prev,
-          [mint]: symbol || 'TOKEN',
-        }));
-      } catch {
-        setTokenSymbols((prev) =>
-          prev[mint] ? prev : { ...prev, [mint]: 'TOKEN' }
-        );
+      // If any card already has a token_symbol snapshot for this mint, use it immediately
+      const fromDb = cards.find((c) => (c.token_mint || '') === mint)?.token_symbol;
+      if (typeof fromDb === 'string' && fromDb.trim().length > 0) {
+        setTokenSymbols((prev) => ({ ...prev, [mint]: fromDb.trim() }));
+        return;
       }
+
+      const sym = await fetchTokenSymbolByMint(mint);
+      setTokenSymbols((prev) => ({
+        ...prev,
+        [mint]: sym || 'TOKEN',
+      }));
     });
   }, [cards, tokenSymbols]);
 
-  // Capture first non-zero SOL/FIAT per card and never overwrite with zeros
+  // Capture first non-zero snapshot per card and never overwrite with zeros
   useEffect(() => {
     if (!cards.length) return;
 
@@ -235,42 +291,67 @@ export function UserDashboard({
 
       cards.forEach((card) => {
         const currency = card.currency || 'USD';
+        const isTokenCard = !!(card.token_mint && card.token_mint.length >= 32);
 
-        const hasTokenAmount =
-          typeof card.token_amount === 'number' && card.token_amount > 0;
-        const hasFiatAmount =
-          typeof card.amount_fiat === 'number' && card.amount_fiat > 0;
+        // SOL-equivalent value (persisted snapshot from backend)
+        const hasSolValue = typeof card.token_amount === 'number' && card.token_amount > 0;
+        // Fiat snapshot from DB if present
+        const hasFiatValue = typeof card.amount_fiat === 'number' && card.amount_fiat > 0;
 
-        let sol = 0;
-        let fiat = 0;
+        let solValue = 0;
+        let fiatValue = 0;
 
-        if (hasTokenAmount) {
-          sol = card.token_amount as number;
+        if (hasSolValue) solValue = card.token_amount as number;
+        if (hasFiatValue) fiatValue = card.amount_fiat as number;
+
+        // derive missing side using live SOL price
+        if (!hasFiatValue && hasSolValue && solPrice && solValue > 0) {
+          fiatValue = solValue * solPrice;
+        }
+        if (!hasSolValue && hasFiatValue && solPrice && fiatValue > 0) {
+          solValue = fiatValue / solPrice;
         }
 
-        if (hasFiatAmount) {
-          fiat = card.amount_fiat as number;
+        // token units snapshot (real token amount)
+        let tokenUnits = 0;
+        if (isTokenCard) {
+          if (typeof card.token_units === 'number' && card.token_units > 0) {
+            tokenUnits = card.token_units;
+          }
+        } else {
+          // SOL-only card: token units == SOL
+          tokenUnits = solValue > 0 ? solValue : 0;
         }
 
-        if (!hasFiatAmount && hasTokenAmount && solPrice && sol > 0) {
-          fiat = sol * solPrice;
-        }
+        const tokenMint = card.token_mint || null;
+        const tokenSymbol =
+          (typeof card.token_symbol === 'string' && card.token_symbol.trim().length > 0
+            ? card.token_symbol.trim()
+            : tokenMint && tokenSymbols[tokenMint]
+            ? tokenSymbols[tokenMint]
+            : !isTokenCard
+            ? 'SOL'
+            : 'TOKEN') || 'TOKEN';
 
-        if (!hasTokenAmount && hasFiatAmount && solPrice && fiat > 0) {
-          sol = fiat / solPrice;
-        }
-
-        const hasNonZero = sol > 0 || fiat > 0;
+        const hasNonZero = tokenUnits > 0 || solValue > 0 || fiatValue > 0;
         const existing = prev[card.public_id];
 
         if (hasNonZero) {
           if (
             !existing ||
-            existing.sol !== sol ||
-            existing.fiat !== fiat ||
-            existing.currency !== currency
+            existing.tokenUnits !== tokenUnits ||
+            existing.solValue !== solValue ||
+            existing.fiatValue !== fiatValue ||
+            existing.currency !== currency ||
+            existing.tokenSymbol !== tokenSymbol
           ) {
-            next[card.public_id] = { sol, fiat, currency };
+            next[card.public_id] = {
+              tokenUnits,
+              solValue,
+              fiatValue,
+              currency,
+              tokenSymbol,
+            };
           }
         }
         // IMPORTANT: do NOT delete snapshots when values go to zero
@@ -278,68 +359,72 @@ export function UserDashboard({
 
       return next;
     });
-  }, [cards, solPrice]);
+  }, [cards, solPrice, tokenSymbols]);
 
   const enrichedCards: EnrichedCard[] = useMemo(() => {
     return cards.map((card) => {
-      let currency = card.currency || 'USD';
+      const currency = card.currency || 'USD';
+      const tokenMint = card.token_mint || null;
+      const isTokenCard = !!(tokenMint && tokenMint.length >= 32);
 
-      const hasTokenAmount =
-        typeof card.token_amount === 'number' && card.token_amount > 0;
-      const hasFiatAmount =
-        typeof card.amount_fiat === 'number' && card.amount_fiat > 0;
+      // SOL-equivalent
+      const hasSolValue = typeof card.token_amount === 'number' && card.token_amount > 0;
+      const hasFiatValue = typeof card.amount_fiat === 'number' && card.amount_fiat > 0;
 
-      let sol = 0;
-      let fiat = 0;
+      let solValue = hasSolValue ? (card.token_amount as number) : 0;
+      let fiatValue = hasFiatValue ? (card.amount_fiat as number) : 0;
 
-      // Prefer to trust the normalized token_amount from backend when present
-      if (hasTokenAmount) {
-        sol = card.token_amount as number;
+      if (!hasFiatValue && hasSolValue && solPrice && solValue > 0) {
+        fiatValue = solValue * solPrice;
+      }
+      if (!hasSolValue && hasFiatValue && solPrice && fiatValue > 0) {
+        solValue = fiatValue / solPrice;
       }
 
-      // If we have a stored fiat snapshot, respect it
-      if (hasFiatAmount) {
-        fiat = card.amount_fiat as number;
+      // Token units
+      let tokenUnits = 0;
+      if (isTokenCard) {
+        if (typeof card.token_units === 'number' && card.token_units > 0) {
+          tokenUnits = card.token_units;
+        }
+      } else {
+        tokenUnits = solValue > 0 ? solValue : 0;
       }
 
-      // If we only have SOL but no fiat yet, derive fiat from live price
-      if (!hasFiatAmount && hasTokenAmount && solPrice && sol > 0) {
-        fiat = sol * solPrice;
-      }
-
-      // If we only have fiat but no SOL (e.g. claimed card where backend kept amount_fiat
-      // but token_amount is null/0), derive SOL from fiat using live price
-      if (!hasTokenAmount && hasFiatAmount && solPrice && fiat > 0) {
-        sol = fiat / solPrice;
-      }
-
-      // Apply persistent snapshot for cards that have been funded/locked/claimed
+      // Persisted snapshot (never overwrite with zeros)
       const snapshot = cardSnapshots[card.public_id];
       if (
         snapshot &&
         (card.funded || card.locked || card.claimed) &&
-        (snapshot.sol > 0 || snapshot.fiat > 0)
+        (snapshot.tokenUnits > 0 || snapshot.solValue > 0 || snapshot.fiatValue > 0)
       ) {
-        sol = snapshot.sol;
-        fiat = snapshot.fiat;
-        currency = snapshot.currency;
+        tokenUnits = snapshot.tokenUnits;
+        solValue = snapshot.solValue;
+        fiatValue = snapshot.fiatValue;
       }
 
       const isFunded =
         card.funded ||
         card.locked ||
         card.claimed ||
-        hasTokenAmount ||
-        hasFiatAmount;
+        (typeof card.token_amount === 'number' && card.token_amount > 0) ||
+        (typeof card.amount_fiat === 'number' && card.amount_fiat > 0) ||
+        (typeof card.token_units === 'number' && card.token_units > 0);
 
-      const tokenMint = card.token_mint || null;
       const tokenSymbol =
-        (tokenMint && tokenSymbols[tokenMint]) || 'TOKEN';
+        (typeof card.token_symbol === 'string' && card.token_symbol.trim().length > 0
+          ? card.token_symbol.trim()
+          : tokenMint && tokenSymbols[tokenMint]
+          ? tokenSymbols[tokenMint]
+          : !isTokenCard
+          ? 'SOL'
+          : 'TOKEN') || 'TOKEN';
 
       return {
         ...card,
-        sol,
-        fiat,
+        tokenUnits: Number.isFinite(tokenUnits) ? tokenUnits : 0,
+        solValue: Number.isFinite(solValue) ? solValue : 0,
+        fiatValue: Number.isFinite(fiatValue) ? fiatValue : 0,
         currency,
         isFunded,
         tokenMint,
@@ -550,9 +635,12 @@ export function UserDashboard({
         )}
 
         {visibleCards.map((card) => {
-          const tokenSymbol = card.tokenSymbol || 'TOKEN';
-          const solDisplay = card.sol ?? 0;
-          const fiatDisplay = card.fiat ?? 0;
+          const isTokenCard = !!(card.token_mint && card.token_mint.length >= 32);
+          const tokenSymbol = card.tokenSymbol || (isTokenCard ? 'TOKEN' : 'SOL');
+
+          const tokenUnitsDisplay = card.tokenUnits ?? 0;
+          const solDisplay = card.solValue ?? 0;
+          const fiatDisplay = card.fiatValue ?? 0;
           const currency = card.currency || 'USD';
 
           let statusLabel = 'Not funded';
@@ -627,7 +715,7 @@ export function UserDashboard({
                     Token
                   </div>
                   <div className="text-[10px] font-semibold">
-                    {solDisplay.toFixed(6)} {tokenSymbol}
+                    {tokenUnitsDisplay.toFixed(6)} {tokenSymbol}
                   </div>
                 </div>
                 <div>
