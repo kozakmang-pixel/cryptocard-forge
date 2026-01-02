@@ -737,14 +737,52 @@ export function UserDashboard({
               </div>
 
               <div className="mt-1 flex items-center justify-between gap-2">
-                <span
-                  className={
-                    'inline-flex items-center px-2 py-0.5 rounded-full text-[8px] font-semibold ' +
-                    statusClass
-                  }
-                >
-                  {statusLabel.toUpperCase()}
-                </span>
+                <div className="flex flex-wrap items-center gap-1">
+                  {[
+                    {
+                      label: 'CREATED',
+                      active: true,
+                      className:
+                        'bg-sky-500/15 text-sky-300 border border-sky-500/40',
+                    },
+                    {
+                      label: 'FUNDED',
+                      active: card.isFunded,
+                      className:
+                        'bg-emerald-500/15 text-emerald-400 border border-emerald-500/40',
+                    },
+                    {
+                      label: 'LOCKED',
+                      active: card.locked,
+                      className:
+                        'bg-amber-500/15 text-amber-400 border border-amber-500/40',
+                    },
+                    {
+                      label: 'CLAIMED',
+                      active: card.claimed,
+                      className:
+                        'bg-purple-500/15 text-purple-400 border border-purple-500/40',
+                    },
+                    {
+                      label: 'REFUNDED',
+                      active: Boolean(card.refunded),
+                      className:
+                        'bg-rose-500/15 text-rose-400 border border-rose-500/40',
+                    },
+                  ].map((s) => (
+                    <span
+                      key={s.label}
+                      className={
+                        'inline-flex items-center px-2 py-0.5 rounded-full text-[8px] font-semibold ' +
+                        (s.active
+                          ? s.className
+                          : 'bg-muted/40 text-muted-foreground border border-border/40 opacity-60')
+                      }
+                    >
+                      {s.label}
+                    </span>
+                  ))}
+                </div>
                 <span className="text-[8px] text-muted-foreground text-right">
                   {statusDetail}
                 </span>
