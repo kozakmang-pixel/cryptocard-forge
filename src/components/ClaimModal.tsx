@@ -1,5 +1,5 @@
 // src/components/ClaimModal.tsx
-import { useEffect, useMemo, useState, Component, type ReactNode } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -10,36 +10,50 @@ import { useLanguage } from '@/lib/languageStore';
 import { apiService, type CardStatusResponse } from '@/services/api';
 import type { CardData } from '@/types/card';
 
-class PreviewErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
-  constructor(props: { children: ReactNode }) {
-    super(props);
-    this.state = { hasError: false };
-  }
-
-  static getDerivedStateFromError() {
-    return { hasError: true };
-  }
-
-  componentDidCatch(err: unknown) {
-    console.error('ClaimModal preview render crashed:', err);
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="rounded-lg border border-border/40 bg-background/40 p-3 text-sm text-muted-foreground">
-          Preview unavailable (display error). You can still claim this card.
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-
-
 // CRYPTOCARDS mint (your CA from header)
 const CRYPTOCARDS_MINT = 'AuxRtUDw7KhWZxbMcfqPoB1cLcvq44Sw83UHRd3Spump';
 
+
+// ---- helpers ----
+const toNumber = (v: unknown, fallback = 0) => {
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? n : fallback;
+};
+
+type ClaimSnapshot = {
+  tokenAmount: number;
+  tokenSymbol: string;
+  solAmount: number;
+  usdAmount: number;
+};
+
+const SNAPSHOT_KEY = 'cc_claim_snapshot_v1';
+
+const loadSnapshotMap = (): Record<string, ClaimSnapshot> => {
+  try {
+    const raw = localStorage.getItem(SNAPSHOT_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const saveSnapshot = (cardId: string, snap: ClaimSnapshot) => {
+  try {
+    const map = loadSnapshotMap();
+    map[cardId] = snap;
+    localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(map));
+  } catch {
+    // ignore
+  }
+};
+
+const getSnapshot = (cardId: string): ClaimSnapshot | null => {
+  const map = loadSnapshotMap();
+  return map[cardId] || null;
+};
 interface ClaimModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -91,54 +105,10 @@ function getSymbolForCard(card: CardStatusResponse | null, mainTokenMint?: strin
 export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProps) {
   const { t } = useLanguage();
 
-  // Treat missing translations as undefined (some i18n stores return the key itself).
-  const safeT = (key: string) => {
-    const v = t(key);
-    if (!v || v === key) return undefined;
-    return v;
-  };
-
-  type PersistedSnapshot = {
-    tokenAmount: number;
-    tokenSymbol: string;
-    solAmount: number;
-    usdAmount: number;
-  };
-
-  const snapshotKey = (id: string) => `cc_claim_snapshot_${id}`;
-
-  const loadSnapshot = (id: string): PersistedSnapshot | null => {
-    try {
-      const raw = localStorage.getItem(snapshotKey(id));
-      if (!raw) return null;
-      const parsed = JSON.parse(raw);
-      if (!parsed) return null;
-      const tokenAmount = Number(parsed.tokenAmount);
-      const solAmount = Number(parsed.solAmount);
-      const usdAmount = Number(parsed.usdAmount);
-      const tokenSymbol = typeof parsed.tokenSymbol === 'string' ? parsed.tokenSymbol : 'TOKEN';
-      if (!Number.isFinite(tokenAmount) || !Number.isFinite(solAmount) || !Number.isFinite(usdAmount)) {
-        return null;
-      }
-      return { tokenAmount, solAmount, usdAmount, tokenSymbol };
-    } catch {
-      return null;
-    }
-  };
-
-  const saveSnapshot = (id: string, snap: PersistedSnapshot) => {
-    try {
-      localStorage.setItem(snapshotKey(id), JSON.stringify(snap));
-    } catch {
-      // ignore
-    }
-  };
-
-  // Unified message for "not funded / already claimed"
   // Unified message for "not funded / already claimed"
   const notFundedMessage =
-    safeT('claim.notFundedOrClaimed') ??
-    'This card appears to have no funds. It may already be claimed or hasn\'t been funded yet.';
+    t('claim.notFundedOrClaimed') ??
+    'Card has already been claimed or has not been funded.';
 
   const [cardId, setCardId] = useState(initialCardId ?? '');
   const [walletAddress, setWalletAddress] = useState('');
@@ -235,14 +205,11 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
 
     try {
       const status = await apiService.getCardStatus(trimmed);
-      if (!status || typeof status !== 'object' || !(status as any).public_id) {
-        throw new Error('CRYPTOCARD not found. Check the Card ID.');
-      }
 
-      if (!(status as any).funded) {
+      if (!status.funded) {
         toast.error(notFundedMessage);
       }
-      if (!(status as any).locked) {
+      if (!status.locked) {
         toast.error(t('claim.notLocked') ?? 'This CRYPTOCARD must be locked before claiming.');
       }
 
@@ -390,8 +357,8 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
   };
 
   // Build preview CardData with correct amounts
-  const { cardData, previewTriple, previewSymbol, previewNumbers } = useMemo(() => {
-    if (!pulledCard) return { cardData: null, previewTriple: null, previewSymbol: 'SOL', previewNumbers: null };
+  const { cardData, previewTriple, previewSymbol } = useMemo(() => {
+    if (!pulledCard) return { cardData: null, previewTriple: null, previewSymbol: 'SOL' };
 
     const anyCard: any = pulledCard;
     const portfolio = funding?.token_portfolio;
@@ -433,7 +400,26 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
         ? solAmount * solPriceUsd
         : fiatFromCard;
 
-    const createdAt: string =
+    
+    // Persist / restore funded amounts so claimed cards still display original values
+    const snap = getSnapshot(pulledCard.public_id);
+    const hasComputedValue =
+      (tokenAmount && tokenAmount > 0) || (usdAmount && usdAmount > 0) || (solAmount && solAmount > 0);
+
+    const displayTokenAmount = hasComputedValue ? tokenAmount : (snap?.tokenAmount ?? tokenAmount);
+    const displayTokenSymbol = hasComputedValue ? tokenSymbol : (snap?.tokenSymbol ?? tokenSymbol);
+    const displaySolAmount = hasComputedValue ? solAmount : (snap?.solAmount ?? solAmount);
+    const displayUsdAmount = hasComputedValue ? usdAmount : (snap?.usdAmount ?? usdAmount);
+
+    if (hasComputedValue) {
+      saveSnapshot(pulledCard.public_id, {
+        tokenAmount,
+        tokenSymbol,
+        solAmount,
+        usdAmount,
+      });
+    }
+const createdAt: string =
       anyCard.created_at || new Date().toISOString();
 
     const cardData: CardData = {
@@ -442,8 +428,8 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
       depositAddress: anyCard.deposit_address || '',
       image: anyCard.template_url || '',
       tokenAddress: anyCard.token_mint || '',
-      tokenSymbol: displaySymbol,
-      tokenAmount: displayTokenAmount.toFixed(6),
+      tokenSymbol: displayTokenSymbol,
+      tokenAmount: toNumber(displayTokenAmount).toFixed(9),
       message: anyCard.message || 'Gift',
       font: anyCard.font || 'Inter',
       hasExpiry: !!pulledCard.expires_at,
@@ -451,8 +437,8 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
       created: createdAt,
       locked: !!pulledCard.locked,
       funded: !!pulledCard.funded,
-      fiatValue: displayUsdAmount.toFixed(2),
-      solValue: displaySolAmount.toFixed(6),
+      fiatValue: toNumber(displayUsdAmount).toFixed(2),
+      solValue: toNumber(displaySolAmount).toFixed(6),
       step: 3,
     };
 
@@ -463,55 +449,20 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
         solAmount: displaySolAmount,
         usdAmount: displayUsdAmount,
       },
-      previewSymbol: displaySymbol,
-      previewNumbers: { tokenAmount: displayTokenAmount, solAmount: displaySolAmount, usdAmount: displayUsdAmount, tokenSymbol: displaySymbol },
+      previewSymbol: displayTokenSymbol,
     };
   }, [pulledCard, funding, solPriceUsd]);
 
-  // Persist a snapshot of the funded amounts so the preview remains correct even after the card is claimed.
-  useEffect(() => {
-    if (!pulledCard || !previewNumbers) return;
-    const anyCard: any = pulledCard;
-    if (anyCard.claimed) return;
-
-    const hasNonZero =
-      (Number.isFinite(previewNumbers.tokenAmount) && previewNumbers.tokenAmount > 0) ||
-      (Number.isFinite(previewNumbers.solAmount) && previewNumbers.solAmount > 0) ||
-      (Number.isFinite(previewNumbers.usdAmount) && previewNumbers.usdAmount > 0);
-    if (!hasNonZero) return;
-
-    const existing = loadSnapshot(anyCard.public_id);
-    if (existing) {
-      // If we previously saved a placeholder symbol, upgrade it when we learn the real one.
-      if (existing.tokenSymbol === 'TOKEN' && previewNumbers.tokenSymbol && previewNumbers.tokenSymbol !== 'TOKEN') {
-        saveSnapshot(anyCard.public_id, { ...existing, tokenSymbol: previewNumbers.tokenSymbol });
-      }
-      return;
-    }
-
-    saveSnapshot(anyCard.public_id, {
-      tokenAmount: previewNumbers.tokenAmount,
-      tokenSymbol: previewNumbers.tokenSymbol || 'TOKEN',
-      solAmount: previewNumbers.solAmount,
-      usdAmount: previewNumbers.usdAmount,
-    });
-  }, [pulledCard, previewNumbers]);
-
   // Helper to render a clean amount line
   const renderAmountTriple = (
-    tokenAmount: number | null | undefined,
-    tokenSymbol: string | null | undefined,
-    solAmount: number | null | undefined,
-    usdAmount: number | null | undefined
+    tokenAmount: number,
+    tokenSymbol: string,
+    solAmount: number,
+    usdAmount: number
   ) => {
-    const ta = Number(tokenAmount);
-    const sa = Number(solAmount);
-    const ua = Number(usdAmount);
-    const sym = (tokenSymbol || 'TOKEN').toString();
-
-    return `${(Number.isFinite(ta) ? ta : 0).toFixed(6)} ${sym} • ${(Number.isFinite(sa) ? sa : 0).toFixed(
+    return `${tokenAmount.toFixed(6)} ${tokenSymbol} • ${solAmount.toFixed(
       6
-    )} SOL • $${(Number.isFinite(ua) ? ua : 0).toFixed(2)} USD`;
+    )} SOL • $${usdAmount.toFixed(2)} USD`;
   };
 
   return (
@@ -548,7 +499,6 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
 
           {/* Preview section */}
           {pulledCard && cardData && previewTriple && (
-            <PreviewErrorBoundary>
             <div className="space-y-2 border border-border/40 rounded-lg p-2 bg-background/40">
               <p className="text-[9px] font-semibold uppercase text-muted-foreground mb-1">
                 {t('claim.preview')}
@@ -589,16 +539,15 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
                   <span className="font-semibold">On-chain amount: </span>
                   <span>
                     {renderAmountTriple(
-                      previewTriple?.tokenAmount,
-                      previewSymbol || 'TOKEN',
-                      previewTriple?.solAmount,
-                      previewTriple?.usdAmount
+                      previewTriple.tokenAmount,
+                      previewSymbol,
+                      previewTriple.solAmount,
+                      previewTriple.usdAmount
                     )}
                   </span>
                 </div>
               </div>
             </div>
-            </PreviewErrorBoundary>
           )}
 
           {/* Wallet + CVV fields */}
@@ -648,10 +597,10 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
                 <span className="font-semibold">Amount claimed: </span>
                 <span>
                   {renderAmountTriple(
-                    claimSummary?.tokenAmount,
-                    claimSummary?.tokenSymbol,
-                    claimSummary?.solAmount,
-                    claimSummary?.usdAmount
+                    claimSummary.tokenAmount,
+                    claimSummary.tokenSymbol,
+                    claimSummary.solAmount,
+                    claimSummary.usdAmount
                   )}
                 </span>
               </div>
