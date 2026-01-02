@@ -24,6 +24,7 @@ interface CardStatus {
   claimed: boolean;
   refunded: boolean;
   token_amount: number | null;
+  token_units?: number | null; // REAL token units snapshot (set by backend)
   amount_fiat: number | null;
   currency: string | null;
   deposit_address: string | null;
@@ -269,32 +270,30 @@ export function AuditSection() {
     let tokenAmount = 0;
 
     if (isTokenCard) {
-      // Prefer token units from token_portfolio (same as FundingPanel)
-      const primary =
-        funding?.token_portfolio?.tokens && funding.token_portfolio.tokens[0]
-          ? funding.token_portfolio.tokens[0]
-          : null;
-
-      if (primary && typeof primary.amount_ui === 'number' && primary.amount_ui > 0) {
-        tokenAmount = primary.amount_ui;
-      } else if (
-        typeof card.token_amount === 'number' &&
-        card.token_amount > 0
-      ) {
-        // Fallback: DB value if we don't have portfolio detail
-        // (May be normalized SOL in some setups, but we still surface it as "token" amount.)
-        tokenAmount = card.token_amount;
+      // ✅ Prefer the real token units snapshot stored in DB (persists after claim)
+      if (typeof card.token_units === 'number' && card.token_units > 0) {
+        tokenAmount = card.token_units;
       } else {
-        tokenAmount = 0;
+        // Next best: token units from token_portfolio at sync time
+        const primary =
+          funding?.token_portfolio?.tokens && funding.token_portfolio.tokens[0]
+            ? funding.token_portfolio.tokens[0]
+            : null;
+
+        if (primary && typeof primary.amount_ui === 'number' && primary.amount_ui > 0) {
+          tokenAmount = primary.amount_ui;
+        } else if (!card.claimed && typeof card.token_amount === 'number' && card.token_amount > 0) {
+          // Legacy fallback ONLY pre-claim (token_amount may be SOL-equivalent in some setups)
+          tokenAmount = card.token_amount;
+        } else {
+          tokenAmount = 0;
+        }
       }
     } else {
       // SOL-only card: "token" is just SOL
       if (solValue > 0) {
         tokenAmount = solValue;
-      } else if (
-        typeof card.token_amount === 'number' &&
-        card.token_amount > 0
-      ) {
+      } else if (typeof card.token_amount === 'number' && card.token_amount > 0) {
         tokenAmount = card.token_amount;
       } else {
         tokenAmount = 0;
@@ -302,6 +301,7 @@ export function AuditSection() {
     }
 
     // --- Fiat value ---
+
 
     const currency = card.currency || 'USD';
 
@@ -418,21 +418,27 @@ export function AuditSection() {
       return `${prefix}: ${parts.join(' • ')}.`;
     };
 
-    const fundedView: AmountView = fundingSnapshot || {
-      tokenAmount: derived.tokenAmount,
-      solValue: derived.solValue,
-      fiat: derived.fiat,
-      currency: derived.currency,
-      tokenSymbol: derived.tokenSymbol,
-    };
+    const fundedView: AmountView =
+      fundingSnapshot ||
+      (typeof card.token_units === 'number' && card.token_units > 0
+        ? {
+            tokenAmount: card.token_units,
+            solValue: derived.solValue,
+            fiat: derived.fiat,
+            currency: derived.currency,
+            tokenSymbol: derived.tokenSymbol,
+          }
+        : {
+            tokenAmount: derived.tokenAmount,
+            solValue: derived.solValue,
+            fiat: derived.fiat,
+            currency: derived.currency,
+            tokenSymbol: derived.tokenSymbol,
+          });
 
-    const claimedView: AmountView = {
-      tokenAmount: derived.tokenAmount,
-      solValue: derived.solValue,
-      fiat: derived.fiat,
-      currency: derived.currency,
-      tokenSymbol: derived.tokenSymbol,
-    };
+    // For claimed cards, we still want to display the REAL claimed token units.
+    // Prefer the same funded snapshot (or DB token_units) because the deposit wallet becomes empty after claim.
+    const claimedView: AmountView = fundedView;
 
     // Created
     events.push({
