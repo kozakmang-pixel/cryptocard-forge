@@ -2121,18 +2121,18 @@ const PUMPFUN_COIN_URL =
   process.env.PUMPFUN_COIN_URL ||
   `https://pump.fun/coin/${CRYPTOCARDS_MINT}`;
 
+// Prefer Pump.fun's frontend API v3 "currently-live" list (more reliable than HTML scraping)
+const PUMPFUN_CURRENTLY_LIVE_API =
+  process.env.PUMPFUN_CURRENTLY_LIVE_API ||
+  'https://frontend-api-v3.pump.fun/coins/currently-live';
+
 // cache TTL: 15 seconds (avoid hammering pump.fun)
 const PUMPFUN_LIVE_TTL_MS = 15_000;
 
 let lastPumpLive = null;
 let lastPumpLiveCheckedAt = 0;
-let lastPumpTitle = null;
+let lastPumpDebug = null;
 
-/**
- * Determine whether the Pump.fun coin page is currently livestreaming.
- * We keep this simple + robust by checking the <title> for "LIVESTREAMING (LIVE)".
- * (Pump.fun updates the title when a room is live.)
- */
 async function getPumpfunLiveStatus() {
   const now = Date.now();
   if (
@@ -2144,45 +2144,87 @@ async function getPumpfunLiveStatus() {
       live: lastPumpLive,
       url: PUMPFUN_COIN_URL,
       checked_at: new Date(lastPumpLiveCheckedAt).toISOString(),
-      title: lastPumpTitle,
       cached: true,
+      debug: lastPumpDebug,
     };
   }
 
   try {
     const fetch = (await import('node-fetch')).default;
 
-    const res = await fetch(PUMPFUN_COIN_URL, {
+    const res = await fetch(PUMPFUN_CURRENTLY_LIVE_API, {
       method: 'GET',
       headers: {
-        // some CDNs behave better with a UA
+        Accept: 'application/json',
+        Origin: 'https://pump.fun',
+        Referer: 'https://pump.fun/',
         'User-Agent':
           'Mozilla/5.0 (compatible; CRYPTOCARDS-Bot/1.0; +https://cryptocards.fun)',
-        Accept: 'text/html,*/*',
       },
     });
 
-    const html = await res.text().catch(() => '');
-    const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
-    const title = titleMatch ? String(titleMatch[1]).trim() : null;
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '');
+      throw new Error(`pumpfun currently-live status ${res.status} ${txt.slice(0, 120)}`);
+    }
 
-    // Primary signal (what Pump.fun uses)
-    const isLive =
-      typeof title === 'string' &&
-      title.toUpperCase().includes('LIVESTREAMING (LIVE)');
+    const body = await res.json().catch(() => null);
 
-    lastPumpLive = !!isLive;
-    lastPumpTitle = title;
+    // Body is typically an array of coin objects; we just need to know if our mint is in it.
+    const mint = String(CRYPTOCARDS_MINT || '').trim();
+    const mLower = mint.toLowerCase();
+
+    let live = false;
+    let count = 0;
+
+    if (Array.isArray(body)) {
+      count = body.length;
+
+      live = body.some((c) => {
+        const m =
+          c?.mint ||
+          c?.mintAddress ||
+          c?.address ||
+          c?.tokenMint ||
+          null;
+        return (
+          typeof m === 'string' &&
+          m.toLowerCase() === mLower
+        );
+      });
+    } else if (body && Array.isArray(body?.coins)) {
+      count = body.coins.length;
+
+      live = body.coins.some((c) => {
+        const m =
+          c?.mint ||
+          c?.mintAddress ||
+          c?.address ||
+          c?.tokenMint ||
+          null;
+        return (
+          typeof m === 'string' &&
+          m.toLowerCase() === mLower
+        );
+      });
+    }
+
+    lastPumpLive = !!live;
     lastPumpLiveCheckedAt = now;
+    lastPumpDebug = {
+      source: 'frontend-api-v3',
+      endpoint: PUMPFUN_CURRENTLY_LIVE_API,
+      response_is_array: Array.isArray(body),
+      count,
+    };
 
     return {
       ok: true,
-      live: !!isLive,
+      live: !!live,
       url: PUMPFUN_COIN_URL,
       checked_at: new Date(now).toISOString(),
-      title,
       cached: false,
-      status: res.status,
+      debug: lastPumpDebug,
     };
   } catch (err) {
     console.error('[PUMPFUN] getPumpfunLiveStatus error:', err);
@@ -2194,9 +2236,9 @@ async function getPumpfunLiveStatus() {
         live: lastPumpLive,
         url: PUMPFUN_COIN_URL,
         checked_at: new Date(lastPumpLiveCheckedAt).toISOString(),
-        title: lastPumpTitle,
         cached: true,
         warning: 'pumpfun_fetch_failed_using_cached',
+        debug: lastPumpDebug,
       };
     }
 
