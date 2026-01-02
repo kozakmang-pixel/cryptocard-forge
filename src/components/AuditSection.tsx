@@ -24,7 +24,6 @@ interface CardStatus {
   claimed: boolean;
   refunded: boolean;
   token_amount: number | null;
-  token_units?: number | null; // REAL token units snapshot (set by backend)
   amount_fiat: number | null;
   currency: string | null;
   deposit_address: string | null;
@@ -68,7 +67,6 @@ interface SyncFundingResponse {
   locked: boolean;
   hasDeposit: boolean;
   token_portfolio?: TokenPortfolio;
-  token_units?: number | null;
 }
 
 type TimelineType = 'created' | 'funded' | 'locked' | 'claimed' | 'refunded';
@@ -187,6 +185,17 @@ export function AuditSection() {
           const fund = (await res.json()) as SyncFundingResponse;
           setFunding(fund);
         }
+
+        // If DB didn't have token_mint but sync returned a portfolio, use that mint for symbol lookup
+        if (!mintFromStatus) {
+          const portfolioMint =
+            fund?.token_portfolio?.tokens && fund.token_portfolio.tokens[0]
+              ? String((fund.token_portfolio.tokens[0] as any).mint || '').trim()
+              : '';
+          if (portfolioMint) {
+            setTokenMint(portfolioMint);
+          }
+        }
       } catch (err) {
         console.error('AuditSection: failed to sync card funding', err);
       }
@@ -215,6 +224,14 @@ export function AuditSection() {
   useEffect(() => {
     fetchSolPrice();
   }, []);
+
+
+  const formatAmount = (value: number, maxDecimals = 6) => {
+    const n = typeof value === 'number' && Number.isFinite(value) ? value : 0;
+    // Keep up to maxDecimals, but trim trailing zeros (and trailing dot)
+    const s = n.toFixed(maxDecimals);
+    return s.replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
+  };
 
   const derived = useMemo(() => {
     if (!card) {
@@ -283,37 +300,38 @@ export function AuditSection() {
     let tokenAmount = 0;
 
     if (isTokenCard) {
-      // ✅ Prefer the real token units snapshot stored in DB (persists after claim)
-      if (typeof card.token_units === 'number' && card.token_units > 0) {
-        tokenAmount = card.token_units;
-      } else {
-        // Next best: token units from token_portfolio at sync time
-        const mintStr =
-          typeof card.token_mint === 'string' ? card.token_mint.trim() : '';
+      // Prefer token units from token_portfolio (same as FundingPanel)
+      const wantedMint =
+          (tokenMint && tokenMint.trim().length > 0 ? tokenMint.trim() : '') ||
+          (typeof card.token_mint === 'string' ? card.token_mint.trim() : '');
 
-        const match =
-          mintStr && funding?.token_portfolio?.tokens
-            ? funding.token_portfolio.tokens.find((t) => t && t.mint === mintStr)
+        // Pick the portfolio entry that matches the card's mint (NOT just tokens[0])
+        const primary =
+          funding?.token_portfolio?.tokens && funding.token_portfolio.tokens.length > 0
+            ? funding.token_portfolio.tokens.find((t) => t && t.mint === wantedMint) ||
+              funding.token_portfolio.tokens[0]
             : null;
 
-        const primary =
-          match ||
-          (funding?.token_portfolio?.tokens && funding.token_portfolio.tokens[0]
-            ? funding.token_portfolio.tokens[0]
-            : null);
-
-        if (primary && typeof primary.amount_ui === 'number' && primary.amount_ui > 0) {
-          tokenAmount = primary.amount_ui;
-        } else {
-          // Do NOT fall back to card.token_amount for token cards — token_amount is SOL-equivalent in this backend.
-          tokenAmount = 0;
-        }
+      if (primary && typeof primary.amount_ui === 'number' && primary.amount_ui > 0) {
+        tokenAmount = primary.amount_ui;
+      } else if (
+        typeof card.token_amount === 'number' &&
+        card.token_amount > 0
+      ) {
+        // Fallback: DB value if we don't have portfolio detail
+        // (May be normalized SOL in some setups, but we still surface it as "token" amount.)
+        tokenAmount = card.token_amount;
+      } else {
+        tokenAmount = 0;
       }
     } else {
       // SOL-only card: "token" is just SOL
       if (solValue > 0) {
         tokenAmount = solValue;
-      } else if (typeof card.token_amount === 'number' && card.token_amount > 0) {
+      } else if (
+        typeof card.token_amount === 'number' &&
+        card.token_amount > 0
+      ) {
         tokenAmount = card.token_amount;
       } else {
         tokenAmount = 0;
@@ -388,7 +406,7 @@ export function AuditSection() {
       onChainAddress,
       tokenSymbol,
     };
-  }, [card, balance, funding, solPrice, tokenInfo, tokenSymbolOverride]);
+  }, [card, balance, funding, solPrice, tokenInfo, tokenSymbolOverride, tokenMint]);
 
   // Snapshot the first non-zero funding view while card is NOT claimed
   useEffect(() => {
@@ -422,11 +440,11 @@ export function AuditSection() {
       const parts: string[] = [];
 
       // Always show token amount
-      parts.push(`${formatUnits(view.tokenAmount)} ${view.tokenSymbol}`);
+      parts.push(`${formatAmount(view.tokenAmount)} ${view.tokenSymbol}`);
 
       // Show SOL-equivalent value when we have it
       if (view.solValue > 0) {
-        parts.push(`${formatUnits(view.solValue)} SOL`);
+        parts.push(`${formatAmount(view.solValue)} SOL`);
       }
 
       // Show fiat if we have it
@@ -437,27 +455,21 @@ export function AuditSection() {
       return `${prefix}: ${parts.join(' • ')}.`;
     };
 
-    const fundedView: AmountView =
-      fundingSnapshot ||
-      (typeof card.token_units === 'number' && card.token_units > 0
-        ? {
-            tokenAmount: card.token_units,
-            solValue: derived.solValue,
-            fiat: derived.fiat,
-            currency: derived.currency,
-            tokenSymbol: derived.tokenSymbol,
-          }
-        : {
-            tokenAmount: derived.tokenAmount,
-            solValue: derived.solValue,
-            fiat: derived.fiat,
-            currency: derived.currency,
-            tokenSymbol: derived.tokenSymbol,
-          });
+    const fundedView: AmountView = fundingSnapshot || {
+      tokenAmount: derived.tokenAmount,
+      solValue: derived.solValue,
+      fiat: derived.fiat,
+      currency: derived.currency,
+      tokenSymbol: derived.tokenSymbol,
+    };
 
-    // For claimed cards, we still want to display the REAL claimed token units.
-    // Prefer the same funded snapshot (or DB token_units) because the deposit wallet becomes empty after claim.
-    const claimedView: AmountView = fundedView;
+    const claimedView: AmountView = {
+      tokenAmount: derived.tokenAmount,
+      solValue: derived.solValue,
+      fiat: derived.fiat,
+      currency: derived.currency,
+      tokenSymbol: derived.tokenSymbol,
+    };
 
     // Created
     events.push({
@@ -677,14 +689,14 @@ export function AuditSection() {
                   Token amount
                 </div>
                 <div className="text-[10px] font-semibold">
-                  {formatUnits(derived.tokenAmount)} {derived.tokenSymbol}
+                  {formatAmount(derived.tokenAmount)} {derived.tokenSymbol}
                 </div>
 
                 <div className="mt-1 text-[8px] uppercase tracking-wide text-muted-foreground">
                   SOL value (total)
                 </div>
                 <div className="text-[10px] font-semibold">
-                  {formatUnits(derived.solValue)} SOL
+                  {formatAmount(derived.solValue)} SOL
                 </div>
 
                 <div className="mt-1 text-[8px] uppercase tracking-wide text-muted-foreground">
@@ -717,7 +729,7 @@ export function AuditSection() {
                 {balance ? (
                   <>
                     <span className="font-semibold">
-                      {formatUnits(balance.sol)} SOL
+                      {formatAmount(balance.sol)} SOL
                     </span>{' '}
                     ({balance.lamports} lamports)
                     {card.claimed && balance.sol === 0 && (
@@ -741,9 +753,9 @@ export function AuditSection() {
                     Card amount (snapshot)
                   </div>
                   <div className="text-[9px] font-semibold">
-                    {formatUnits(snapshotView.tokenAmount)} {snapshotView.tokenSymbol}
+                    {formatAmount(snapshotView.tokenAmount)} {snapshotView.tokenSymbol}
                     {snapshotView.solValue > 0 && (
-                      <> • {formatUnits(snapshotView.solValue)} SOL</>
+                      <> • {formatAmount(snapshotView.solValue)} SOL</>
                     )}
                     {snapshotView.fiat > 0 && (
                       <>
