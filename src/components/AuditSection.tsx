@@ -68,6 +68,7 @@ interface SyncFundingResponse {
   locked: boolean;
   hasDeposit: boolean;
   token_portfolio?: TokenPortfolio;
+  token_units?: number | null;
 }
 
 type TimelineType = 'created' | 'funded' | 'locked' | 'claimed' | 'refunded';
@@ -105,6 +106,18 @@ export function AuditSection() {
 
   // Snapshot of the funding values at the time we first detect non-zero amounts (pre-claim)
   const [fundingSnapshot, setFundingSnapshot] = useState<AmountView | null>(null);
+
+  const formatUnits = (value: number, maxDecimals = 6) => {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '0';
+    const abs = Math.abs(n);
+    // Show fewer decimals for larger numbers, but keep precision for small amounts.
+    const decimals = abs >= 1 ? Math.min(4, maxDecimals) : maxDecimals;
+    return n.toLocaleString(undefined, {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: decimals,
+    });
+  };
 
   const fetchSolPrice = async () => {
     try {
@@ -275,17 +288,24 @@ export function AuditSection() {
         tokenAmount = card.token_units;
       } else {
         // Next best: token units from token_portfolio at sync time
-        const primary =
-          funding?.token_portfolio?.tokens && funding.token_portfolio.tokens[0]
-            ? funding.token_portfolio.tokens[0]
+        const mintStr =
+          typeof card.token_mint === 'string' ? card.token_mint.trim() : '';
+
+        const match =
+          mintStr && funding?.token_portfolio?.tokens
+            ? funding.token_portfolio.tokens.find((t) => t && t.mint === mintStr)
             : null;
+
+        const primary =
+          match ||
+          (funding?.token_portfolio?.tokens && funding.token_portfolio.tokens[0]
+            ? funding.token_portfolio.tokens[0]
+            : null);
 
         if (primary && typeof primary.amount_ui === 'number' && primary.amount_ui > 0) {
           tokenAmount = primary.amount_ui;
-        } else if (!card.claimed && typeof card.token_amount === 'number' && card.token_amount > 0) {
-          // Legacy fallback ONLY pre-claim (token_amount may be SOL-equivalent in some setups)
-          tokenAmount = card.token_amount;
         } else {
+          // Do NOT fall back to card.token_amount for token cards — token_amount is SOL-equivalent in this backend.
           tokenAmount = 0;
         }
       }
@@ -301,7 +321,6 @@ export function AuditSection() {
     }
 
     // --- Fiat value ---
-
 
     const currency = card.currency || 'USD';
 
@@ -403,11 +422,11 @@ export function AuditSection() {
       const parts: string[] = [];
 
       // Always show token amount
-      parts.push(`${view.tokenAmount.toFixed(6)} ${view.tokenSymbol}`);
+      parts.push(`${formatUnits(view.tokenAmount)} ${view.tokenSymbol}`);
 
       // Show SOL-equivalent value when we have it
       if (view.solValue > 0) {
-        parts.push(`${view.solValue.toFixed(6)} SOL`);
+        parts.push(`${formatUnits(view.solValue)} SOL`);
       }
 
       // Show fiat if we have it
@@ -658,14 +677,14 @@ export function AuditSection() {
                   Token amount
                 </div>
                 <div className="text-[10px] font-semibold">
-                  {derived.tokenAmount.toFixed(6)} {derived.tokenSymbol}
+                  {formatUnits(derived.tokenAmount)} {derived.tokenSymbol}
                 </div>
 
                 <div className="mt-1 text-[8px] uppercase tracking-wide text-muted-foreground">
                   SOL value (total)
                 </div>
                 <div className="text-[10px] font-semibold">
-                  {derived.solValue.toFixed(6)} SOL
+                  {formatUnits(derived.solValue)} SOL
                 </div>
 
                 <div className="mt-1 text-[8px] uppercase tracking-wide text-muted-foreground">
@@ -698,7 +717,7 @@ export function AuditSection() {
                 {balance ? (
                   <>
                     <span className="font-semibold">
-                      {balance.sol.toFixed(6)} SOL
+                      {formatUnits(balance.sol)} SOL
                     </span>{' '}
                     ({balance.lamports} lamports)
                     {card.claimed && balance.sol === 0 && (
@@ -722,9 +741,9 @@ export function AuditSection() {
                     Card amount (snapshot)
                   </div>
                   <div className="text-[9px] font-semibold">
-                    {snapshotView.tokenAmount.toFixed(6)} {snapshotView.tokenSymbol}
+                    {formatUnits(snapshotView.tokenAmount)} {snapshotView.tokenSymbol}
                     {snapshotView.solValue > 0 && (
-                      <> • {snapshotView.solValue.toFixed(6)} SOL</>
+                      <> • {formatUnits(snapshotView.solValue)} SOL</>
                     )}
                     {snapshotView.fiat > 0 && (
                       <>
