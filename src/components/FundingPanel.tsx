@@ -182,7 +182,7 @@ const assetLabel = tokenSymbol || 'TOKEN';
     if (!cardId) return;
 
     const looksMissing =
-      !activeFundedAmount || fundedAmount === '0' || fundedAmount === '0.000000' || fundedAmount === '0.00';
+      !fundedAmount || fundedAmount === '0' || fundedAmount === '0.000000' || fundedAmount === '0.00';
 
     if (!activeFunded && !looksMissing) {
       setHydratedFromSnapshot(true);
