@@ -37,6 +37,40 @@ interface CardStatusResponse {
   currency: string | null;
 }
 
+const CC_AMOUNT_SNAPSHOT_KEY = 'cc_amount_snapshot_v1';
+
+type AmountSnapshot = {
+  tokenAmount?: string;
+  tokenSymbol?: string;
+  solValue?: string;
+  fiatValue?: string;
+  updatedAt: number;
+};
+
+const loadAmountSnapshot = (cardId: string): AmountSnapshot | null => {
+  try {
+    const raw = localStorage.getItem(CC_AMOUNT_SNAPSHOT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    return parsed[cardId] ?? null;
+  } catch {
+    return null;
+  }
+};
+
+const saveAmountSnapshot = (cardId: string, snap: AmountSnapshot) => {
+  try {
+    const raw = localStorage.getItem(CC_AMOUNT_SNAPSHOT_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    const next = { ...(parsed && typeof parsed === 'object' ? parsed : {}), [cardId]: snap };
+    localStorage.setItem(CC_AMOUNT_SNAPSHOT_KEY, JSON.stringify(next));
+  } catch {
+    // ignore
+  }
+};
+
+
 export function FundingPanel({
   cardId,
   cvv,
@@ -115,6 +149,41 @@ export function FundingPanel({
   );
 
   // initial load: pull any existing funded/claimed amounts from backend
+
+  const [hydratedFromSnapshot, setHydratedFromSnapshot] = useState(false);
+
+  // Hydrate last-known amounts after refresh so UI doesn't rely on 'Check on-chain funding' again
+  useEffect(() => {
+    if (hydratedFromSnapshot) return;
+    if (!cardId) return;
+
+    const looksMissing =
+      !fundedAmount || fundedAmount === '0' || fundedAmount === '0.000000' || fundedAmount === '0.00';
+
+    if (!funded && !looksMissing) {
+      setHydratedFromSnapshot(true);
+      return;
+    }
+
+    const snap = loadAmountSnapshot(cardId);
+    if (!snap) {
+      setHydratedFromSnapshot(true);
+      return;
+    }
+
+    const snapSol = snap.solValue ? Number(snap.solValue) : 0;
+    if (onFundingStatusChange) {
+      onFundingStatusChange(
+        funded || true,
+        Number.isFinite(snapSol) ? snapSol : 0,
+        snap.tokenAmount,
+        snap.tokenSymbol,
+        snap.fiatValue
+      );
+    }
+    setHydratedFromSnapshot(true);
+  }, [cardId, funded, fundedAmount, hydratedFromSnapshot, onFundingStatusChange]);
+
   useEffect(() => {
     const loadInitial = async () => {
       try {
@@ -312,6 +381,14 @@ export function FundingPanel({
       }
 
       if (onFundingStatusChange) {
+        // Persist last-known amounts so they survive refresh
+        saveAmountSnapshot(cardId, {
+          tokenAmount: primaryTokenAmount !== null ? primaryTokenAmount.toString() : undefined,
+          tokenSymbol: tokenSymbol || undefined,
+          solValue: finalSolValue.toFixed(6),
+          fiatValue: typeof usdVal === 'number' && usdVal > 0 ? usdVal.toFixed(2) : undefined,
+          updatedAt: Date.now(),
+        });
         onFundingStatusChange(isCardFunded, finalSolValue, primaryTokenAmount !== null ? primaryTokenAmount.toString() : undefined, tokenSymbol, typeof usdVal === 'number' && usdVal > 0 ? usdVal.toFixed(2) : undefined);
       }
 
