@@ -223,42 +223,41 @@ export default function Index() {
   };
 
   // Funding callback from FundingPanel → keep card preview in sync
-  // Funding callback from FundingPanel → keep card preview in sync
   const handleFundingStatusChange = useCallback(
     (
       isFunded: boolean,
       solAmount: number,
-      tokenAmountFromPanel?: number | null,
-      usdAmountFromPanel?: number | null
+      tokenAmountFromPanel?: number,
+      fiatAmountFromPanel?: number,
+      tokenSymbolFromPanel?: string
     ) => {
       setFunded(isFunded);
-      setCardData((prev) => {
-        if (!prev) return null;
+      setCardData((prev) =>
+        prev
+          ? {
+              ...prev,
+              funded: isFunded,
+              tokenSymbol: tokenSymbolFromPanel || prev.tokenSymbol,
+              // Keep the preview showing the actual token amount (not the SOL equivalent)
+              tokenAmount:
+                typeof tokenAmountFromPanel === 'number'
+                  ? tokenAmountFromPanel.toFixed(6)
+                  : prev.tokenAmount,
+              // Still store/display SOL + USD values for the funding summary
+              solValue: solAmount.toFixed(6),
+              fiatValue:
+                typeof fiatAmountFromPanel === 'number'
+                  ? fiatAmountFromPanel.toFixed(2)
+                  : solAmount > 0 && solPrice
+                    ? (solAmount * solPrice).toFixed(2)
+                    : prev.fiatValue,
+            }
+          : null
+      );
+    },
+    [solPrice]
+  );
 
-        const nextTokenAmount =
-          tokenAmountFromPanel !== undefined && tokenAmountFromPanel !== null
-            ? tokenAmountFromPanel
-            : !prev.tokenMint
-            ? solAmount
-            : parseFloat(prev.tokenAmount || '0');
-
-        const nextUsd =
-          usdAmountFromPanel !== undefined && usdAmountFromPanel !== null
-            ? usdAmountFromPanel
-            : solAmount > 0 && solPrice
-            ? solAmount * solPrice
-            : parseFloat(prev.fiatValue || '0');
-
-        return {
-          ...prev,
-          funded: isFunded,
-          tokenAmount: Number.isFinite(nextTokenAmount)
-            ? nextTokenAmount.toFixed(6)
-            : prev.tokenAmount,
-          solValue: solAmount.toFixed(6),
-          fiatValue: Number.isFinite(nextUsd) ? nextUsd.toFixed(2) : prev.fiatValue,
-        };
-      });
     },
     [solPrice]
   );
@@ -288,7 +287,7 @@ export default function Index() {
         image: selectedImage,
         tokenAddress,
         tokenSymbol: tokenSymbol || 'TOKEN',
-        tokenAmount: '0',
+        tokenAmount: '0.000000',
         message: message || 'Gift',
         font,
         hasExpiry,
@@ -462,7 +461,7 @@ export default function Index() {
                 depositAddress={cardData.depositAddress}
                 funded={funded}
                 locked={locked}
-                fundedAmount={funded ? cardData.tokenAmount : '0'}
+                fundedAmount={funded ? `${cardData.tokenAmount} ${cardData.tokenSymbol || tokenSymbol || 'TOKEN'}` : `0.000000 ${cardData.tokenSymbol || tokenSymbol || 'TOKEN'}`}
                 tokenSymbol={cardData.tokenSymbol || tokenSymbol}
                 onFundingStatusChange={handleFundingStatusChange}
               />
@@ -715,4 +714,4 @@ export default function Index() {
       />
     </div>
   );
-            : !prev.tokenAddress || prev.tokenSymbol === 'SOL'
+}
