@@ -360,7 +360,7 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
   };
 
   // Build preview CardData with correct amounts
-  const { cardData, previewTriple, previewSymbol || 'TOKEN', previewNumbers } = useMemo(() => {
+  const { cardData, previewTriple, previewSymbol, previewNumbers } = useMemo(() => {
     if (!pulledCard) return { cardData: null, previewTriple: null, previewSymbol: 'SOL', previewNumbers: null };
 
     const anyCard: any = pulledCard;
