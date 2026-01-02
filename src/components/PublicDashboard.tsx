@@ -277,16 +277,42 @@ function ActivityRow({
     >
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5">
-          <span
-            className={
-              'inline-flex items-center px-1.5 py-0.5 rounded-full text-[8px] font-semibold ' +
-              pillClassForType(displayType)
-            }
-          >
-            {labelForType(displayType).toUpperCase()}
-          </span>
-          <span className="text-[8px] text-muted-foreground">
-            {formatShortTime(evt.timestamp)}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {[
+              { type: 'CREATED' as ActivityType, active: true },
+              {
+                type: 'FUNDED' as ActivityType,
+                active: Boolean(cardStatus?.funded) || ['FUNDED', 'LOCKED', 'CLAIMED'].includes(displayType),
+              },
+              {
+                type: 'LOCKED' as ActivityType,
+                active: Boolean(cardStatus?.locked) || ['LOCKED', 'CLAIMED'].includes(displayType),
+              },
+              {
+                type: 'CLAIMED' as ActivityType,
+                active: Boolean(cardStatus?.claimed) || displayType === 'CLAIMED',
+              },
+              {
+                type: 'REFUNDED' as ActivityType,
+                active: Boolean(cardStatus?.refunded) || displayType === 'REFUNDED',
+              },
+            ].map((s) => (
+              <span
+                key={s.type}
+                className={
+                  'inline-flex items-center px-1.5 py-0.5 rounded-full text-[8px] font-semibold ' +
+                  (s.active
+                    ? pillClassForType(s.type)
+                    : 'bg-muted/40 text-muted-foreground border border-border/40 opacity-60')
+                }
+              >
+                {labelForType(s.type).toUpperCase()}
+              </span>
+            ))}
+            <span className="text-[8px] text-muted-foreground">
+              {formatShortTime(evt.timestamp)}
+            </span>
+          </div>
           </span>
         </div>
         <div className="flex items-center gap-1">
