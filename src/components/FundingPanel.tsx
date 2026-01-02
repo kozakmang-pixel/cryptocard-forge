@@ -23,7 +23,7 @@ interface FundingPanelProps {
   locked: boolean;
   fundedAmount: string;
   tokenSymbol: string;
-  onFundingStatusChange?: (isFunded: boolean, solAmount: number, tokenAmount?: number | null, usdAmount?: number | null) => void;
+  onFundingStatusChange?: (isFunded: boolean, solAmount: number, tokenAmount?: string, tokenSymbol?: string, fiatValue?: string) => void;
 }
 
 interface CardStatusResponse {
@@ -140,7 +140,7 @@ export function FundingPanel({
             setSolAmount(solLike);
 
             if (onFundingStatusChange) {
-              onFundingStatusChange(true, solLike, tokenAmount, fiatAmt);
+              onFundingStatusChange(true, solLike, undefined, tokenSymbol, fiatAmt !== null ? fiatAmt.toFixed(2) : undefined);
             }
           }
 
@@ -169,7 +169,7 @@ export function FundingPanel({
 
   // formatted display values (persist even after claim)
   const displaySol = solAmount !== null ? solAmount : 0;
-  const displayToken = tokenAmount !== null ? tokenAmount : 0;
+  const displayToken = tokenAmount !== null ? tokenAmount : displaySol;
   const displayUsd =
     usdAmount !== null
       ? usdAmount
@@ -312,7 +312,7 @@ export function FundingPanel({
       }
 
       if (onFundingStatusChange) {
-        onFundingStatusChange(isCardFunded, finalSolValue, primaryTokenAmount, usdVal);
+        onFundingStatusChange(isCardFunded, finalSolValue, primaryTokenAmount !== null ? primaryTokenAmount.toString() : undefined, tokenSymbol, typeof usdVal === 'number' && usdVal > 0 ? usdVal.toFixed(2) : undefined);
       }
 
       if (isCardFunded) {
