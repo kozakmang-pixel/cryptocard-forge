@@ -223,24 +223,45 @@ export default function Index() {
   };
 
   // Funding callback from FundingPanel → keep card preview in sync
+  // Funding callback from FundingPanel → keep card preview in sync
   const handleFundingStatusChange = useCallback(
-    (isFunded: boolean, solAmount: number, tokenSymbolFromPanel?: string) => {
+    (
+      isFunded: boolean,
+      solAmount: number,
+      tokenAmountFromPanel?: number | null,
+      usdAmountFromPanel?: number | null
+    ) => {
       setFunded(isFunded);
-      setCardData((prev) =>
-        prev
-          ? {
-              ...prev,
-              funded: isFunded,
-              tokenSymbol: tokenSymbolFromPanel || prev.tokenSymbol,
-              tokenAmount: solAmount.toString(),
-              solValue: solAmount.toFixed(6),
-              fiatValue:
-                solAmount > 0 && solPrice
-                  ? (solAmount * solPrice).toFixed(2)
-                  : prev.fiatValue,
-            }
-          : null
-      );
+      setCardData((prev) => {
+        if (!prev) return null;
+
+        const nextTokenAmount =
+          tokenAmountFromPanel !== undefined && tokenAmountFromPanel !== null
+            ? tokenAmountFromPanel
+            : !prev.tokenMint
+            ? solAmount
+            : parseFloat(prev.tokenAmount || '0');
+
+        const nextUsd =
+          usdAmountFromPanel !== undefined && usdAmountFromPanel !== null
+            ? usdAmountFromPanel
+            : solAmount > 0 && solPrice
+            ? solAmount * solPrice
+            : parseFloat(prev.fiatValue || '0');
+
+        return {
+          ...prev,
+          funded: isFunded,
+          tokenAmount: Number.isFinite(nextTokenAmount)
+            ? nextTokenAmount.toFixed(6)
+            : prev.tokenAmount,
+          solValue: solAmount.toFixed(6),
+          fiatValue: Number.isFinite(nextUsd) ? nextUsd.toFixed(2) : prev.fiatValue,
+        };
+      });
+    },
+    [solPrice]
+  );
     },
     [solPrice]
   );
@@ -444,7 +465,7 @@ export default function Index() {
                 depositAddress={cardData.depositAddress}
                 funded={funded}
                 locked={locked}
-                fundedAmount={funded ? `${cardData.solValue} SOL` : '0 SOL'}
+                fundedAmount={funded ? cardData.tokenAmount : '0'}
                 tokenSymbol={cardData.tokenSymbol || tokenSymbol}
                 onFundingStatusChange={handleFundingStatusChange}
               />
@@ -697,4 +718,4 @@ export default function Index() {
       />
     </div>
   );
-}
+            : !prev.tokenAddress || prev.tokenSymbol === 'SOL'
