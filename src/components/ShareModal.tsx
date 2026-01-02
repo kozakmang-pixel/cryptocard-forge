@@ -130,10 +130,10 @@ export function ShareModal({ open, onOpenChange, cardId }: ShareModalProps) {
           </div>
 
           {/* ⚠ Critical safety warning you asked for */}
-          <div className="border border-destructive/40 bg-destructive/10 rounded-md p-2 text-[9px] text-destructive font-semibold leading-snug">
-            ⚠ IMPORTANT: Save the CARD ID and CVV somewhere safe before you send this card.
-            If the recipient loses the CVV or Card ID, the funds on this CRYPTOCARD may be
-            permanently lost.
+          <div className="border-2 border-destructive/60 bg-destructive/10 rounded-lg p-4 text-[12px] text-destructive font-bold leading-snug">
+            <div className="text-[14px] tracking-wide">⚠ IMPORTANT</div>
+            <div className="mt-1 font-semibold text-[12px]">Save the <span className="underline">CARD ID</span> and <span className="underline">CVV</span> somewhere safe before you send this card.</div>
+            <div className="mt-1 font-medium text-[11px] opacity-90">If the recipient loses the CVV or Card ID, the funds on this CRYPTOCARD may be permanently lost.</div>
           </div>
 
           <Button
