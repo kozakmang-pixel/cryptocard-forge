@@ -1,5 +1,5 @@
 // src/components/ClaimModal.tsx
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, Component, type ReactNode } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -9,6 +9,33 @@ import { CryptoCard } from './CryptoCard';
 import { useLanguage } from '@/lib/languageStore';
 import { apiService, type CardStatusResponse } from '@/services/api';
 import type { CardData } from '@/types/card';
+
+class PreviewErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(err: unknown) {
+    console.error('ClaimModal preview render crashed:', err);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="rounded-lg border border-border/40 bg-background/40 p-3 text-sm text-muted-foreground">
+          Preview unavailable (display error). You can still claim this card.
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 
 // CRYPTOCARDS mint (your CA from header)
 const CRYPTOCARDS_MINT = 'AuxRtUDw7KhWZxbMcfqPoB1cLcvq44Sw83UHRd3Spump';
@@ -208,11 +235,14 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
 
     try {
       const status = await apiService.getCardStatus(trimmed);
+      if (!status || typeof status !== 'object' || !(status as any).public_id) {
+        throw new Error('CRYPTOCARD not found. Check the Card ID.');
+      }
 
-      if (!status.funded) {
+      if (!(status as any).funded) {
         toast.error(notFundedMessage);
       }
-      if (!status.locked) {
+      if (!(status as any).locked) {
         toast.error(t('claim.notLocked') ?? 'This CRYPTOCARD must be locked before claiming.');
       }
 
@@ -518,6 +548,7 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
 
           {/* Preview section */}
           {pulledCard && cardData && previewTriple && (
+            <PreviewErrorBoundary>
             <div className="space-y-2 border border-border/40 rounded-lg p-2 bg-background/40">
               <p className="text-[9px] font-semibold uppercase text-muted-foreground mb-1">
                 {t('claim.preview')}
@@ -567,6 +598,7 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
                 </div>
               </div>
             </div>
+            </PreviewErrorBoundary>
           )}
 
           {/* Wallet + CVV fields */}
