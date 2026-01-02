@@ -24,6 +24,7 @@ interface CardStatus {
   claimed: boolean;
   refunded: boolean;
   token_amount: number | null;
+  token_units?: number | null; // REAL token units snapshot (persisted by backend)
   amount_fiat: number | null;
   currency: string | null;
   deposit_address: string | null;
@@ -185,17 +186,6 @@ export function AuditSection() {
           const fund = (await res.json()) as SyncFundingResponse;
           setFunding(fund);
         }
-
-        // If DB didn't have token_mint but sync returned a portfolio, use that mint for symbol lookup
-        if (!mintFromStatus) {
-          const portfolioMint =
-            fund?.token_portfolio?.tokens && fund.token_portfolio.tokens[0]
-              ? String((fund.token_portfolio.tokens[0] as any).mint || '').trim()
-              : '';
-          if (portfolioMint) {
-            setTokenMint(portfolioMint);
-          }
-        }
       } catch (err) {
         console.error('AuditSection: failed to sync card funding', err);
       }
@@ -300,6 +290,10 @@ export function AuditSection() {
     let tokenAmount = 0;
 
     if (isTokenCard) {
+      // ✅ Prefer the real token units snapshot stored in DB (persists after claim)
+      if (typeof card.token_units === 'number' && card.token_units > 0) {
+        tokenAmount = card.token_units;
+      } else {
       // Prefer token units from token_portfolio (same as FundingPanel)
       const wantedMint =
           (tokenMint && tokenMint.trim().length > 0 ? tokenMint.trim() : '') ||
@@ -314,15 +308,11 @@ export function AuditSection() {
 
       if (primary && typeof primary.amount_ui === 'number' && primary.amount_ui > 0) {
         tokenAmount = primary.amount_ui;
-      } else if (
-        typeof card.token_amount === 'number' &&
-        card.token_amount > 0
-      ) {
-        // Fallback: DB value if we don't have portfolio detail
-        // (May be normalized SOL in some setups, but we still surface it as "token" amount.)
-        tokenAmount = card.token_amount;
       } else {
+        // IMPORTANT: never use card.token_amount as token *units* for token cards.
+        // card.token_amount is a SOL-equivalent snapshot used for value math.
         tokenAmount = 0;
+      }
       }
     } else {
       // SOL-only card: "token" is just SOL
