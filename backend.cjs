@@ -460,6 +460,47 @@ app.use(express.json());
 const distPath = path.join(__dirname, 'dist');
 app.use(express.static(distPath));
 
+/**
+ * ✅ Pump.fun LIVE status proxy
+ * Browser can't fetch pump.fun due to CORS; backend checks it server-side.
+ * Returns: { live: true/false/null, url }
+ */
+app.get('/pumpfun-live', async (_req, res) => {
+  try {
+    const mint = CRYPTOCARDS_MINT;
+    const url = `https://pump.fun/coin/${mint}`;
+
+    const fetch = (await import('node-fetch')).default;
+
+    const r = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36',
+        Accept: 'text/html',
+      },
+    });
+
+    if (!r.ok) {
+      return res.status(200).json({ live: null, url });
+    }
+
+    const html = await r.text();
+
+    // Heuristic detection (Pump.fun can change structure)
+    const live =
+      /"isLive"\s*:\s*true/i.test(html) ||
+      /"live"\s*:\s*true/i.test(html) ||
+      /live\s*now/i.test(html) ||
+      /stream\s*is\s*live/i.test(html);
+
+    return res.status(200).json({ live: !!live, url });
+  } catch (err) {
+    console.error('Error in /pumpfun-live:', err);
+    return res.status(200).json({ live: null, url: null });
+  }
+});
+
 // Utility hash helper
 function sha256(str) {
   return crypto.createHash('sha256').update(str).digest('hex');
