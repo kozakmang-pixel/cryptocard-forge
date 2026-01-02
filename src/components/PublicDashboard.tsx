@@ -47,6 +47,22 @@ interface SolPriceResponse {
   sol_price_usd?: number;
 }
 
+// Minimal card status shape for public dashboard enrichment
+interface CardStatusLite {
+  token_mint?: string | null;
+  token_symbol?: string | null;
+  token_units?: number | null;
+  token_amount?: number | null; // stored as SOL-equivalent snapshot
+  amount_fiat?: number | null;
+  currency?: string | null;
+  funded?: boolean;
+  locked?: boolean;
+  claimed?: boolean;
+  refunded?: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
 function formatDateTime(iso?: string | null) {
   if (!iso) return '-';
   const d = new Date(iso);
@@ -103,22 +119,18 @@ function ActivityRow({
       (evt as any).symbol.trim()) ||
     null;
 
-  // Keep these as stable values (no live syncing that would mutate history)
-  const [resolvedMint] = useState<string>(initialMint);
-  const [symbolOverride] = useState<string | null>(initialSymbol);
+  // Resolved token identity for this card (mint + symbol)
+  const [resolvedMint, setResolvedMint] = useState<string>(initialMint);
+  const [symbolOverride, setSymbolOverride] = useState<string | null>(initialSymbol);
 
-  // If we don't have a mint or symbol yet, load card status to discover token_mint / symbol
+  // Enriched DB snapshot (persists through all states)
+  const [cardStatus, setCardStatus] = useState<CardStatusLite | null>(null);
+
+  // Load card status so token name + token units persist even after claim.
   useEffect(() => {
     let cancelled = false;
 
-    const maybeFetchCardStatus = async () => {
-      if (
-        (resolvedMint && resolvedMint.length > 0) ||
-        (symbolOverride && symbolOverride.length > 0)
-      ) {
-        return;
-      }
-
+    const fetchCardStatus = async () => {
       try {
         const res = await fetch(
           `/card-status/${encodeURIComponent(evt.card_id)}`
@@ -127,9 +139,34 @@ function ActivityRow({
         const data = await res.json();
         if (cancelled || !data) return;
 
-        // NOTE:
-        // We intentionally do NOT change token_amount / fiat / sol here.
-        // This request is only for discovering token metadata if missing.
+        const next: CardStatusLite = {
+          token_mint: data.token_mint ?? null,
+          token_symbol: data.token_symbol ?? null,
+          token_units: typeof data.token_units === 'number' ? data.token_units : null,
+          token_amount: typeof data.token_amount === 'number' ? data.token_amount : null,
+          amount_fiat: typeof data.amount_fiat === 'number' ? data.amount_fiat : null,
+          currency: data.currency ?? null,
+          funded: !!data.funded,
+          locked: !!data.locked,
+          claimed: !!data.claimed,
+          refunded: !!data.refunded,
+          created_at: data.created_at ?? null,
+          updated_at: data.updated_at ?? null,
+        };
+
+        setCardStatus(next);
+
+        // Discover token identity from DB if missing
+        if (!resolvedMint && typeof next.token_mint === 'string' && next.token_mint.trim()) {
+          setResolvedMint(next.token_mint.trim());
+        }
+        if (
+          !symbolOverride &&
+          typeof next.token_symbol === 'string' &&
+          next.token_symbol.trim()
+        ) {
+          setSymbolOverride(next.token_symbol.trim());
+        }
       } catch (err) {
         console.error(
           'ActivityRow: failed to fetch card status for',
@@ -139,7 +176,7 @@ function ActivityRow({
       }
     };
 
-    maybeFetchCardStatus();
+    fetchCardStatus();
 
     return () => {
       cancelled = true;
@@ -147,41 +184,69 @@ function ActivityRow({
   }, [evt.card_id, resolvedMint, symbolOverride]);
 
   // Look up token info from mint (if present / discovered)
-  const lookupMint = resolvedMint || '';
+  const effectiveMint =
+    (cardStatus?.token_mint && cardStatus.token_mint.trim().length > 0
+      ? cardStatus.token_mint.trim()
+      : '') || resolvedMint || '';
+
+  const lookupMint = effectiveMint;
   const { tokenInfo } = useTokenLookup(lookupMint);
 
-  // --- IMPORTANT: Use historical snapshot from the event itself ---
-  // SOL amount: prefer explicit sol_amount, then token_amount, else 0
-  const sol =
+  const isTokenCard = !!(effectiveMint && effectiveMint.length > 0);
+
+  // --- Prefer DB snapshot (persists) for SOL value ---
+  // token_amount in DB is stored as SOL-equivalent snapshot after funding sync.
+  const solFromDb =
+    cardStatus && typeof cardStatus.token_amount === 'number' && cardStatus.token_amount > 0
+      ? cardStatus.token_amount
+      : 0;
+
+  // Fallback to event snapshot if DB isn't populated yet
+  const solFromEvent =
     typeof evt.sol_amount === 'number' && evt.sol_amount > 0
       ? evt.sol_amount
       : typeof evt.token_amount === 'number' && evt.token_amount > 0
       ? evt.token_amount
       : 0;
 
-  // Token amount: prefer explicit token_amount, else mirror SOL amount
-  const tokenAmount =
-    typeof evt.token_amount === 'number' && evt.token_amount > 0
-      ? evt.token_amount
-      : sol;
+  const sol = solFromDb > 0 ? solFromDb : solFromEvent;
+
+  // --- Token units (REAL units) ---
+  // For token cards, always prefer token_units from DB.
+  // For SOL-only cards, token units == SOL.
+  const tokenAmount = isTokenCard
+    ? cardStatus && typeof cardStatus.token_units === 'number' && cardStatus.token_units > 0
+      ? cardStatus.token_units
+      : 0
+    : sol;
 
   const price = solPrice && solPrice > 0 ? solPrice : null;
 
-  // Fiat: prefer stored fiat_value, else derive from current SOL price
+  // Fiat: prefer DB amount_fiat, else event fiat, else derive from SOL price
+  const fiatFromDb =
+    cardStatus && typeof cardStatus.amount_fiat === 'number' && cardStatus.amount_fiat > 0
+      ? cardStatus.amount_fiat
+      : 0;
+
+  const fiatFromEvent =
+    typeof evt.fiat_value === 'number' && evt.fiat_value > 0 ? evt.fiat_value : 0;
+
   const fiat =
-    typeof evt.fiat_value === 'number' && evt.fiat_value > 0
-      ? evt.fiat_value
+    fiatFromDb > 0
+      ? fiatFromDb
+      : fiatFromEvent > 0
+      ? fiatFromEvent
       : price && sol > 0
       ? sol * price
       : 0;
 
-  const currency = evt.currency || 'USD';
+  const currency = (cardStatus?.currency || evt.currency || 'USD') as string;
 
   // Prefer explicit symbol override, then event symbol, then lookup, then SOL/TOKEN fallback
   const rawSymbol =
     symbolOverride ||
-    (evt.token_symbol && evt.token_symbol.trim().length > 0
-      ? evt.token_symbol.trim()
+    (cardStatus?.token_symbol && cardStatus.token_symbol.trim().length > 0
+      ? cardStatus.token_symbol.trim()
       : null) ||
     (tokenInfo?.symbol && tokenInfo.symbol.trim().length > 0
       ? tokenInfo.symbol.trim()
@@ -194,6 +259,17 @@ function ActivityRow({
       ? 'SOL'
       : 'TOKEN';
 
+  // Prefer DB flags for display type (one row per card should reflect latest state)
+  const displayType: ActivityType = cardStatus?.claimed
+    ? 'CLAIMED'
+    : cardStatus?.locked
+    ? 'LOCKED'
+    : cardStatus?.funded
+    ? 'FUNDED'
+    : cardStatus?.refunded
+    ? 'REFUNDED'
+    : evt.type;
+
   return (
     <div
       key={evt.id || `${evt.card_id}-${evt.timestamp}-${idx}`}
@@ -204,10 +280,10 @@ function ActivityRow({
           <span
             className={
               'inline-flex items-center px-1.5 py-0.5 rounded-full text-[8px] font-semibold ' +
-              pillClassForType(evt.type)
+              pillClassForType(displayType)
             }
           >
-            {labelForType(evt.type).toUpperCase()}
+            {labelForType(displayType).toUpperCase()}
           </span>
           <span className="text-[8px] text-muted-foreground">
             {formatShortTime(evt.timestamp)}
@@ -432,13 +508,28 @@ export function PublicDashboard() {
     };
   }, [metrics, solPrice]);
 
+  // One row per card: keep only the most-recent event per card_id
   const topTenEvents = useMemo(() => {
     if (!activity || activity.length === 0) return [];
-    const sorted = [...activity].sort((a, b) => {
+
+    const latestByCard = new Map<string, PublicActivityEvent>();
+    for (const evt of activity) {
+      const existing = latestByCard.get(evt.card_id);
+      if (!existing) {
+        latestByCard.set(evt.card_id, evt);
+        continue;
+      }
+      const te = new Date(existing.timestamp).getTime();
+      const tn = new Date(evt.timestamp).getTime();
+      if (tn >= te) latestByCard.set(evt.card_id, evt);
+    }
+
+    const sorted = Array.from(latestByCard.values()).sort((a, b) => {
       const ta = new Date(a.timestamp).getTime();
       const tb = new Date(b.timestamp).getTime();
       return tb - ta; // newest first
     });
+
     return sorted.slice(0, 10);
   }, [activity]);
 
