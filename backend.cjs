@@ -28,6 +28,16 @@ const CRYPTOCARDS_MINT =
   process.env.CRYPTOCARDS_MINT ||
   'AuxRtUDw7KhWZxbMcfqPoB1cLcvq44Sw83UHRd3Spump';
 
+// Pump.fun API base (used for LIVE status on the PriceBanner)
+// NOTE: pump.fun frontend endpoints can change; keep this as a single config value.
+const PUMPFUN_API_BASE =
+  process.env.PUMPFUN_API_BASE || 'https://frontend-api-v3.pump.fun';
+
+// cache TTL for pump LIVE checks (15s)
+const PUMPFUN_LIVE_TTL_MS = 15_000;
+let lastPumpLive = null;
+let lastPumpLiveFetchedAt = 0;
+
 // Burn threshold (in SOL) for dashboard / metrics (separate from worker's THRESHOLD_SOL)
 const BURN_THRESHOLD_SOL = Number(
   process.env.BURN_THRESHOLD_SOL || '0.02'
@@ -203,6 +213,69 @@ async function getSolPriceUsd() {
   lastSolPriceUsd = FALLBACK_SOL_PRICE_USD;
   lastSolPriceFetchedAt = now;
   return lastSolPriceUsd;
+}
+
+
+/**
+ * Check if CRYPTOCARDS is currently LIVE on pump.fun.
+ * Uses pump.fun frontend API v3: GET /coins/currently-live
+ * Returns: { live: boolean|null, count: number, cached: boolean }
+ */
+async function getPumpFunLiveStatus() {
+  const now = Date.now();
+  if (lastPumpLive !== null && now - lastPumpLiveFetchedAt < PUMPFUN_LIVE_TTL_MS) {
+    return { live: lastPumpLive, count: 0, cached: true };
+  }
+
+  try {
+    const fetch = (await import('node-fetch')).default;
+    const base = String(PUMPFUN_API_BASE || '').replace(/\/+$/, '');
+    const url = `${base}/coins/currently-live`;
+
+    const res = await fetch(url, {
+      headers: {
+        'accept': 'application/json',
+        'user-agent': 'cryptocards.fun',
+      },
+    });
+
+    if (!res.ok) {
+      console.error('getPumpFunLiveStatus error: status', res.status);
+      lastPumpLive = null;
+      lastPumpLiveFetchedAt = now;
+      return { live: null, count: 0, cached: false };
+    }
+
+    const body = await res.json().catch(() => null);
+
+    const list = Array.isArray(body)
+      ? body
+      : Array.isArray(body?.coins)
+      ? body.coins
+      : Array.isArray(body?.data)
+      ? body.data
+      : [];
+
+    const target = String(CRYPTOCARDS_MINT || '').trim();
+    const live =
+      !!target &&
+      Array.isArray(list) &&
+      list.some((c) => {
+        const mint =
+          (c && (c.mint || c.tokenMint || c.address || c.mintAddress)) || '';
+        return String(mint).trim() === target;
+      });
+
+    lastPumpLive = live;
+    lastPumpLiveFetchedAt = now;
+
+    return { live, count: Array.isArray(list) ? list.length : 0, cached: false };
+  } catch (err) {
+    console.error('getPumpFunLiveStatus exception:', err?.message || err);
+    lastPumpLive = null;
+    lastPumpLiveFetchedAt = now;
+    return { live: null, count: 0, cached: false };
+  }
 }
 
 /**
@@ -2137,6 +2210,31 @@ app.post('/claim-card', async (req, res) => {
 });
 
 // ----- PUBLIC SOL PRICE + METRICS + ACTIVITY FOR DASHBOARD -----
+
+
+// Pump.fun LIVE status endpoint for PriceBanner (/pump-live)
+app.get('/pump-live', async (_req, res) => {
+  try {
+    const status = await getPumpFunLiveStatus();
+    res.json({
+      mint: CRYPTOCARDS_MINT,
+      live: status.live,
+      cached: status.cached,
+      source_count: status.count,
+      checked_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('Error in /pump-live:', err);
+    // Keep shape stable for frontend: live is null when unknown
+    res.json({
+      mint: CRYPTOCARDS_MINT,
+      live: null,
+      cached: false,
+      source_count: 0,
+      checked_at: new Date().toISOString(),
+    });
+  }
+});
 
 // SOL price endpoint used by PublicDashboard
 app.get('/sol-price', async (_req, res) => {
