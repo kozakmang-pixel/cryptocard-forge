@@ -366,8 +366,8 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
   };
 
   // Build preview CardData with correct amounts
-  const { cardData, previewTriple, previewSymbol } = useMemo(() => {
-    if (!pulledCard) return { cardData: null, previewTriple: null, previewSymbol: 'SOL' };
+  const { cardData, previewTriple, previewSymbol, snapshotTriple, snapshotSymbol } = useMemo(() => {
+    if (!pulledCard) return { cardData: null, previewTriple: null, previewSymbol: 'SOL', snapshotTriple: null, snapshotSymbol: 'SOL' };
 
     const anyCard: any = pulledCard;
     const portfolio = funding?.token_portfolio;
@@ -412,13 +412,27 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
     
     // Persist / restore funded amounts so claimed cards still display original values
     const snap = getSnapshot(pulledCard.public_id);
+    const isClaimed = !!pulledCard.claimed;
+
     const hasComputedValue =
       (tokenAmount && tokenAmount > 0) || (usdAmount && usdAmount > 0) || (solAmount && solAmount > 0);
 
-    const displayTokenAmount = hasComputedValue ? tokenAmount : (snap?.tokenAmount ?? tokenAmount);
-    const displayTokenSymbol = hasComputedValue ? tokenSymbol : (snap?.tokenSymbol ?? tokenSymbol);
-    const displaySolAmount = hasComputedValue ? solAmount : (snap?.solAmount ?? solAmount);
-    const displayUsdAmount = hasComputedValue ? usdAmount : (snap?.usdAmount ?? usdAmount);
+    // On-chain display: if claimed, it should read 0 (no funds). Otherwise, use computed values,
+    // and fall back to snapshot only when we truly have no computed value yet.
+    const onChainTokenAmount = isClaimed ? 0 : (hasComputedValue ? tokenAmount : (snap?.tokenAmount ?? tokenAmount));
+    const onChainTokenSymbol = (snap?.tokenSymbol ?? tokenSymbol) || 'TOKEN';
+    const onChainSolAmount = isClaimed ? 0 : (hasComputedValue ? solAmount : (snap?.solAmount ?? solAmount));
+    const onChainUsdAmount = isClaimed ? 0 : (hasComputedValue ? usdAmount : (snap?.usdAmount ?? usdAmount));
+
+    // Snapshot (pre-claim) display for transparency
+    const snapshotTriple = snap
+      ? {
+          tokenAmount: snap.tokenAmount ?? 0,
+          solAmount: snap.solAmount ?? 0,
+          usdAmount: snap.usdAmount ?? 0,
+        }
+      : null;
+    const snapshotSymbol = snap?.tokenSymbol ?? onChainTokenSymbol;
 
     if (hasComputedValue) {
       saveSnapshot(pulledCard.public_id, {
@@ -437,8 +451,8 @@ const createdAt: string =
       depositAddress: anyCard.deposit_address || '',
       image: anyCard.template_url || '',
       tokenAddress: anyCard.token_mint || '',
-      tokenSymbol: displayTokenSymbol,
-      tokenAmount: toNumber(displayTokenAmount).toFixed(9),
+      tokenSymbol: onChainTokenSymbol,
+      tokenAmount: toNumber(onChainTokenAmount).toFixed(9),
       message: anyCard.message || 'Gift',
       font: anyCard.font || 'Inter',
       hasExpiry: !!pulledCard.expires_at,
@@ -446,19 +460,21 @@ const createdAt: string =
       created: createdAt,
       locked: !!pulledCard.locked,
       funded: !!pulledCard.funded,
-      fiatValue: toNumber(displayUsdAmount).toFixed(2),
-      solValue: toNumber(displaySolAmount).toFixed(6),
+      fiatValue: toNumber(onChainUsdAmount).toFixed(2),
+      solValue: toNumber(onChainSolAmount).toFixed(6),
       step: 3,
     };
 
     return {
       cardData,
       previewTriple: {
-        tokenAmount: displayTokenAmount,
-        solAmount: displaySolAmount,
-        usdAmount: displayUsdAmount,
+        tokenAmount: onChainTokenAmount,
+        solAmount: onChainSolAmount,
+        usdAmount: onChainUsdAmount,
       },
-      previewSymbol: displayTokenSymbol,
+      previewSymbol: onChainTokenSymbol,
+      snapshotTriple,
+      snapshotSymbol,
     };
   }, [pulledCard, funding, solPriceUsd]);
 
@@ -554,6 +570,18 @@ const createdAt: string =
                       previewTriple.usdAmount
                     )}
                   </span>
+
+                  {pulledCard.claimed && snapshotTriple && (
+                    <div className="mt-1 text-[10px] text-muted-foreground">
+                      <span className="font-semibold text-foreground">Snapshot (pre-claim): </span>
+                      {renderAmountTriple(
+                        snapshotTriple.tokenAmount,
+                        snapshotSymbol || previewSymbol,
+                        snapshotTriple.solAmount,
+                        snapshotTriple.usdAmount
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
