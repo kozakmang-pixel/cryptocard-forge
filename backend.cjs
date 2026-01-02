@@ -1648,7 +1648,7 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
     const { data: card, error } = await supabase
       .from('cards')
       .select(
-        'deposit_address, funded, locked, token_amount, token_units, token_mint, token_symbol, currency, amount_fiat'
+        'deposit_address, funded, locked, token_amount, currency, amount_fiat'
       )
       .eq('public_id', publicId)
       .maybeSingle();
@@ -1704,7 +1704,6 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
     // - We always update "funded" so the current on-chain state is reflected.
     // - We ONLY update token_amount when there is a non-zero totalSolValue.
     //   This prevents wiping out the historical snapshot (e.g. after claim).
-    // - For TOKEN cards, we ALSO persist the real token units (token_units) when we can detect them.
     const updates = {
       funded: isFunded,
       updated_at: new Date().toISOString(),
@@ -1712,28 +1711,6 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
 
     if (totalSolValue > 0) {
       updates.token_amount = totalSolValue;
-    }
-
-    // Persist token units snapshot (for token cards) so UI can show the real token amount after claim/reset.
-    // We only set this when:
-    // - card.token_mint exists, and
-    // - we find a matching token in the portfolio with amount_ui > 0
-    try {
-      if (card.token_mint && tokenValueResult?.tokens?.length) {
-        const match = tokenValueResult.tokens.find(
-          (t) => t && typeof t.mint === 'string' && t.mint === card.token_mint
-        );
-        const units =
-          match && typeof match.amount_ui === 'number' && match.amount_ui > 0
-            ? match.amount_ui
-            : null;
-
-        if (typeof units === 'number' && units > 0) {
-          updates.token_units = units;
-        }
-      }
-    } catch (unitsErr) {
-      console.error('Error persisting token_units snapshot in /sync-card-funding:', unitsErr);
     }
 
     const { error: updateError } = await supabase
@@ -2104,20 +2081,13 @@ app.post('/claim-card', async (req, res) => {
     // 9) Update card in DB: mark claimed, but DO NOT overwrite token_amount.
     const nowIso = new Date().toISOString();
 
-    const claimUpdates = {
-      claimed: true,
-      funded: false,
-      updated_at: nowIso,
-    };
-
-    // Persist real token units snapshot so UI can show correct token amount after claim/reset.
-    if (hasTokens && totalTokenUi && Number.isFinite(totalTokenUi) && totalTokenUi > 0) {
-      claimUpdates.token_units = totalTokenUi;
-    }
-
     const { error: updateError } = await supabase
       .from('cards')
-      .update(claimUpdates)
+      .update({
+        claimed: true,
+        funded: false,
+        updated_at: nowIso,
+      })
       .eq('public_id', public_id);
 
     if (updateError) {
@@ -2140,118 +2110,6 @@ app.post('/claim-card', async (req, res) => {
       error:
         err?.message ||
         'Unexpected error while claiming this CRYPTOCARD',
-    });
-  }
-});
-
-
-// ----- PUMP.FUN LIVESTREAM STATUS (for PriceBanner "LIVE/OFFLINE") -----
-
-const PUMPFUN_COIN_URL =
-  process.env.PUMPFUN_COIN_URL ||
-  `https://pump.fun/coin/${CRYPTOCARDS_MINT}`;
-
-// cache TTL: 15 seconds (avoid hammering pump.fun)
-const PUMPFUN_LIVE_TTL_MS = 15_000;
-
-let lastPumpLive = null;
-let lastPumpLiveCheckedAt = 0;
-let lastPumpTitle = null;
-
-/**
- * Determine whether the Pump.fun coin page is currently livestreaming.
- * We keep this simple + robust by checking the <title> for "LIVESTREAMING (LIVE)".
- * (Pump.fun updates the title when a room is live.)
- */
-async function getPumpfunLiveStatus() {
-  const now = Date.now();
-  if (
-    lastPumpLive !== null &&
-    now - lastPumpLiveCheckedAt < PUMPFUN_LIVE_TTL_MS
-  ) {
-    return {
-      ok: true,
-      live: lastPumpLive,
-      url: PUMPFUN_COIN_URL,
-      checked_at: new Date(lastPumpLiveCheckedAt).toISOString(),
-      title: lastPumpTitle,
-      cached: true,
-    };
-  }
-
-  try {
-    const fetch = (await import('node-fetch')).default;
-
-    const res = await fetch(PUMPFUN_COIN_URL, {
-      method: 'GET',
-      headers: {
-        // some CDNs behave better with a UA
-        'User-Agent':
-          'Mozilla/5.0 (compatible; CRYPTOCARDS-Bot/1.0; +https://cryptocards.fun)',
-        Accept: 'text/html,*/*',
-      },
-    });
-
-    const html = await res.text().catch(() => '');
-    const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
-    const title = titleMatch ? String(titleMatch[1]).trim() : null;
-
-    // Primary signal (what Pump.fun uses)
-    const isLive =
-      typeof title === 'string' &&
-      title.toUpperCase().includes('LIVESTREAMING (LIVE)');
-
-    lastPumpLive = !!isLive;
-    lastPumpTitle = title;
-    lastPumpLiveCheckedAt = now;
-
-    return {
-      ok: true,
-      live: !!isLive,
-      url: PUMPFUN_COIN_URL,
-      checked_at: new Date(now).toISOString(),
-      title,
-      cached: false,
-      status: res.status,
-    };
-  } catch (err) {
-    console.error('[PUMPFUN] getPumpfunLiveStatus error:', err);
-
-    // Fail soft: return last known value if we have one
-    if (lastPumpLive !== null) {
-      return {
-        ok: true,
-        live: lastPumpLive,
-        url: PUMPFUN_COIN_URL,
-        checked_at: new Date(lastPumpLiveCheckedAt).toISOString(),
-        title: lastPumpTitle,
-        cached: true,
-        warning: 'pumpfun_fetch_failed_using_cached',
-      };
-    }
-
-    return {
-      ok: false,
-      live: false,
-      url: PUMPFUN_COIN_URL,
-      checked_at: new Date().toISOString(),
-      error: err?.message || 'pumpfun_fetch_failed',
-    };
-  }
-}
-
-// Public endpoint consumed by the frontend PriceBanner
-app.get('/pump-live', async (_req, res) => {
-  try {
-    const status = await getPumpfunLiveStatus();
-    res.json(status);
-  } catch (err) {
-    console.error('Error in /pump-live:', err);
-    res.status(500).json({
-      ok: false,
-      live: false,
-      url: PUMPFUN_COIN_URL,
-      error: err?.message || 'Failed to fetch pump.fun live status',
     });
   }
 });
@@ -2443,9 +2301,6 @@ app.get('/public-activity', async (_req, res) => {
         card_id: card.public_id,
         type: 'CREATED',
         token_amount: sol,
-        token_units: card.token_units ?? null,
-        token_mint: card.token_mint ?? null,
-        token_symbol: card.token_symbol ?? null,
         sol_amount: sol,
         fiat_value: fiat,
         currency,
@@ -2459,9 +2314,6 @@ app.get('/public-activity', async (_req, res) => {
           card_id: card.public_id,
           type: 'FUNDED',
           token_amount: sol,
-          token_units: card.token_units ?? null,
-          token_mint: card.token_mint ?? null,
-          token_symbol: card.token_symbol ?? null,
           sol_amount: sol,
           fiat_value: fiat,
           currency,
@@ -2476,9 +2328,6 @@ app.get('/public-activity', async (_req, res) => {
           card_id: card.public_id,
           type: 'LOCKED',
           token_amount: sol,
-          token_units: card.token_units ?? null,
-          token_mint: card.token_mint ?? null,
-          token_symbol: card.token_symbol ?? null,
           sol_amount: sol,
           fiat_value: fiat,
           currency,
@@ -2493,9 +2342,6 @@ app.get('/public-activity', async (_req, res) => {
           card_id: card.public_id,
           type: 'CLAIMED',
           token_amount: sol,
-          token_units: card.token_units ?? null,
-          token_mint: card.token_mint ?? null,
-          token_symbol: card.token_symbol ?? null,
           sol_amount: sol,
           fiat_value: fiat,
           currency,
