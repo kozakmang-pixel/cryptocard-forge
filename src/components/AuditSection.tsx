@@ -409,8 +409,22 @@ export function AuditSection() {
     if (!hasNonZero) return;
 
     // Only set once per audit pull, keep the earliest "funded" snapshot
+    // Only set once per audit pull, keep the earliest "funded" snapshot.
+    // But allow upgrading the token symbol later (e.g. TOKEN → CC) once token metadata loads,
+    // without changing the original amounts.
     setFundingSnapshot((prev) => {
-      if (prev) return prev;
+      if (prev) {
+        const prevSym = (prev.tokenSymbol || '').trim();
+        const nextSym = (derived.tokenSymbol || '').trim();
+        if (
+          (prevSym === '' || prevSym === 'TOKEN') &&
+          nextSym !== '' &&
+          nextSym !== 'TOKEN'
+        ) {
+          return { ...prev, tokenSymbol: nextSym };
+        }
+        return prev;
+      }
       return {
         tokenAmount: derived.tokenAmount,
         solValue: derived.solValue,
