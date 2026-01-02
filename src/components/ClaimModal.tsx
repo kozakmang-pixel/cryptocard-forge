@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
+import { Eye, EyeOff } from 'lucide-react';
 import { CryptoCard } from './CryptoCard';
 import { useLanguage } from '@/lib/languageStore';
 import { apiService, type CardStatusResponse } from '@/services/api';
@@ -105,14 +106,22 @@ function getSymbolForCard(card: CardStatusResponse | null, mainTokenMint?: strin
 export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProps) {
   const { t } = useLanguage();
 
+  const tt = (key: string, fallback: string) => {
+    const v = t(key);
+    return !v || v === key ? fallback : v;
+  };
+
+
   // Unified message for "not funded / already claimed"
-  const notFundedMessage =
-    t('claim.notFundedOrClaimed') ??
-    'Card has already been claimed or has not been funded.';
+  const notFundedMessage = tt(
+    'claim.notFundedOrClaimed',
+    'This card has already been claimed and has no funds available.'
+  );
 
   const [cardId, setCardId] = useState(initialCardId ?? '');
   const [walletAddress, setWalletAddress] = useState('');
   const [cvv, setCvv] = useState('');
+  const [showCvv, setShowCvv] = useState(false);
   const [loading, setLoading] = useState(false);
   const [pulledCard, setPulledCard] = useState<CardStatusResponse | (CardStatusResponse & any) | null>(null);
   const [funding, setFunding] = useState<FundingSnapshot | null>(null);
@@ -221,7 +230,7 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
         setFunding(snap);
       }
 
-      toast.success(t('claim.cardFound') ?? 'CRYPTOCARD found!');
+      toast.success(tt('claim.cardFound', 'Card found. Review the details below.'));
     } catch (err: any) {
       console.error('Failed to load card status', err);
       setPulledCard(null);
@@ -567,13 +576,24 @@ const createdAt: string =
             <Label className="text-[9px] uppercase">
               {t('claim.cvv')}
             </Label>
+            <div className="relative mt-1">
             <Input
               value={cvv}
               onChange={(e) => setCvv(e.target.value)}
               placeholder={t('claim.cvvPlaceholder')}
-              className="h-8 text-[10px] bg-card/60 border-border/30 mt-1"
+              className="h-8 text-[10px] bg-card/60 border-border/30 pr-9"
               maxLength={5}
+              type={showCvv ? 'text' : 'password'}
             />
+            <button
+              type="button"
+              onClick={() => setShowCvv((s) => !s)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              aria-label={showCvv ? 'Hide CVV' : 'Show CVV'}
+            >
+              {showCvv ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+            </button>
+          </div>
             <p className="text-[8px] text-muted-foreground mt-1">
               {t('claim.cvvHint')}
             </p>
