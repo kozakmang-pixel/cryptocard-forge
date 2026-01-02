@@ -32,7 +32,10 @@ interface PublicActivityEvent {
   id?: string;
   card_id: string;
   type: ActivityType;
-  token_amount: number | null;
+  token_amount: number | null; // legacy: may be SOL-equivalent for token cards
+  token_units?: number | null; // real token units snapshot (e.g. CC)
+  token_mint?: string | null;
+  token_symbol?: string | null;
   sol_amount: number | null;
   fiat_value: number | null;
   currency: string | null;
@@ -159,9 +162,14 @@ function ActivityRow({
       ? evt.token_amount
       : 0;
 
-  // Token amount: prefer explicit token_amount, else mirror SOL amount
+  // Token amount:
+  // - Prefer persisted token_units snapshot (correct for token cards, persists after claim/reset)
+  // - Else fall back to legacy token_amount
+  // - Else mirror SOL amount
   const tokenAmount =
-    typeof evt.token_amount === 'number' && evt.token_amount > 0
+    typeof evt.token_units === 'number' && evt.token_units > 0
+      ? evt.token_units
+      : typeof evt.token_amount === 'number' && evt.token_amount > 0
       ? evt.token_amount
       : sol;
 
