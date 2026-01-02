@@ -23,7 +23,7 @@ interface FundingPanelProps {
   locked: boolean;
   fundedAmount: string;
   tokenSymbol: string;
-  onFundingStatusChange?: (isFunded: boolean, solAmount: number) => void;
+  onFundingStatusChange?: (isFunded: boolean, solAmount: number, tokenAmount?: number | null, usdAmount?: number | null) => void;
 }
 
 interface CardStatusResponse {
@@ -140,7 +140,7 @@ export function FundingPanel({
             setSolAmount(solLike);
 
             if (onFundingStatusChange) {
-              onFundingStatusChange(true, solLike);
+              onFundingStatusChange(true, solLike, tokenAmount, fiatAmt);
             }
           }
 
@@ -169,7 +169,7 @@ export function FundingPanel({
 
   // formatted display values (persist even after claim)
   const displaySol = solAmount !== null ? solAmount : 0;
-  const displayToken = tokenAmount !== null ? tokenAmount : displaySol;
+  const displayToken = tokenAmount !== null ? tokenAmount : 0;
   const displayUsd =
     usdAmount !== null
       ? usdAmount
@@ -312,7 +312,7 @@ export function FundingPanel({
       }
 
       if (onFundingStatusChange) {
-        onFundingStatusChange(isCardFunded, finalSolValue);
+        onFundingStatusChange(isCardFunded, finalSolValue, primaryTokenAmount, usdVal);
       }
 
       if (isCardFunded) {
