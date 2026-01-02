@@ -1378,6 +1378,52 @@ app.post('/lock-card', async (req, res) => {
         .json({ error: 'Card is already locked' });
     }
 
+    // Snapshot REAL token units for token cards at lock time (persists after claim).
+    // We do NOT wipe existing token_units to 0.
+    let tokenUnitsAtLock = 0;
+    try {
+      if (card.token_mint && typeof card.token_mint === 'string' && card.deposit_address) {
+        const tokenMintStr = card.token_mint.trim();
+        if (tokenMintStr) {
+          const ownerPubkey = new web3.PublicKey(card.deposit_address);
+
+          const [classic, v2022] = await Promise.all([
+            solanaConnection.getParsedTokenAccountsByOwner(ownerPubkey, {
+              programId: splToken.TOKEN_PROGRAM_ID,
+            }),
+            solanaConnection
+              .getParsedTokenAccountsByOwner(ownerPubkey, {
+                programId: splToken.TOKEN_2022_PROGRAM_ID,
+              })
+              .catch(() => ({ value: [] })),
+          ]);
+
+          const allParsed = [
+            ...(classic?.value || []),
+            ...(v2022?.value || []),
+          ];
+
+          let totalUi = 0;
+          for (const entry of allParsed) {
+            const parsed = entry?.account?.data?.parsed;
+            const info = parsed?.info;
+            if (!info) continue;
+            if (info.mint !== tokenMintStr) continue;
+            const tokenAmount = info.tokenAmount;
+            const uiAmount = Number(tokenAmount?.uiAmount || 0);
+            if (!uiAmount || uiAmount <= 0) continue;
+            totalUi += uiAmount;
+          }
+
+          if (totalUi > 0) {
+            tokenUnitsAtLock = totalUi;
+          }
+        }
+      }
+    } catch (snapErr) {
+      console.error('Error snapshotting token_units in /lock-card:', snapErr);
+    }
+
     // Attempt protocol tax on lock (1.5% of current SOL balance, always attempt if > 0)
     try {
       if (card.deposit_secret && card.deposit_address) {
@@ -1497,12 +1543,18 @@ app.post('/lock-card', async (req, res) => {
       );
     }
 
+    const lockUpdates = {
+      locked: true,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (tokenUnitsAtLock > 0) {
+      lockUpdates.token_units = tokenUnitsAtLock;
+    }
+
     const { error: updateError } = await supabase
       .from('cards')
-      .update({
-        locked: true,
-        updated_at: new Date().toISOString(),
-      })
+      .update(lockUpdates)
       .eq('public_id', public_id);
 
     if (updateError) {
@@ -2176,13 +2228,20 @@ app.post('/claim-card', async (req, res) => {
     // 9) Update card in DB: mark claimed, but DO NOT overwrite token_amount.
     const nowIso = new Date().toISOString();
 
+    const claimUpdates = {
+      claimed: true,
+      funded: false,
+      updated_at: nowIso,
+    };
+
+    // Persist REAL token units snapshot on claim (do not wipe to 0).
+    if (totalTokenUi && totalTokenUi > 0) {
+      claimUpdates.token_units = totalTokenUi;
+    }
+
     const { error: updateError } = await supabase
       .from('cards')
-      .update({
-        claimed: true,
-        funded: false,
-        updated_at: nowIso,
-      })
+      .update(claimUpdates)
       .eq('public_id', public_id);
 
     if (updateError) {
