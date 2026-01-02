@@ -53,7 +53,7 @@ const loadAmountSnapshot = (cardId: string): AmountSnapshot | null => {
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return null;
-    return parsed[cardId] ?? null;
+    return parsed[activeCardId] ?? null;
   } catch {
     return null;
   }
@@ -63,7 +63,7 @@ const saveAmountSnapshot = (cardId: string, snap: AmountSnapshot) => {
   try {
     const raw = localStorage.getItem(CC_AMOUNT_SNAPSHOT_KEY);
     const parsed = raw ? JSON.parse(raw) : {};
-    const next = { ...(parsed && typeof parsed === 'object' ? parsed : {}), [cardId]: snap };
+    const next = { ...(parsed && typeof parsed === 'object' ? parsed : {}), [activeCardId]: snap };
     localStorage.setItem(CC_AMOUNT_SNAPSHOT_KEY, JSON.stringify(next));
   } catch {
     // ignore
@@ -89,6 +89,20 @@ export function FundingPanel({
   const [copiedCard, setCopiedCard] = useState(false);
   const [cvvVisible, setCvvVisible] = useState(false);
 
+  // Optional: load an existing card by ID (for re-funding / checking details)
+  const [lookupCardId, setLookupCardId] = useState('');
+  const [lookupCvv, setLookupCvv] = useState('');
+  const [loadingLookup, setLoadingLookup] = useState(false);
+
+  // Active (displayed) card context (defaults to props)
+  const [activeCardId, setActiveCardId] = useState(cardId);
+  const [activeDepositAddress, setActiveDepositAddress] = useState(depositAddress);
+  const [activeCvv, setActiveCvv] = useState(cvv);
+  const [activeFunded, setActiveFunded] = useState(funded);
+  const [activeLocked, setActiveLocked] = useState(locked);
+
+
+
   // canonical funded amounts that should PERSIST even after claim
   // solAmount = value in SOL (native SOL + SPL token value in SOL)
   const [solAmount, setSolAmount] = useState<number | null>(null);
@@ -101,7 +115,17 @@ export function FundingPanel({
     return Number.isFinite(parsed) ? parsed : null;
   });
 
-  const assetLabel = tokenSymbol || 'TOKEN';
+  
+  useEffect(() => {
+    setActiveCardId(cardId);
+    setActiveDepositAddress(depositAddress);
+    setActiveCvv(cvv);
+    setActiveFunded(funded);
+    setActiveLocked(locked);
+    // do not overwrite user-typed lookup fields
+  }, [activeCardId, depositAddress, cvv, funded, locked]);
+
+const assetLabel = tokenSymbol || 'TOKEN';
 
   // helper: fetch SOL price from backend
   const fetchSolPrice = useCallback(async () => {
@@ -158,9 +182,9 @@ export function FundingPanel({
     if (!cardId) return;
 
     const looksMissing =
-      !fundedAmount || fundedAmount === '0' || fundedAmount === '0.000000' || fundedAmount === '0.00';
+      !activeFundedAmount || fundedAmount === '0' || fundedAmount === '0.000000' || fundedAmount === '0.00';
 
-    if (!funded && !looksMissing) {
+    if (!activeFunded && !looksMissing) {
       setHydratedFromSnapshot(true);
       return;
     }
@@ -182,18 +206,23 @@ export function FundingPanel({
       );
     }
     setHydratedFromSnapshot(true);
-  }, [cardId, funded, fundedAmount, hydratedFromSnapshot, onFundingStatusChange]);
+  }, [activeCardId, funded, fundedAmount, hydratedFromSnapshot, onFundingStatusChange]);
 
   useEffect(() => {
     const loadInitial = async () => {
       try {
         const [statusRes, priceRes] = await Promise.all([
-          fetch(`/card-status/${encodeURIComponent(cardId)}`),
+          fetch(`/card-status/${encodeURIComponent(activeCardId)}`),
           fetch('/sol-price').catch(() => null),
         ]);
 
         if (statusRes.ok) {
           const status = (await statusRes.json()) as CardStatusResponse;
+
+          setActiveFunded(!!status.funded);
+          setActiveLocked(!!status.locked);
+          setActiveDepositAddress(status.deposit_address || '');
+
 
           // status.token_amount here is our "SOL-equivalent" tracked in DB, not token units
           const solLike =
@@ -234,7 +263,7 @@ export function FundingPanel({
 
     loadInitial();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cardId]);
+  }, [activeCardId]);
 
   // formatted display values (persist even after claim)
   const displaySol = solAmount !== null ? solAmount : 0;
@@ -276,11 +305,47 @@ export function FundingPanel({
     }
   };
 
+  const handleLoadCardById = useCallback(async () => {
+    const id = lookupCardId.trim().toUpperCase();
+    if (!id) return;
+
+    setLoadingLookup(true);
+    try {
+      const res = await fetch(`/card-status/${encodeURIComponent(id)}`);
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const status = (await res.json()) as CardStatusResponse;
+
+      setActiveCardId(id);
+      setActiveDepositAddress(status.deposit_address || '');
+      setActiveFunded(!!status.funded);
+      setActiveLocked(!!status.locked);
+
+      // CVV cannot be derived from chain/server; user can paste it from their dashboard.
+      setActiveCvv(lookupCvv.trim());
+
+      // Reset displayed amounts so they reload for this card (effects below will hydrate from snapshot or status)
+      setSolAmount(null);
+      setUsdAmount(null);
+      setTokenAmount(null);
+      setHydratedFromSnapshot(false);
+
+      toast.success('Card loaded.');
+    } catch (err) {
+      console.error('FundingPanel: failed to load card by id', err);
+      toast.error('Could not load that Card ID.');
+    } finally {
+      setLoadingLookup(false);
+    }
+  }, [lookupCardId, lookupCvv]);
+
+
   const handleCheckFunding = async () => {
     if (!cardId) return;
     setChecking(true);
     try {
-      const res = await fetch(`/sync-card-funding/${encodeURIComponent(cardId)}`, {
+      const res = await fetch(`/sync-card-funding/${encodeURIComponent(activeCardId)}`, {
         method: 'POST',
       });
       if (!res.ok) {
@@ -412,7 +477,7 @@ export function FundingPanel({
   };
 
   const solscanUrl = depositAddress
-    ? `https://solscan.io/account/${depositAddress}`
+    ? `https://solscan.io/account/${activeDepositAddress}`
     : undefined;
 
   return (
@@ -428,7 +493,62 @@ export function FundingPanel({
         </p>
       </div>
 
-      {/* STATUS SUMMARY */}
+      
+      {/* LOAD BY CARD ID (optional) */}
+      <div className="rounded-lg border border-border/40 bg-card/70 p-2.5">
+        <div className="flex items-center justify-between">
+          <span className="text-[9px] font-semibold uppercase text-muted-foreground">
+            Load existing card
+          </span>
+          <span className="text-[9px] text-muted-foreground">
+            (optional)
+          </span>
+        </div>
+
+        <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <div>
+            <Label className="text-[8px] uppercase tracking-wide opacity-80">
+              Card ID
+            </Label>
+            <Input
+              value={lookupCardId}
+              onChange={(e) => setLookupCardId(e.target.value.toUpperCase())}
+              placeholder="e.g. 1234-5678"
+              className="h-7 text-[9px] font-mono bg-background/60 border-border/40 mt-1"
+            />
+          </div>
+
+          <div>
+            <Label className="text-[8px] uppercase tracking-wide opacity-80">
+              CVV (from your dashboard)
+            </Label>
+            <Input
+              value={lookupCvv}
+              onChange={(e) => {
+                setLookupCvv(e.target.value);
+                setActiveCvv(e.target.value);
+              }}
+              placeholder="•••••"
+              className="h-7 text-[9px] font-mono bg-background/60 border-border/40 mt-1"
+              maxLength={5}
+            />
+          </div>
+
+          <div className="flex items-end">
+            <Button
+              type="button"
+              className="h-7 w-full"
+              variant="outline"
+              onClick={handleLoadCardById}
+              disabled={loadingLookup || !lookupCardId.trim()}
+            >
+              {loadingLookup ? 'Loading…' : 'Load'}
+            </Button>
+          </div>
+        </div>
+      </div>
+
+{/* STATUS SUMMARY */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
         <div className="rounded-lg border border-border/40 bg-card/70 p-2.5 space-y-1">
           <div className="flex items-center justify-between">
@@ -437,15 +557,15 @@ export function FundingPanel({
             </span>
             <span
               className={
-                locked
+                activeLocked
                   ? 'inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-full bg-warning/10 border border-warning/40 text-warning-foreground'
-                  : funded || solAmount
+                  : activeFunded || solAmount
                   ? 'inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-400/40 text-emerald-300'
                   : 'inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-full bg-muted/20 border border-muted/40 text-muted-foreground'
               }
             >
               <CheckCircle2 className="w-3 h-3" />
-              {funded || solAmount ? 'FUNDED' : 'NOT FUNDED'}
+              {activeFunded || solAmount ? 'FUNDED' : 'NOT FUNDED'}
             </span>
           </div>
           <div className="mt-1 text-[10px] font-mono text-emerald-300">
@@ -497,7 +617,7 @@ export function FundingPanel({
 
         <div className="flex items-center gap-2">
           <Input
-            value={depositAddress}
+            value={activeDepositAddress}
             readOnly
             className="h-8 text-[9px] font-mono bg-background/80 border-border/50"
           />
@@ -506,7 +626,7 @@ export function FundingPanel({
             variant="outline"
             size="icon"
             className="h-8 w-8"
-            onClick={() => handleCopy(depositAddress, 'addr')}
+            onClick={() => handleCopy(activeDepositAddress, 'addr')}
           >
             {copiedAddr ? <CheckCircle2 className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
           </Button>
@@ -519,7 +639,7 @@ export function FundingPanel({
             </Label>
             <div className="flex items-center gap-2 mt-1">
               <Input
-                value={cardId}
+                value={activeCardId}
                 readOnly
                 className="h-7 text-[9px] font-mono bg-background/60 border-border/40"
               />
@@ -528,7 +648,7 @@ export function FundingPanel({
                 variant="outline"
                 size="icon"
                 className="h-7 w-7"
-                onClick={() => handleCopy(cardId, 'card')}
+                onClick={() => handleCopy(activeCardId, 'card')}
               >
                 {copiedCard ? (
                   <CheckCircle2 className="w-3 h-3" />
@@ -544,7 +664,7 @@ export function FundingPanel({
             </Label>
             <div className="flex items-center gap-2 mt-1">
               <Input
-                value={cvvVisible ? cvv : '•••••'}
+                value={cvvVisible ? activeCvv : '•••••'}
                 readOnly
                 className="h-7 text-[9px] font-mono bg-background/60 border-border/40"
               />
@@ -562,7 +682,7 @@ export function FundingPanel({
                 variant="outline"
                 size="icon"
                 className="h-7 w-7"
-                onClick={() => handleCopy(cvv, 'cvv')}
+                onClick={() => handleCopy(activeCvv, 'cvv')}
               >
                 {copiedCvv ? (
                   <CheckCircle2 className="w-3 h-3" />
