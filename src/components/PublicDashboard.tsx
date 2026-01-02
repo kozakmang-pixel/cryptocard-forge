@@ -42,25 +42,6 @@ interface PublicActivityEvent {
   token_symbol?: string | null;
 }
 
-// Card snapshot (single row per card) from backend /card-status
-interface PublicCardStatus {
-  public_id: string;
-  created_at: string;
-  updated_at: string;
-  funded: boolean;
-  locked: boolean;
-  claimed: boolean;
-  refunded: boolean;
-  // token_amount is the SOL-equivalent snapshot used for SOL/fiat value
-  token_amount: number | null;
-  // token_units is the real token units snapshot (persists after claim)
-  token_units?: number | null;
-  amount_fiat: number | null;
-  currency: string | null;
-  token_mint?: string | null;
-  token_symbol?: string | null;
-}
-
 interface SolPriceResponse {
   price_usd?: number;
   sol_price_usd?: number;
@@ -89,96 +70,133 @@ function formatShortTime(iso?: string | null) {
   });
 }
 
-// Props for a single card row (one row per card, updates as card state changes)
-interface CardRowProps {
-  cardId: string;
-  card: PublicCardStatus | null;
-  lastEvent: PublicActivityEvent | null;
+// Props for a single activity row
+interface ActivityRowProps {
+  evt: PublicActivityEvent;
+  idx: number;
   solPrice: number | null;
   labelForType: (type: ActivityType) => string;
   pillClassForType: (type: ActivityType) => string;
   handleCopy: (value: string, label: string) => void;
 }
 
-function CardRow({
-  cardId,
-  card,
-  lastEvent,
+function ActivityRow({
+  evt,
+  idx,
   solPrice,
   labelForType,
   pillClassForType,
   handleCopy,
-}: CardRowProps) {
-  const mint = (card?.token_mint || '').trim();
-  const { tokenInfo } = useTokenLookup(mint);
+}: ActivityRowProps) {
+  // Start with whatever mint & symbol the event already has
+  const initialMint =
+    (evt.token_mint && evt.token_mint.trim().length > 0
+      ? evt.token_mint.trim()
+      : '') || '';
 
-  // Determine status (prefer authoritative flags from card-status)
-  const statusType: ActivityType = card
-    ? card.refunded
-      ? 'REFUNDED'
-      : card.claimed
-      ? 'CLAIMED'
-      : card.locked
-      ? 'LOCKED'
-      : card.funded
-      ? 'FUNDED'
-      : 'CREATED'
-    : (lastEvent?.type || 'CREATED');
+  const initialSymbol =
+    (typeof evt.token_symbol === 'string' &&
+      evt.token_symbol.trim().length > 0 &&
+      evt.token_symbol.trim()) ||
+    (typeof (evt as any).symbol === 'string' &&
+      (evt as any).symbol.trim().length > 0 &&
+      (evt as any).symbol.trim()) ||
+    null;
 
-  const ts =
-    lastEvent?.timestamp ||
-    card?.updated_at ||
-    card?.created_at ||
-    new Date().toISOString();
+  // Keep these as stable values (no live syncing that would mutate history)
+  const [resolvedMint] = useState<string>(initialMint);
+  const [symbolOverride] = useState<string | null>(initialSymbol);
 
-  // Amounts
-  const hasTokenMint = mint.length > 0;
-  const tokenUnits =
-    typeof card?.token_units === 'number' && card.token_units > 0
-      ? card.token_units
-      : 0;
+  // If we don't have a mint or symbol yet, load card status to discover token_mint / symbol
+  useEffect(() => {
+    let cancelled = false;
 
+    const maybeFetchCardStatus = async () => {
+      if (
+        (resolvedMint && resolvedMint.length > 0) ||
+        (symbolOverride && symbolOverride.length > 0)
+      ) {
+        return;
+      }
+
+      try {
+        const res = await fetch(
+          `/card-status/${encodeURIComponent(evt.card_id)}`
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled || !data) return;
+
+        // NOTE:
+        // We intentionally do NOT change token_amount / fiat / sol here.
+        // This request is only for discovering token metadata if missing.
+      } catch (err) {
+        console.error(
+          'ActivityRow: failed to fetch card status for',
+          evt.card_id,
+          err
+        );
+      }
+    };
+
+    maybeFetchCardStatus();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [evt.card_id, resolvedMint, symbolOverride]);
+
+  // Look up token info from mint (if present / discovered)
+  const lookupMint = resolvedMint || '';
+  const { tokenInfo } = useTokenLookup(lookupMint);
+
+  // --- IMPORTANT: Use historical snapshot from the event itself ---
+  // SOL amount: prefer explicit sol_amount, then token_amount, else 0
   const sol =
-    typeof card?.token_amount === 'number' && card.token_amount > 0
-      ? card.token_amount
-      : typeof card?.amount_fiat === 'number' &&
-        card.amount_fiat > 0 &&
-        solPrice &&
-        solPrice > 0
-      ? card.amount_fiat / solPrice
+    typeof evt.sol_amount === 'number' && evt.sol_amount > 0
+      ? evt.sol_amount
+      : typeof evt.token_amount === 'number' && evt.token_amount > 0
+      ? evt.token_amount
       : 0;
 
+  // Token amount: prefer explicit token_amount, else mirror SOL amount
+  const tokenAmount =
+    typeof evt.token_amount === 'number' && evt.token_amount > 0
+      ? evt.token_amount
+      : sol;
+
+  const price = solPrice && solPrice > 0 ? solPrice : null;
+
+  // Fiat: prefer stored fiat_value, else derive from current SOL price
   const fiat =
-    typeof card?.amount_fiat === 'number' && card.amount_fiat > 0
-      ? card.amount_fiat
-      : solPrice && solPrice > 0 && sol > 0
-      ? sol * solPrice
+    typeof evt.fiat_value === 'number' && evt.fiat_value > 0
+      ? evt.fiat_value
+      : price && sol > 0
+      ? sol * price
       : 0;
 
-  const currency = (card?.currency || lastEvent?.currency || 'USD').toString();
+  const currency = evt.currency || 'USD';
 
-  // Token symbol
+  // Prefer explicit symbol override, then event symbol, then lookup, then SOL/TOKEN fallback
   const rawSymbol =
-    (typeof card?.token_symbol === 'string' && card.token_symbol.trim().length > 0
-      ? card.token_symbol.trim()
+    symbolOverride ||
+    (evt.token_symbol && evt.token_symbol.trim().length > 0
+      ? evt.token_symbol.trim()
       : null) ||
-    (typeof tokenInfo?.symbol === 'string' && tokenInfo.symbol.trim().length > 0
+    (tokenInfo?.symbol && tokenInfo.symbol.trim().length > 0
       ? tokenInfo.symbol.trim()
-      : null) ||
-    (typeof lastEvent?.token_symbol === 'string' &&
-    lastEvent.token_symbol.trim().length > 0
-      ? lastEvent.token_symbol.trim()
       : null);
 
   const tokenSymbol =
-    rawSymbol || (hasTokenMint ? 'TOKEN' : sol > 0 ? 'SOL' : 'TOKEN');
-
-  // Token display amount
-  const tokenDisplayAmount = hasTokenMint ? tokenUnits : sol;
+    typeof rawSymbol === 'string' && rawSymbol.trim().length > 0
+      ? rawSymbol.trim()
+      : !lookupMint && sol > 0
+      ? 'SOL'
+      : 'TOKEN';
 
   return (
     <div
-      key={cardId}
+      key={evt.id || `${evt.card_id}-${evt.timestamp}-${idx}`}
       className="rounded-md bg-card/70 border border-border/40 px-2 py-1.5"
     >
       <div className="flex items-center justify-between gap-2">
@@ -186,13 +204,13 @@ function CardRow({
           <span
             className={
               'inline-flex items-center px-1.5 py-0.5 rounded-full text-[8px] font-semibold ' +
-              pillClassForType(statusType)
+              pillClassForType(evt.type)
             }
           >
-            {labelForType(statusType).toUpperCase()}
+            {labelForType(evt.type).toUpperCase()}
           </span>
           <span className="text-[8px] text-muted-foreground">
-            {formatShortTime(ts)}
+            {formatShortTime(evt.timestamp)}
           </span>
         </div>
         <div className="flex items-center gap-1">
@@ -200,11 +218,11 @@ function CardRow({
             Card ID
           </span>
           <span className="text-[9px] font-mono truncate max-w-[90px]">
-            {cardId}
+            {evt.card_id}
           </span>
           <button
             type="button"
-            onClick={() => handleCopy(cardId, 'Card ID')}
+            onClick={() => handleCopy(evt.card_id, 'Card ID')}
             className="inline-flex h-4 w-4 items-center justify-center rounded bg-background/60 border border-border/40 hover:border-primary/60"
           >
             <Copy className="w-3 h-3 text-muted-foreground" />
@@ -218,7 +236,7 @@ function CardRow({
             Token
           </div>
           <div className="text-[10px] font-semibold">
-            {tokenDisplayAmount.toFixed(6)} {tokenSymbol}
+            {tokenAmount.toFixed(6)} {tokenSymbol}
           </div>
         </div>
         <div>
@@ -239,10 +257,10 @@ function CardRow({
         </div>
       </div>
 
-      {lastEvent?.tx_signature && (
+      {evt.tx_signature && (
         <div className="mt-1 flex items-center justify-end">
           <a
-            href={`https://solscan.io/tx/${lastEvent.tx_signature}`}
+            href={`https://solscan.io/tx/${evt.tx_signature}`}
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1 text-[8px] text-primary hover:text-primary/80"
@@ -261,7 +279,6 @@ export function PublicDashboard() {
 
   const [metrics, setMetrics] = useState<PublicMetrics | null>(null);
   const [activity, setActivity] = useState<PublicActivityEvent[]>([]);
-  const [cardStatusById, setCardStatusById] = useState<Record<string, PublicCardStatus>>({});
   const [loading, setLoading] = useState(false);
   const [solPrice, setSolPrice] = useState<number | null>(null);
 
@@ -415,34 +432,18 @@ export function PublicDashboard() {
     };
   }, [metrics, solPrice]);
 
-  // Build a single, newest row per card so we don't show duplicates
-  // (created/funded/locked/claimed) as separate columns.
-  const topTenCards = useMemo(() => {
-    if (!activity || activity.length === 0) return [] as Array<{ cardId: string; lastEvent: PublicActivityEvent }>;
-
-    const byCard: Record<string, PublicActivityEvent> = {};
-    for (const evt of activity) {
-      const id = evt.card_id;
-      if (!id) continue;
-      const existing = byCard[id];
-      if (!existing) {
-        byCard[id] = evt;
-        continue;
-      }
-      const ta = new Date(existing.timestamp).getTime();
-      const tb = new Date(evt.timestamp).getTime();
-      if (tb > ta) byCard[id] = evt;
-    }
-
-    const rows = Object.entries(byCard)
-      .map(([cardId, lastEvent]) => ({ cardId, lastEvent }))
-      .sort((a, b) => new Date(b.lastEvent.timestamp).getTime() - new Date(a.lastEvent.timestamp).getTime());
-
-    return rows.slice(0, 10);
+  const topTenEvents = useMemo(() => {
+    if (!activity || activity.length === 0) return [];
+    const sorted = [...activity].sort((a, b) => {
+      const ta = new Date(a.timestamp).getTime();
+      const tb = new Date(b.timestamp).getTime();
+      return tb - ta; // newest first
+    });
+    return sorted.slice(0, 10);
   }, [activity]);
 
   const activityBootstrapping =
-    (!topTenCards || topTenCards.length === 0) &&
+    (!topTenEvents || topTenEvents.length === 0) &&
     (!enrichedMetrics || enrichedMetrics.total_cards_funded === 0);
 
   const labelForType = (type: ActivityType) => {
@@ -478,30 +479,6 @@ export function PublicDashboard() {
         return 'bg-muted text-muted-foreground border border-border/40';
     }
   };
-
-  // Fetch per-card status for the top activity cards so we can show
-  // correct token name + token/sol/fiat amounts and keep one row per card.
-  useEffect(() => {
-    const ids = topTenCards.map((r) => r.card_id).filter(Boolean);
-    if (!ids.length) return;
-
-    const missing = ids.filter((id) => !cardStatusById[id]);
-    if (!missing.length) return;
-
-    missing.forEach(async (id) => {
-      try {
-        const res = await fetch(`/card-status?id=${encodeURIComponent(id)}`);
-        if (!res.ok) return;
-        const data = (await res.json()) as PublicCardStatus;
-        if (data && data.public_id) {
-          setCardStatusById((prev) => ({ ...prev, [data.public_id]: data }));
-        }
-      } catch {
-        // swallow
-      }
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [topTenCards]);
 
   const handleCopy = async (value: string, label: string) => {
     try {
@@ -639,21 +616,20 @@ export function PublicDashboard() {
           )}
 
           {!activityBootstrapping &&
-            topTenCards.length === 0 &&
+            topTenEvents.length === 0 &&
             !loading && (
               <div className="text-[9px] text-muted-foreground py-4 text-center">
                 No recent mainnet events recorded yet.
               </div>
             )}
 
-          {topTenCards.length > 0 && (
+          {topTenEvents.length > 0 && (
             <div className="mt-1 max-h-56 overflow-y-auto space-y-1.5">
-              {topTenCards.map(({ evt, idx }) => (
-                <CardRow
-                  key={evt.card_id}
-                  idx={idx}
+              {topTenEvents.map((evt, idx) => (
+                <ActivityRow
+                  key={evt.id || `${evt.card_id}-${evt.timestamp}-${idx}`}
                   evt={evt}
-                  status={cardStatusById[evt.card_id]}
+                  idx={idx}
                   solPrice={solPrice}
                   labelForType={labelForType}
                   pillClassForType={pillClassForType}
