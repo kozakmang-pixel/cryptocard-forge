@@ -64,10 +64,54 @@ function getSymbolForCard(card: CardStatusResponse | null, mainTokenMint?: strin
 export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProps) {
   const { t } = useLanguage();
 
+  // Treat missing translations as undefined (some i18n stores return the key itself).
+  const safeT = (key: string) => {
+    const v = t(key);
+    if (!v || v === key) return undefined;
+    return v;
+  };
+
+  type PersistedSnapshot = {
+    tokenAmount: number;
+    tokenSymbol: string;
+    solAmount: number;
+    usdAmount: number;
+  };
+
+  const snapshotKey = (id: string) => `cc_claim_snapshot_${id}`;
+
+  const loadSnapshot = (id: string): PersistedSnapshot | null => {
+    try {
+      const raw = localStorage.getItem(snapshotKey(id));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed) return null;
+      const tokenAmount = Number(parsed.tokenAmount);
+      const solAmount = Number(parsed.solAmount);
+      const usdAmount = Number(parsed.usdAmount);
+      const tokenSymbol = typeof parsed.tokenSymbol === 'string' ? parsed.tokenSymbol : 'TOKEN';
+      if (!Number.isFinite(tokenAmount) || !Number.isFinite(solAmount) || !Number.isFinite(usdAmount)) {
+        return null;
+      }
+      return { tokenAmount, solAmount, usdAmount, tokenSymbol };
+    } catch {
+      return null;
+    }
+  };
+
+  const saveSnapshot = (id: string, snap: PersistedSnapshot) => {
+    try {
+      localStorage.setItem(snapshotKey(id), JSON.stringify(snap));
+    } catch {
+      // ignore
+    }
+  };
+
+  // Unified message for "not funded / already claimed"
   // Unified message for "not funded / already claimed"
   const notFundedMessage =
-    t('claim.notFundedOrClaimed') ??
-    'Card has already been claimed or has not been funded.';
+    safeT('claim.notFundedOrClaimed') ??
+    'This card appears to have no funds. It may already be claimed or hasn\'t been funded yet.';
 
   const [cardId, setCardId] = useState(initialCardId ?? '');
   const [walletAddress, setWalletAddress] = useState('');
@@ -316,8 +360,8 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
   };
 
   // Build preview CardData with correct amounts
-  const { cardData, previewTriple, previewSymbol } = useMemo(() => {
-    if (!pulledCard) return { cardData: null, previewTriple: null, previewSymbol: 'SOL' };
+  const { cardData, previewTriple, previewSymbol, previewNumbers } = useMemo(() => {
+    if (!pulledCard) return { cardData: null, previewTriple: null, previewSymbol: 'SOL', previewNumbers: null };
 
     const anyCard: any = pulledCard;
     const portfolio = funding?.token_portfolio;
@@ -368,8 +412,8 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
       depositAddress: anyCard.deposit_address || '',
       image: anyCard.template_url || '',
       tokenAddress: anyCard.token_mint || '',
-      tokenSymbol,
-      tokenAmount: tokenAmount.toFixed(9),
+      tokenSymbol: displaySymbol,
+      tokenAmount: displayTokenAmount.toFixed(6),
       message: anyCard.message || 'Gift',
       font: anyCard.font || 'Inter',
       hasExpiry: !!pulledCard.expires_at,
@@ -377,21 +421,51 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
       created: createdAt,
       locked: !!pulledCard.locked,
       funded: !!pulledCard.funded,
-      fiatValue: usdAmount.toFixed(2),
-      solValue: solAmount.toFixed(6),
+      fiatValue: displayUsdAmount.toFixed(2),
+      solValue: displaySolAmount.toFixed(6),
       step: 3,
     };
 
     return {
       cardData,
       previewTriple: {
-        tokenAmount,
-        solAmount,
-        usdAmount,
+        tokenAmount: displayTokenAmount,
+        solAmount: displaySolAmount,
+        usdAmount: displayUsdAmount,
       },
-      previewSymbol: tokenSymbol,
+      previewSymbol: displaySymbol,
+      previewNumbers: { tokenAmount: displayTokenAmount, solAmount: displaySolAmount, usdAmount: displayUsdAmount, tokenSymbol: displaySymbol },
     };
   }, [pulledCard, funding, solPriceUsd]);
+
+  // Persist a snapshot of the funded amounts so the preview remains correct even after the card is claimed.
+  useEffect(() => {
+    if (!pulledCard || !previewNumbers) return;
+    const anyCard: any = pulledCard;
+    if (anyCard.claimed) return;
+
+    const hasNonZero =
+      (Number.isFinite(previewNumbers.tokenAmount) && previewNumbers.tokenAmount > 0) ||
+      (Number.isFinite(previewNumbers.solAmount) && previewNumbers.solAmount > 0) ||
+      (Number.isFinite(previewNumbers.usdAmount) && previewNumbers.usdAmount > 0);
+    if (!hasNonZero) return;
+
+    const existing = loadSnapshot(anyCard.public_id);
+    if (existing) {
+      // If we previously saved a placeholder symbol, upgrade it when we learn the real one.
+      if (existing.tokenSymbol === 'TOKEN' && previewNumbers.tokenSymbol && previewNumbers.tokenSymbol !== 'TOKEN') {
+        saveSnapshot(anyCard.public_id, { ...existing, tokenSymbol: previewNumbers.tokenSymbol });
+      }
+      return;
+    }
+
+    saveSnapshot(anyCard.public_id, {
+      tokenAmount: previewNumbers.tokenAmount,
+      tokenSymbol: previewNumbers.tokenSymbol || 'TOKEN',
+      solAmount: previewNumbers.solAmount,
+      usdAmount: previewNumbers.usdAmount,
+    });
+  }, [pulledCard, previewNumbers]);
 
   // Helper to render a clean amount line
   const renderAmountTriple = (
