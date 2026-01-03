@@ -56,40 +56,6 @@ interface StoredBuilderState {
   currency: string;
 }
 
-
-const CC_AMOUNT_SNAPSHOT_KEY = 'cc_amount_snapshot_v1';
-
-type AmountSnapshot = {
-  tokenAmount?: string;
-  tokenSymbol?: string;
-  solValue?: string;
-  fiatValue?: string;
-  updatedAt: number;
-};
-
-const loadAmountSnapshot = (cardId: string): AmountSnapshot | null => {
-  try {
-    const raw = localStorage.getItem(CC_AMOUNT_SNAPSHOT_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') return null;
-    return parsed[cardId] ?? null;
-  } catch {
-    return null;
-  }
-};
-
-const saveAmountSnapshot = (cardId: string, snap: AmountSnapshot) => {
-  try {
-    const raw = localStorage.getItem(CC_AMOUNT_SNAPSHOT_KEY);
-    const parsed = raw ? JSON.parse(raw) : {};
-    const next = { ...(parsed && typeof parsed === 'object' ? parsed : {}), [cardId]: snap };
-    localStorage.setItem(CC_AMOUNT_SNAPSHOT_KEY, JSON.stringify(next));
-  } catch {
-    // ignore
-  }
-};
-
 export default function Index() {
   const { language, setLanguage, t } = useLanguage();
 
@@ -134,31 +100,6 @@ export default function Index() {
   const [cardsRefreshKey, setCardsRefreshKey] = useState(0);
 
   // Hydrate auth from localStorage
-
-  // Hydrate last-known funded amounts after refresh (so it doesn't depend on on-chain check)
-  useEffect(() => {
-    if (!cardData?.cardId) return;
-    const snap = loadAmountSnapshot(cardData.cardId);
-    if (!snap) return;
-
-    const missingToken = !cardData.tokenAmount || cardData.tokenAmount === '0' || cardData.tokenAmount === '0.000000';
-    const missingSol = !cardData.solValue || cardData.solValue === '0.000000';
-    const missingFiat = !cardData.fiatValue || cardData.fiatValue === '0.00';
-
-    if (!missingToken && !missingSol && !missingFiat) return;
-
-    setCardData((prev) => {
-      if (!prev || prev.cardId !== cardData.cardId) return prev;
-      return {
-        ...prev,
-        tokenAmount: missingToken ? (snap.tokenAmount ?? prev.tokenAmount) : prev.tokenAmount,
-        tokenSymbol: snap.tokenSymbol ?? prev.tokenSymbol,
-        solValue: missingSol ? (snap.solValue ?? prev.solValue) : prev.solValue,
-        fiatValue: missingFiat ? (snap.fiatValue ?? prev.fiatValue) : prev.fiatValue,
-      };
-    });
-  }, [cardData?.cardId]);
-
   useEffect(() => {
     const storedToken = localStorage.getItem('auth_token');
     const storedUser = localStorage.getItem('auth_user');
@@ -282,49 +223,45 @@ export default function Index() {
   };
 
   // Funding callback from FundingPanel → keep card preview in sync
+  // Funding callback from FundingPanel → keep card preview in sync
   const handleFundingStatusChange = useCallback(
     (
       isFunded: boolean,
       solAmount: number,
-      tokenAmountFromPanel?: string,
-      tokenSymbolFromPanel?: string,
-      fiatValueFromPanel?: string
+      tokenAmountFromPanel?: number | null,
+      usdAmountFromPanel?: number | null
     ) => {
       setFunded(isFunded);
       setCardData((prev) => {
         if (!prev) return null;
 
-        const nextSymbol = tokenSymbolFromPanel || prev.tokenSymbol;
-        const isSolCard = !prev.tokenAddress || nextSymbol === 'SOL';
-
-        // If FundingPanel gives us a token amount, use it. Otherwise:
-        // - SOL cards use solAmount
-        // - token cards keep their existing tokenAmount (don’t overwrite with SOL)
         const nextTokenAmount =
-          tokenAmountFromPanel ?? (isSolCard ? solAmount.toFixed(6) : prev.tokenAmount);
+          tokenAmountFromPanel !== undefined && tokenAmountFromPanel !== null
+            ? tokenAmountFromPanel
+            : !prev.tokenMint
+            ? solAmount
+            : parseFloat(prev.tokenAmount || '0');
 
-        const nextFiatValue =
-          fiatValueFromPanel ??
-          (solAmount > 0 && solPrice ? (solAmount * solPrice).toFixed(2) : prev.fiatValue);
-
-        // Persist last-known amounts so they survive refresh
-        saveAmountSnapshot(prev.cardId, {
-          tokenAmount: nextTokenAmount,
-          tokenSymbol: nextSymbol,
-          solValue: solAmount.toFixed(6),
-          fiatValue: nextFiatValue,
-          updatedAt: Date.now(),
-        });
+        const nextUsd =
+          usdAmountFromPanel !== undefined && usdAmountFromPanel !== null
+            ? usdAmountFromPanel
+            : solAmount > 0 && solPrice
+            ? solAmount * solPrice
+            : parseFloat(prev.fiatValue || '0');
 
         return {
           ...prev,
           funded: isFunded,
-          tokenSymbol: nextSymbol,
-          tokenAmount: nextTokenAmount,
+          tokenAmount: Number.isFinite(nextTokenAmount)
+            ? nextTokenAmount.toFixed(6)
+            : prev.tokenAmount,
           solValue: solAmount.toFixed(6),
-          fiatValue: nextFiatValue,
+          fiatValue: Number.isFinite(nextUsd) ? nextUsd.toFixed(2) : prev.fiatValue,
         };
       });
+    },
+    [solPrice]
+  );
     },
     [solPrice]
   );
@@ -528,7 +465,7 @@ export default function Index() {
                 depositAddress={cardData.depositAddress}
                 funded={funded}
                 locked={locked}
-                fundedAmount={funded ? `${cardData.solValue} SOL` : '0 SOL'}
+                fundedAmount={funded ? cardData.tokenAmount : '0'}
                 tokenSymbol={cardData.tokenSymbol || tokenSymbol}
                 onFundingStatusChange={handleFundingStatusChange}
               />
@@ -781,4 +718,4 @@ export default function Index() {
       />
     </div>
   );
-}
+            : !prev.tokenAddress || prev.tokenSymbol === 'SOL'
