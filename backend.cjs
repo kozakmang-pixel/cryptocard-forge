@@ -597,6 +597,61 @@ app.post('/upload-template', upload.single('file'), async (req, res) => {
   }
 });
 
+
+/**
+ * List uploaded card templates from Supabase Storage (public URLs).
+ * Used by the frontend ImageGrid to show user-uploaded images/GIFs alongside stock images.
+ *
+ * Query params:
+ * - type: "image" | "gif" | "all" (default: "all")
+ * - limit: number (default: 200, max: 1000)
+ */
+app.get('/list-templates', async (req, res) => {
+  try {
+    const type = String(req.query.type || 'all').toLowerCase();
+    const rawLimit = Number(req.query.limit || 200);
+    const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(Math.floor(rawLimit), 1), 1000) : 200;
+
+    const { data, error } = await supabase.storage
+      .from(TEMPLATE_BUCKET)
+      .list('templates', {
+        limit,
+        offset: 0,
+        sortBy: { column: 'name', order: 'desc' },
+      });
+
+    if (error) {
+      console.error('Supabase storage list error:', error);
+      return res.status(500).json({ error: 'Failed to list templates' });
+    }
+
+    const files = Array.isArray(data) ? data : [];
+    const urls = files
+      .filter((f) => f && typeof f.name === 'string' && f.name.length > 0)
+      // ignore folders (Supabase can return items without an id/metadata when it's a folder)
+      .filter((f) => !f.name.endsWith('/'))
+      .filter((f) => {
+        const name = String(f.name).toLowerCase();
+        const isGif = name.endsWith('.gif');
+        if (type === 'gif') return isGif;
+        if (type === 'image') return !isGif;
+        return true; // all
+      })
+      .map((f) => {
+        const publicRes = supabase.storage
+          .from(TEMPLATE_BUCKET)
+          .getPublicUrl(`templates/${f.name}`);
+        return publicRes?.data?.publicUrl || null;
+      })
+      .filter(Boolean);
+
+    return res.json({ urls });
+  } catch (err) {
+    console.error('Error in /list-templates:', err);
+    return res.status(500).json({ error: err?.message || 'list_templates_failed' });
+  }
+});
+
 // Serve static frontend from dist
 const distPath = path.join(__dirname, 'dist');
 
