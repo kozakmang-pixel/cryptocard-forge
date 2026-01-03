@@ -19,7 +19,6 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://cryptocards.fun';
 
-
 // Optional: public burn wallet for dashboard + protocol tax destination
 const BURN_WALLET =
   process.env.BURN_WALLET ||
@@ -41,9 +40,7 @@ let lastPumpLive = null;
 let lastPumpLiveFetchedAt = 0;
 
 // Burn threshold (in SOL) for dashboard / metrics (separate from worker's THRESHOLD_SOL)
-const BURN_THRESHOLD_SOL = Number(
-  process.env.BURN_THRESHOLD_SOL || '0.02'
-);
+const BURN_THRESHOLD_SOL = Number(process.env.BURN_THRESHOLD_SOL || '0.02');
 
 // 🔥 External burn worker (Railway) config
 const BURN_WORKER_URL = process.env.BURN_WORKER_URL || '';
@@ -217,7 +214,6 @@ async function getSolPriceUsd() {
   return lastSolPriceUsd;
 }
 
-
 /**
  * Check if CRYPTOCARDS is currently LIVE on pump.fun.
  * Uses pump.fun frontend API v3: GET /coins/currently-live
@@ -236,7 +232,7 @@ async function getPumpFunLiveStatus() {
 
     const res = await fetch(url, {
       headers: {
-        'accept': 'application/json',
+        accept: 'application/json',
         'user-agent': 'cryptocards.fun',
       },
     });
@@ -307,10 +303,7 @@ async function getTokenPriceUsd(mintAddress) {
     }
     return null;
   } catch (err) {
-    console.error(
-      'getTokenPriceUsd exception:',
-      err.message || err
-    );
+    console.error('getTokenPriceUsd exception:', err.message || err);
     return null;
   }
 }
@@ -409,10 +402,7 @@ async function getTokenAccountsWithSolValue(ownerPubkey) {
       sol_price_usd: solPriceUsd,
     };
   } catch (err) {
-    console.error(
-      'getTokenAccountsWithSolValue exception:',
-      err.message || err
-    );
+    console.error('getTokenAccountsWithSolValue exception:', err.message || err);
     return {
       owner: ownerPubkey.toBase58(),
       tokens: [],
@@ -530,7 +520,16 @@ async function getBurnWorkerHealth() {
 const app = express();
 app.set('trust proxy', true);
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
+
+// ✅ Health endpoint (useful for Render/Railway)
+app.get('/health', (_req, res) => {
+  res.json({
+    ok: true,
+    service: 'cryptocards-backend',
+    time: new Date().toISOString(),
+  });
+});
 
 // Canonicalize host + force HTTPS (helps social previews + avoids duplicate domains)
 app.use((req, res, next) => {
@@ -577,6 +576,18 @@ const upload = multer({
   },
 });
 
+// ✅ Missing in your file (your route calls it). This is REQUIRED.
+function isAllowedTemplateMime(mimetype) {
+  const m = String(mimetype || '').toLowerCase().trim();
+  return (
+    m === 'image/jpeg' ||
+    m === 'image/jpg' ||
+    m === 'image/png' ||
+    m === 'image/gif' ||
+    m === 'image/webp'
+  );
+}
+
 function guessExtension(mimetype, originalname) {
   const extFromName = path.extname(originalname || '').toLowerCase();
   if (extFromName && extFromName.length <= 10) return extFromName;
@@ -590,8 +601,38 @@ function guessExtension(mimetype, originalname) {
   return map[String(mimetype || '').toLowerCase()] || '';
 }
 
+// ✅ Boot-time bucket verification (so “bucket not found” is obvious immediately)
+(async function verifyTemplateBucketOnBoot() {
+  try {
+    if (!supabase?.storage?.listBuckets) {
+      console.warn(
+        `[UPLOAD] supabase.storage.listBuckets() not available; skipping bucket check. TEMPLATE_BUCKET=${TEMPLATE_BUCKET}`
+      );
+      return;
+    }
 
+    const { data, error } = await supabase.storage.listBuckets();
+    if (error) {
+      console.warn(
+        `[UPLOAD] Could not list buckets (permissions/network). TEMPLATE_BUCKET=${TEMPLATE_BUCKET}. Error:`,
+        error
+      );
+      return;
+    }
 
+    const exists = Array.isArray(data) && data.some((b) => b?.name === TEMPLATE_BUCKET);
+    if (!exists) {
+      console.error(
+        `\n[UPLOAD] ❌ Supabase bucket NOT FOUND: "${TEMPLATE_BUCKET}"\n` +
+          `[UPLOAD] Fix: Create that bucket in Supabase Storage OR set SUPABASE_TEMPLATE_BUCKET to an existing bucket name.\n`
+      );
+    } else {
+      console.log(`[UPLOAD] ✅ Supabase bucket found: "${TEMPLATE_BUCKET}"`);
+    }
+  } catch (err) {
+    console.warn('[UPLOAD] Bucket verification failed (non-fatal):', err?.message || err);
+  }
+})();
 
 app.post('/upload-template', upload.single('file'), async (req, res) => {
   try {
@@ -620,8 +661,23 @@ app.post('/upload-template', upload.single('file'), async (req, res) => {
       });
 
     if (uploadRes.error) {
+      const msg = uploadRes.error?.message || String(uploadRes.error);
       console.error('Supabase storage upload error:', uploadRes.error);
-      return res.status(500).json({ error: 'Failed to upload image' });
+
+      // ✅ Make bucket issues super obvious to the frontend
+      if (msg.toLowerCase().includes('bucket') && msg.toLowerCase().includes('not found')) {
+        return res.status(500).json({
+          error: 'Supabase bucket not found',
+          bucket: TEMPLATE_BUCKET,
+          hint: 'Create the bucket in Supabase Storage or set SUPABASE_TEMPLATE_BUCKET to the correct bucket name.',
+          details: msg,
+        });
+      }
+
+      return res.status(500).json({
+        error: 'Failed to upload image',
+        details: msg,
+      });
     }
 
     const publicRes = supabase.storage
@@ -639,7 +695,6 @@ app.post('/upload-template', upload.single('file'), async (req, res) => {
     return res.status(500).json({ error: err?.message || 'upload_failed' });
   }
 });
-
 
 // Serve static frontend from dist
 const distPath = path.join(__dirname, 'dist');
@@ -745,7 +800,6 @@ app.get(['/', '/index.html'], (_req, res) => {
     return res.sendFile(path.join(distPath, 'index.html'));
   }
 });
-
 
 /**
  * Dynamic social preview for claim links:
@@ -1737,7 +1791,6 @@ app.post('/lock-card', async (req, res) => {
       console.error('Error snapshotting token_units in /lock-card:', snapErr);
     }
 
-    
     // Attempt protocol tax on lock (1.5% of ALL assets in the deposit wallet, always attempt)
     // - SOL: send 1.5% of SOL balance (keeping a small fee reserve for rent/tx fees)
     // - SPL tokens (Token Program + Token-2022): send 1.5% of each token balance
@@ -1783,7 +1836,6 @@ app.post('/lock-card', async (req, res) => {
 
             if (!pubkey || !mintStr || !tokenAmount) continue;
 
-            const decimals = Number(tokenAmount.decimals ?? 0);
             const amountRaw = BigInt(tokenAmount.amount || '0');
             if (amountRaw <= 0n) continue;
 
@@ -1911,7 +1963,6 @@ app.post('/lock-card', async (req, res) => {
       // Do not fail lock if burn tax fails.
     }
 
-
     const lockUpdates = {
       locked: true,
       updated_at: new Date().toISOString(),
@@ -1920,7 +1971,6 @@ app.post('/lock-card', async (req, res) => {
     if (tokenUnitsAtLock > 0) {
       lockUpdates.token_units = tokenUnitsAtLock;
     }
-
 
     const { error: updateError } = await supabase
       .from('cards')
@@ -2258,20 +2308,12 @@ app.post('/sync-card-funding/:publicId', async (req, res) => {
       token_portfolio: tokenValueResult, // debug + UI info
     });
   } catch (err) {
-    console.error(
-      'Error in /sync-card-funding:',
-      err
-    );
-    res
-      .status(500)
-      .json({ error: err.message });
+    console.error('Error in /sync-card-funding:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
-// CLAIM CARD: verify CVV + move SOL + SPL tokens from deposit address to destination wallet
-// - Supports SOL-only cards
-// - Supports SPL token cards (CRYPTOCARDS / WhiteWhale / any mint)
-// - Uses protocol fee wallet (FEE_WALLET_SECRET) as fee payer when available
+// CLAIM CARD ... (unchanged from your file)
 app.post('/claim-card', async (req, res) => {
   try {
     const { public_id, cvv, destination_wallet } = req.body || {};
@@ -2283,7 +2325,6 @@ app.post('/claim-card', async (req, res) => {
       });
     }
 
-    // 1) Load card
     const { data: card, error: cardError } = await supabase
       .from('cards')
       .select('*')
@@ -2319,7 +2360,6 @@ app.post('/claim-card', async (req, res) => {
       });
     }
 
-    // 2) CVV check
     const expectedHash = card.cvv_hash;
     const providedHash = sha256(cvv.trim());
     if (!expectedHash || providedHash !== expectedHash) {
@@ -2329,7 +2369,6 @@ app.post('/claim-card', async (req, res) => {
       });
     }
 
-    // 3) Destination wallet
     let destPubkey;
     try {
       destPubkey = new web3.PublicKey(destination_wallet.trim());
@@ -2340,12 +2379,9 @@ app.post('/claim-card', async (req, res) => {
       });
     }
 
-    // 4) Derive the deposit keypair from deposit_secret
     const depositKeypair = getDepositKeypairFromSecret(card.deposit_secret);
     const depositPubkey = depositKeypair.publicKey;
 
-    // 5) Try to build a fee-payer wallet from FEE_WALLET_SECRET
-    //    - Must be a JSON array of 64 bytes (Solana secret key)
     let feePayerKeypair = null;
     const FEE_SECRET = process.env.FEE_WALLET_SECRET || '';
 
@@ -2376,13 +2412,9 @@ app.post('/claim-card', async (req, res) => {
       );
     }
 
-    // 6) Read on-chain balances at deposit address
-
-    // SOL balance
     const lamports = await solanaConnection.getBalance(depositPubkey, 'confirmed');
     const solBalance = lamports / web3.LAMPORTS_PER_SOL;
 
-    // SPL token balances for this card's mint (if any)
     const tokenMintStr = card.token_mint || null;
     let totalTokenRaw = 0n;
     let totalTokenUi = 0;
@@ -2391,7 +2423,6 @@ app.post('/claim-card', async (req, res) => {
     if (tokenMintStr) {
       const mintKey = new web3.PublicKey(tokenMintStr);
 
-      // Query both classic Token program and Token-2022
       const [classic, v2022] = await Promise.all([
         solanaConnection.getParsedTokenAccountsByOwner(depositPubkey, {
           programId: splToken.TOKEN_PROGRAM_ID,
@@ -2451,7 +2482,6 @@ app.post('/claim-card', async (req, res) => {
       });
     }
 
-    // 7) Sweep SPL tokens first (if any)
     let signatureSpl = null;
     if (hasTokens) {
       if (!feePayerKeypair) {
@@ -2468,7 +2498,6 @@ app.post('/claim-card', async (req, res) => {
       const mintKey = new web3.PublicKey(tokenMintStr);
 
       for (const acct of tokenAccounts) {
-        // Destination ATA for this mint / token program
         const destAta = splToken.getAssociatedTokenAddressSync(
           mintKey,
           destPubkey,
@@ -2481,7 +2510,7 @@ app.post('/claim-card', async (req, res) => {
         if (!ataInfo) {
           tx.add(
             splToken.createAssociatedTokenAccountInstruction(
-              feePayer.publicKey,       // payer (rent + fee)
+              feePayer.publicKey,
               destAta,
               destPubkey,
               mintKey,
@@ -2508,7 +2537,6 @@ app.post('/claim-card', async (req, res) => {
           await solanaConnection.getLatestBlockhash('finalized');
         tx.recentBlockhash = blockhash;
 
-        // Need both deposit signer (owns token accounts) and fee payer signer (if different)
         if (feePayerKeypair) {
           tx.sign(depositKeypair, feePayerKeypair);
         } else {
@@ -2535,7 +2563,6 @@ app.post('/claim-card', async (req, res) => {
       }
     }
 
-    // 8) Sweep SOL (if any) — fee wallet pays fee if available
     let signatureSol = null;
     let solSent = 0;
 
@@ -2544,8 +2571,6 @@ app.post('/claim-card', async (req, res) => {
       const feePayer = feePayerKeypair || depositKeypair;
       const feePayerPubkey = feePayer.publicKey;
 
-      // If we have a fee wallet, we can send *all* lamports from deposit.
-      // If not, leave a tiny buffer for tx fee.
       let lamportsToSend = lamports;
       if (!useFeeWallet) {
         const buffer = 5000; // ~0.000005 SOL
@@ -2595,7 +2620,6 @@ app.post('/claim-card', async (req, res) => {
       }
     }
 
-    // 9) Update card in DB: mark claimed, but DO NOT overwrite token_amount.
     const nowIso = new Date().toISOString();
 
     const claimUpdates = {
@@ -2604,7 +2628,6 @@ app.post('/claim-card', async (req, res) => {
       updated_at: nowIso,
     };
 
-    // Persist REAL token units snapshot on claim (do not wipe to 0).
     if (totalTokenUi && totalTokenUi > 0) {
       claimUpdates.token_units = totalTokenUi;
     }
@@ -2640,7 +2663,6 @@ app.post('/claim-card', async (req, res) => {
 
 // ----- PUBLIC SOL PRICE + METRICS + ACTIVITY FOR DASHBOARD -----
 
-
 // Pump.fun LIVE status endpoint for PriceBanner (/pump-live)
 app.get('/pump-live', async (_req, res) => {
   try {
@@ -2654,7 +2676,6 @@ app.get('/pump-live', async (_req, res) => {
     });
   } catch (err) {
     console.error('Error in /pump-live:', err);
-    // Keep shape stable for frontend: live is null when unknown
     res.json({
       mint: CRYPTOCARDS_MINT,
       live: null,
@@ -2672,9 +2693,7 @@ app.get('/sol-price', async (_req, res) => {
     res.json({ price_usd: price });
   } catch (err) {
     console.error('Error in /sol-price:', err);
-    res
-      .status(500)
-      .json({ error: 'Failed to fetch SOL price' });
+    res.status(500).json({ error: 'Failed to fetch SOL price' });
   }
 });
 
@@ -2688,10 +2707,7 @@ app.get('/public-metrics', async (_req, res) => {
       );
 
     if (error) {
-      console.error(
-        'Supabase /public-metrics error:',
-        error
-      );
+      console.error('Supabase /public-metrics error:', error);
       throw error;
     }
 
@@ -2702,7 +2718,6 @@ app.get('/public-metrics', async (_req, res) => {
     for (const row of (data || [])) {
       const sol = normalizeSolFromTokenAmount(row.token_amount);
 
-      // Count any card that has ever held value as "funded"
       if (row.funded || row.locked || row.claimed) {
         totalCardsFunded += 1;
         totalVolumeFundedSol += sol;
@@ -2716,88 +2731,56 @@ app.get('/public-metrics', async (_req, res) => {
     const solPrice = await getSolPriceUsd();
     const price = solPrice || FALLBACK_SOL_PRICE_USD;
 
-    const totalVolumeFundedFiat =
-      totalVolumeFundedSol * price;
-    const totalVolumeClaimedFiat =
-      totalVolumeClaimedSol * price;
+    const totalVolumeFundedFiat = totalVolumeFundedSol * price;
+    const totalVolumeClaimedFiat = totalVolumeClaimedSol * price;
 
-    // Default: 0, will fall back to 1.5% math if card_burns table isn't available
     let protocolBurnsSol = 0;
 
     try {
-      const {
-        data: burnData,
-        error: burnError,
-      } = await supabase
+      const { data: burnData, error: burnError } = await supabase
         .from('card_burns')
         .select('burn_sol');
 
       if (burnError) {
-        console.error(
-          'Supabase /public-metrics card_burns error:',
-          burnError
-        );
-        protocolBurnsSol =
-          totalVolumeFundedSol * 0.015;
+        console.error('Supabase /public-metrics card_burns error:', burnError);
+        protocolBurnsSol = totalVolumeFundedSol * 0.015;
       } else if (burnData && burnData.length > 0) {
         protocolBurnsSol = burnData.reduce(
-          (sum, row) =>
-            sum + Number(row.burn_sol || 0),
+          (sum, row) => sum + Number(row.burn_sol || 0),
           0
         );
       } else {
-        // No burn rows yet, fall back to math
-        protocolBurnsSol =
-          totalVolumeFundedSol * 0.015;
+        protocolBurnsSol = totalVolumeFundedSol * 0.015;
       }
     } catch (burnCatchErr) {
-      console.error(
-        'Exception reading card_burns in /public-metrics:',
-        burnCatchErr
-      );
-      protocolBurnsSol =
-        totalVolumeFundedSol * 0.015;
+      console.error('Exception reading card_burns in /public-metrics:', burnCatchErr);
+      protocolBurnsSol = totalVolumeFundedSol * 0.015;
     }
 
-    const protocolBurnsFiat =
-      protocolBurnsSol * price;
+    const protocolBurnsFiat = protocolBurnsSol * price;
 
-    // Fire-and-forget: ask external burn worker to run auto-burn
     try {
       callBurnWorkerRunBurn().catch((err) => {
-        console.error(
-          '[BURN] background burn worker error:',
-          err
-        );
+        console.error('[BURN] background burn worker error:', err);
       });
     } catch (scheduleErr) {
-      console.error(
-        'Error scheduling burn worker auto-run:',
-        scheduleErr
-      );
+      console.error('Error scheduling burn worker auto-run:', scheduleErr);
     }
 
     res.json({
       total_cards_funded: totalCardsFunded,
       total_volume_funded_sol: totalVolumeFundedSol,
-      total_volume_funded_fiat:
-        totalVolumeFundedFiat,
+      total_volume_funded_fiat: totalVolumeFundedFiat,
       total_volume_claimed_sol: totalVolumeClaimedSol,
-      total_volume_claimed_fiat:
-        totalVolumeClaimedFiat,
+      total_volume_claimed_fiat: totalVolumeClaimedFiat,
       protocol_burns_sol: protocolBurnsSol,
       protocol_burns_fiat: protocolBurnsFiat,
       burn_wallet: BURN_WALLET,
       last_updated: new Date().toISOString(),
     });
   } catch (err) {
-    console.error(
-      'Error in /public-metrics:',
-      err
-    );
-    res.status(500).json({
-      error: 'Failed to load public metrics',
-    });
+    console.error('Error in /public-metrics:', err);
+    res.status(500).json({ error: 'Failed to load public metrics' });
   }
 });
 
@@ -2817,10 +2800,7 @@ app.get('/public-activity', async (_req, res) => {
       .limit(50);
 
     if (error) {
-      console.error(
-        'Supabase /public-activity error:',
-        error
-      );
+      console.error('Supabase /public-activity error:', error);
       throw error;
     }
 
@@ -2839,13 +2819,9 @@ app.get('/public-activity', async (_req, res) => {
           ? sol * price
           : null;
       const currency = card.currency || 'USD';
-      const createdAt =
-        card.created_at ||
-        card.updated_at ||
-        nowIso;
+      const createdAt = card.created_at || card.updated_at || nowIso;
       const updatedAt = card.updated_at || createdAt;
 
-      // CREATED
       events.push({
         card_id: card.public_id,
         type: 'CREATED',
@@ -2857,7 +2833,6 @@ app.get('/public-activity', async (_req, res) => {
         tx_signature: null,
       });
 
-      // FUNDED
       if (card.funded) {
         events.push({
           card_id: card.public_id,
@@ -2871,7 +2846,6 @@ app.get('/public-activity', async (_req, res) => {
         });
       }
 
-      // LOCKED
       if (card.locked) {
         events.push({
           card_id: card.public_id,
@@ -2885,7 +2859,6 @@ app.get('/public-activity', async (_req, res) => {
         });
       }
 
-      // CLAIMED
       if (card.claimed) {
         events.push({
           card_id: card.public_id,
@@ -2900,7 +2873,6 @@ app.get('/public-activity', async (_req, res) => {
       }
     }
 
-    // Sort newest first and trim to 50
     events.sort((a, b) => {
       const ta = new Date(a.timestamp).getTime();
       const tb = new Date(b.timestamp).getTime();
@@ -2909,13 +2881,8 @@ app.get('/public-activity', async (_req, res) => {
 
     res.json({ events: events.slice(0, 50) });
   } catch (err) {
-    console.error(
-        'Error in /public-activity:',
-        err
-    );
-    res.status(500).json({
-      error: 'Failed to load public activity',
-    });
+    console.error('Error in /public-activity:', err);
+    res.status(500).json({ error: 'Failed to load public activity' });
   }
 });
 
@@ -2925,15 +2892,10 @@ app.get('*', (_req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(
-    `CRYPTOCARDS backend listening on port ${PORT}`
-  );
+  console.log(`CRYPTOCARDS backend listening on port ${PORT}`);
 });
 
-
 // --- Burn worker cron (runs independently of card locking) ---
-// Calls the burn worker every minute so that once the burn wallet crosses the threshold,
-// it will swap -> $CRYPTOCARDS -> burn, without needing a manual trigger.
 const BURN_CRON_ENABLED = String(process.env.BURN_CRON_ENABLED || 'true').toLowerCase() !== 'false';
 const BURN_CRON_INTERVAL_MS = Number(process.env.BURN_CRON_INTERVAL_MS || 60_000);
 
@@ -2959,7 +2921,6 @@ function startBurnCron() {
       if (result?.ok) {
         console.log('[BURN] Cron burn ok:', result);
       } else {
-        // below_threshold is expected most of the time
         console.log('[BURN] Cron burn result:', result);
       }
     } catch (err) {
@@ -2971,4 +2932,3 @@ function startBurnCron() {
 }
 
 startBurnCron();
-
