@@ -119,6 +119,14 @@ export function FundingPanel({
       // ignore
     }
   }, [lookupCardId, lookupCvv]);
+
+  // Active (displayed) card context (defaults to props)
+  const [activeCardId, setActiveCardId] = useState(cardId);
+  const [activeDepositAddress, setActiveDepositAddress] = useState(depositAddress);
+  const [activeCvv, setActiveCvv] = useState(cvv);
+  const [activeFunded, setActiveFunded] = useState(funded);
+  const [activeLocked, setActiveLocked] = useState(locked);
+
   // Persist CVV for newly created / active card as well (so UserDashboard can display it)
   useEffect(() => {
     if (!activeCardId || !activeCvv) return;
@@ -133,14 +141,6 @@ export function FundingPanel({
     }
   }, [activeCardId, activeCvv]);
 
-
-
-  // Active (displayed) card context (defaults to props)
-  const [activeCardId, setActiveCardId] = useState(cardId);
-  const [activeDepositAddress, setActiveDepositAddress] = useState(depositAddress);
-  const [activeCvv, setActiveCvv] = useState(cvv);
-  const [activeFunded, setActiveFunded] = useState(funded);
-  const [activeLocked, setActiveLocked] = useState(locked);
 
   // Share modal should be re-openable independently of locking
   const [shareOpen, setShareOpen] = useState(false);
