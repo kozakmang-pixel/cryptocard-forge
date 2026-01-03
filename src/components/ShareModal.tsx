@@ -49,6 +49,39 @@ export function ShareModal({ open, onOpenChange, cardId }: ShareModalProps) {
     );
   };
 
+
+const whatsappShare = () => {
+  const text = encodeURIComponent(`You've been gifted a CryptoCard! Claim it here: ${claimLink}`);
+  window.open(`https://api.whatsapp.com/send?text=${text}`, '_blank');
+};
+
+const facebookShare = () => {
+  window.open(
+    `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(claimLink)}`,
+    '_blank'
+  );
+};
+
+const instagramShare = async () => {
+  // Instagram does not support a standard "web share URL" like Twitter/Facebook.
+  // Best UX: copy the link, then (on mobile) prompt user to paste into IG.
+  try {
+    if (navigator.share) {
+      await navigator.share({
+        title: 'CRYPTOCARDS',
+        text: `You've been gifted a CryptoCard! Claim it here: ${claimLink}`,
+        url: claimLink,
+      });
+      return;
+    }
+  } catch {
+    // fall through to copy behavior
+  }
+
+  await copyLink();
+  toast.success('Link copied — paste it into Instagram DM / Story.');
+};
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="bg-card border-border max-w-md">
@@ -127,7 +160,34 @@ export function ShareModal({ open, onOpenChange, cardId }: ShareModalProps) {
               <Send className="w-3 h-3" />
               {t('share.twitter')}
             </Button>
-          </div>
+          
+<Button
+  onClick={whatsappShare}
+  variant="outline"
+  className="h-8 text-[9px] font-semibold flex items-center gap-1 justify-center"
+>
+  <MessageCircle className="w-3 h-3" />
+  WhatsApp
+</Button>
+
+<Button
+  onClick={facebookShare}
+  variant="outline"
+  className="h-8 text-[9px] font-semibold flex items-center gap-1 justify-center"
+>
+  <Send className="w-3 h-3" />
+  Facebook
+</Button>
+
+<Button
+  onClick={instagramShare}
+  variant="outline"
+  className="h-8 text-[9px] font-semibold flex items-center gap-1 justify-center"
+>
+  <Copy className="w-3 h-3" />
+  Instagram
+</Button>
+</div>
 
           {/* ⚠ Critical safety warning you asked for */}
           <div className="border-2 border-destructive/60 bg-destructive/10 rounded-lg p-4 text-[12px] text-destructive font-bold leading-snug">
