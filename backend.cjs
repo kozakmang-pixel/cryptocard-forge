@@ -805,12 +805,9 @@ app.get('/list-templates', async (req, res) => {
           const name = obj?.name;
           if (!name) continue;
 
-          // FOLDER detection: Supabase returns folders with null id/metadata timestamps.
-          const looksLikeFolder =
-            obj?.id === null &&
-            obj?.metadata === null &&
-            obj?.updated_at === null &&
-            obj?.created_at === null;
+          // FOLDER detection: Supabase returns "folders" as items with null id + null metadata.
+          // Timestamps can vary across versions, so we only rely on id/metadata being null.
+          const looksLikeFolder = obj?.id === null && obj?.metadata === null;
 
           if (looksLikeFolder) {
             // Avoid re-adding empty root prefix as a "folder"
@@ -837,6 +834,9 @@ app.get('/list-templates', async (req, res) => {
       }
     }
 
+    if (String(req.query.debug || '') === '1') {
+      return res.json({ urls, meta: { bucket: TEMPLATE_BUCKET, limit, foldersScanned, objectsScanned, visited: visited.size } });
+    }
     return res.json({ urls });
   } catch (err) {
     const msg = err?.message || String(err);
