@@ -262,6 +262,9 @@ export default function Index() {
     },
     [solPrice]
   );
+    },
+    [solPrice]
+  );
 
   const handleCreateCard = async () => {
     setIsCreating(true);
