@@ -23,7 +23,7 @@ interface FundingPanelProps {
   locked: boolean;
   fundedAmount: string;
   tokenSymbol: string;
-  onFundingStatusChange?: (isFunded: boolean, solAmount: number, tokenAmount?: number | null, usdAmount?: number | null) => void;
+  onFundingStatusChange?: (isFunded: boolean, solAmount: number, tokenAmount?: string, tokenSymbol?: string, fiatValue?: string) => void;
 }
 
 interface CardStatusResponse {
@@ -36,6 +36,40 @@ interface CardStatusResponse {
   amount_fiat: number | null;
   currency: string | null;
 }
+
+const CC_AMOUNT_SNAPSHOT_KEY = 'cc_amount_snapshot_v1';
+
+type AmountSnapshot = {
+  tokenAmount?: string;
+  tokenSymbol?: string;
+  solValue?: string;
+  fiatValue?: string;
+  updatedAt: number;
+};
+
+const loadAmountSnapshot = (cardId: string): AmountSnapshot | null => {
+  try {
+    const raw = localStorage.getItem(CC_AMOUNT_SNAPSHOT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    return parsed[cardId] ?? null;
+  } catch {
+    return null;
+  }
+};
+
+const saveAmountSnapshot = (cardId: string, snap: AmountSnapshot) => {
+  try {
+    const raw = localStorage.getItem(CC_AMOUNT_SNAPSHOT_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    const next = { ...(parsed && typeof parsed === 'object' ? parsed : {}), [cardId]: snap };
+    localStorage.setItem(CC_AMOUNT_SNAPSHOT_KEY, JSON.stringify(next));
+  } catch {
+    // ignore
+  }
+};
+
 
 export function FundingPanel({
   cardId,
@@ -55,6 +89,34 @@ export function FundingPanel({
   const [copiedCard, setCopiedCard] = useState(false);
   const [cvvVisible, setCvvVisible] = useState(false);
 
+  // Optional: load an existing card by ID (for re-funding / checking details)
+  const [lookupCardId, setLookupCardId] = useState('');
+  const [lookupCvv, setLookupCvv] = useState('');
+  const [loadingLookup, setLoadingLookup] = useState(false);
+
+  // Persist CVV locally (client-side only) so it can be shown in your dashboard
+  useEffect(() => {
+    if (!lookupCardId || !lookupCvv) return;
+    try {
+      const key = 'cryptocards_cvv_map';
+      const raw = localStorage.getItem(key);
+      const map = raw ? JSON.parse(raw) : {};
+      map[lookupCardId] = lookupCvv;
+      localStorage.setItem(key, JSON.stringify(map));
+    } catch {
+      // ignore
+    }
+  }, [lookupCardId, lookupCvv]);
+
+  // Active (displayed) card context (defaults to props)
+  const [activeCardId, setActiveCardId] = useState(cardId);
+  const [activeDepositAddress, setActiveDepositAddress] = useState(depositAddress);
+  const [activeCvv, setActiveCvv] = useState(cvv);
+  const [activeFunded, setActiveFunded] = useState(funded);
+  const [activeLocked, setActiveLocked] = useState(locked);
+
+
+
   // canonical funded amounts that should PERSIST even after claim
   // solAmount = value in SOL (native SOL + SPL token value in SOL)
   const [solAmount, setSolAmount] = useState<number | null>(null);
@@ -67,7 +129,17 @@ export function FundingPanel({
     return Number.isFinite(parsed) ? parsed : null;
   });
 
-  const assetLabel = tokenSymbol || 'TOKEN';
+
+  useEffect(() => {
+    setActiveCardId(cardId);
+    setActiveDepositAddress(depositAddress);
+    setActiveCvv(cvv);
+    setActiveFunded(funded);
+    setActiveLocked(locked);
+    // do not overwrite user-typed lookup fields
+  }, [activeCardId, depositAddress, cvv, funded, locked]);
+
+const assetLabel = tokenSymbol || 'TOKEN';
 
   // helper: fetch SOL price from backend
   const fetchSolPrice = useCallback(async () => {
@@ -115,16 +187,66 @@ export function FundingPanel({
   );
 
   // initial load: pull any existing funded/claimed amounts from backend
+
+  const [hydratedFromSnapshot, setHydratedFromSnapshot] = useState(false);
+
+  // Hydrate last-known amounts after refresh so UI doesn't rely on 'Check on-chain funding' again
+  useEffect(() => {
+    if (hydratedFromSnapshot) return;
+    if (!cardId) return;
+
+    const looksMissing =
+      !fundedAmount || fundedAmount === '0' || fundedAmount === '0.000000' || fundedAmount === '0.00';
+
+    if (!activeFunded && !looksMissing) {
+      setHydratedFromSnapshot(true);
+      return;
+    }
+
+    const snap = loadAmountSnapshot(cardId);
+    if (!snap) {
+      setHydratedFromSnapshot(true);
+      return;
+    }
+
+    const snapSol = snap.solValue ? Number(snap.solValue) : 0;
+
+    // Apply snapshot to local UI state so amounts persist visually after refresh
+    const snapToken = snap.tokenAmount ? Number(snap.tokenAmount) : null;
+    const snapFiat = snap.fiatValue ? Number(snap.fiatValue) : null;
+
+    if (Number.isFinite(snapSol)) setSolAmount(snapSol);
+    if (snapToken !== null && Number.isFinite(snapToken)) setTokenAmount(snapToken);
+    if (snapFiat !== null && Number.isFinite(snapFiat)) setUsdAmount(snapFiat);
+    setActiveFunded(true);
+
+    if (onFundingStatusChange) {
+      onFundingStatusChange(
+        funded || true,
+        Number.isFinite(snapSol) ? snapSol : 0,
+        snap.tokenAmount,
+        snap.tokenSymbol,
+        snap.fiatValue
+      );
+    }
+    setHydratedFromSnapshot(true);
+  }, [activeCardId, funded, fundedAmount, hydratedFromSnapshot, onFundingStatusChange]);
+
   useEffect(() => {
     const loadInitial = async () => {
       try {
         const [statusRes, priceRes] = await Promise.all([
-          fetch(`/card-status/${encodeURIComponent(cardId)}`),
+          fetch(`/card-status/${encodeURIComponent(activeCardId)}`),
           fetch('/sol-price').catch(() => null),
         ]);
 
         if (statusRes.ok) {
           const status = (await statusRes.json()) as CardStatusResponse;
+
+          setActiveFunded(!!status.funded);
+          setActiveLocked(!!status.locked);
+          setActiveDepositAddress(status.deposit_address || '');
+
 
           // status.token_amount here is our "SOL-equivalent" tracked in DB, not token units
           const solLike =
@@ -140,7 +262,7 @@ export function FundingPanel({
             setSolAmount(solLike);
 
             if (onFundingStatusChange) {
-              onFundingStatusChange(true, solLike, tokenAmount, fiatAmt);
+              onFundingStatusChange(true, solLike, undefined, tokenSymbol, fiatAmt !== null ? fiatAmt.toFixed(2) : undefined);
             }
           }
 
@@ -165,11 +287,11 @@ export function FundingPanel({
 
     loadInitial();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cardId]);
+  }, [activeCardId]);
 
   // formatted display values (persist even after claim)
   const displaySol = solAmount !== null ? solAmount : 0;
-  const displayToken = tokenAmount !== null ? tokenAmount : 0;
+  const displayToken = tokenAmount !== null ? tokenAmount : displaySol;
   const displayUsd =
     usdAmount !== null
       ? usdAmount
@@ -181,11 +303,9 @@ export function FundingPanel({
   const formattedSol = displaySol.toFixed(6);
   const formattedUsd = displayUsd.toFixed(2);
 
-  // tax: 1.5% protocol tax estimate
-  // - SOL cards: 1.5% of SOL
-  // - Token cards: 1.5% of token amount (token units), plus SOL/USD equivalents
+  // tax: 1.5% of SOL balance, with fiat
   const taxSol = displaySol * 0.015;
-  const isSolAsset = (assetLabel || '').toUpperCase() === 'SOL';
+  const isSolAsset = assetLabel.toUpperCase() === 'SOL';
   const taxToken = isSolAsset ? taxSol : displayToken * 0.015;
   const taxUsd = displayUsd * 0.015;
   const formattedTaxToken = taxToken.toFixed(6);
@@ -210,11 +330,47 @@ export function FundingPanel({
     }
   };
 
+  const handleLoadCardById = useCallback(async () => {
+    const id = lookupCardId.trim().toUpperCase();
+    if (!id) return;
+
+    setLoadingLookup(true);
+    try {
+      const res = await fetch(`/card-status/${encodeURIComponent(id)}`);
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const status = (await res.json()) as CardStatusResponse;
+
+      setActiveCardId(id);
+      setActiveDepositAddress(status.deposit_address || '');
+      setActiveFunded(!!status.funded);
+      setActiveLocked(!!status.locked);
+
+      // CVV cannot be derived from chain/server; user can paste it from their dashboard.
+      setActiveCvv(lookupCvv.trim());
+
+      // Reset displayed amounts so they reload for this card (effects below will hydrate from snapshot or status)
+      setSolAmount(null);
+      setUsdAmount(null);
+      setTokenAmount(null);
+      setHydratedFromSnapshot(false);
+
+      toast.success('Card loaded.');
+    } catch (err) {
+      console.error('FundingPanel: failed to load card by id', err);
+      toast.error('Could not load that Card ID.');
+    } finally {
+      setLoadingLookup(false);
+    }
+  }, [lookupCardId, lookupCvv]);
+
+
   const handleCheckFunding = async () => {
-    if (!activeCardId) return;
+    if (!cardId) return;
     setChecking(true);
     try {
-      const res = await fetch(`/sync-card-funding/${encodeURIComponent(cardId)}`, {
+      const res = await fetch(`/sync-card-funding/${encodeURIComponent(activeCardId)}`, {
         method: 'POST',
       });
       if (!res.ok) {
@@ -315,7 +471,15 @@ export function FundingPanel({
       }
 
       if (onFundingStatusChange) {
-        onFundingStatusChange(isCardFunded, finalSolValue, primaryTokenAmount, usdVal);
+        // Persist last-known amounts so they survive refresh
+        saveAmountSnapshot(cardId, {
+          tokenAmount: primaryTokenAmount !== null ? primaryTokenAmount.toString() : undefined,
+          tokenSymbol: tokenSymbol || undefined,
+          solValue: finalSolValue.toFixed(6),
+          fiatValue: typeof usdVal === 'number' && usdVal > 0 ? usdVal.toFixed(2) : undefined,
+          updatedAt: Date.now(),
+        });
+        onFundingStatusChange(isCardFunded, finalSolValue, primaryTokenAmount !== null ? primaryTokenAmount.toString() : undefined, tokenSymbol, typeof usdVal === 'number' && usdVal > 0 ? usdVal.toFixed(2) : undefined);
       }
 
       if (isCardFunded) {
@@ -338,7 +502,7 @@ export function FundingPanel({
   };
 
   const solscanUrl = depositAddress
-    ? `https://solscan.io/account/${depositAddress}`
+    ? `https://solscan.io/account/${activeDepositAddress}`
     : undefined;
 
   return (
@@ -352,9 +516,64 @@ export function FundingPanel({
           Send {assetLabel} to the deposit wallet below. Once funded, lock and share your
           CRYPTOCARD.
         </p>
+        <p className="text-[9px] text-muted-foreground mt-1">
+          Create an account and log in to save your card details and access them anytime.
+        </p>
       </div>
 
-      {/* STATUS SUMMARY */}
+
+      {/* LOAD BY CARD ID */}
+      <div className="rounded-lg border border-border/40 bg-card/70 p-2.5">
+        <div className="text-center">
+          <span className="text-[9px] font-semibold uppercase text-primary tracking-wide">
+            Load existing card
+          </span>
+        </div>
+
+        <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <div>
+            <Label className="text-[8px] uppercase tracking-wide opacity-80">
+              Card ID
+            </Label>
+            <Input
+              value={lookupCardId}
+              onChange={(e) => setLookupCardId(e.target.value.toUpperCase())}
+              placeholder="e.g. 1234-5678"
+              className="h-7 text-[9px] font-mono bg-background/60 border-border/40 mt-1"
+            />
+          </div>
+
+          <div>
+            <Label className="text-[8px] uppercase tracking-wide opacity-80">
+              CVV (from your dashboard)
+            </Label>
+            <Input
+              value={lookupCvv}
+              onChange={(e) => {
+                setLookupCvv(e.target.value);
+                setActiveCvv(e.target.value);
+              }}
+              placeholder="•••••"
+              className="h-7 text-[9px] font-mono bg-background/60 border-border/40 mt-1"
+              maxLength={5}
+            />
+          </div>
+
+          <div className="flex items-end">
+            <Button
+              type="button"
+              className="h-7 w-full"
+              variant="outline"
+              onClick={handleLoadCardById}
+              disabled={loadingLookup || !lookupCardId.trim()}
+            >
+              {loadingLookup ? 'Loading…' : 'Load'}
+            </Button>
+          </div>
+        </div>
+      </div>
+
+{/* STATUS SUMMARY */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
         <div className="rounded-lg border border-border/40 bg-card/70 p-2.5 space-y-1">
           <div className="flex items-center justify-between">
@@ -363,15 +582,15 @@ export function FundingPanel({
             </span>
             <span
               className={
-                locked
+                activeLocked
                   ? 'inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-full bg-warning/10 border border-warning/40 text-warning-foreground'
-                  : funded || solAmount
+                  : activeFunded || solAmount
                   ? 'inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-400/40 text-emerald-300'
                   : 'inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-full bg-muted/20 border border-muted/40 text-muted-foreground'
               }
             >
               <CheckCircle2 className="w-3 h-3" />
-              {funded || solAmount ? 'FUNDED' : 'NOT FUNDED'}
+              {activeFunded || solAmount ? 'FUNDED' : 'NOT FUNDED'}
             </span>
           </div>
           <div className="mt-1 text-[10px] font-mono text-emerald-300">
@@ -388,6 +607,14 @@ export function FundingPanel({
             <span className="text-[9px] font-semibold uppercase text-muted-foreground">
               1.5% Protocol Tax on Funded &amp; Locked CRYPTOCARDS
             </span>
+          </div>
+          <div className="mt-2 rounded-lg border border-red-500/50 bg-red-500/10 px-2 py-2">
+            <div className="text-[11px] font-extrabold tracking-wide text-red-400">
+              NOT CURRENTLY IMPLEMENTED
+            </div>
+            <div className="mt-0.5 text-[9px] text-red-200/90 leading-snug">
+              Tax estimation is displayed for transparency, but automated tax swap/burn is not live yet.
+            </div>
           </div>
           <p className="text-[9px] text-muted-foreground mt-1 leading-snug">
             A 1.5% protocol tax is applied to the SOL balance on each funded and locked
@@ -423,7 +650,7 @@ export function FundingPanel({
 
         <div className="flex items-center gap-2">
           <Input
-            value={depositAddress}
+            value={activeDepositAddress}
             readOnly
             className="h-8 text-[9px] font-mono bg-background/80 border-border/50"
           />
@@ -432,7 +659,7 @@ export function FundingPanel({
             variant="outline"
             size="icon"
             className="h-8 w-8"
-            onClick={() => handleCopy(depositAddress, 'addr')}
+            onClick={() => handleCopy(activeDepositAddress, 'addr')}
           >
             {copiedAddr ? <CheckCircle2 className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
           </Button>
@@ -445,7 +672,7 @@ export function FundingPanel({
             </Label>
             <div className="flex items-center gap-2 mt-1">
               <Input
-                value={cardId}
+                value={activeCardId}
                 readOnly
                 className="h-7 text-[9px] font-mono bg-background/60 border-border/40"
               />
@@ -454,7 +681,7 @@ export function FundingPanel({
                 variant="outline"
                 size="icon"
                 className="h-7 w-7"
-                onClick={() => handleCopy(cardId, 'card')}
+                onClick={() => handleCopy(activeCardId, 'card')}
               >
                 {copiedCard ? (
                   <CheckCircle2 className="w-3 h-3" />
@@ -470,7 +697,7 @@ export function FundingPanel({
             </Label>
             <div className="flex items-center gap-2 mt-1">
               <Input
-                value={cvvVisible ? cvv : '•••••'}
+                value={cvvVisible ? activeCvv : '•••••'}
                 readOnly
                 className="h-7 text-[9px] font-mono bg-background/60 border-border/40"
               />
@@ -488,7 +715,7 @@ export function FundingPanel({
                 variant="outline"
                 size="icon"
                 className="h-7 w-7"
-                onClick={() => handleCopy(cvv, 'cvv')}
+                onClick={() => handleCopy(activeCvv, 'cvv')}
               >
                 {copiedCvv ? (
                   <CheckCircle2 className="w-3 h-3" />
