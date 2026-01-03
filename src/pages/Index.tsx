@@ -216,10 +216,14 @@ export default function Index() {
     }
   };
 
-  const handleImageUpload = (file: File) => {
-    const url = URL.createObjectURL(file);
-    setSelectedImage(url);
-    toast.success('Image uploaded!');
+  const handleImageUpload = async (file: File) => {
+    try {
+      const { url } = await apiService.uploadTemplate(file);
+      setSelectedImage(url);
+      toast.success('Image uploaded!');
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to upload image');
+    }
   };
 
   // Funding callback from FundingPanel → keep card preview in sync
