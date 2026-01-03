@@ -140,6 +140,33 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
 
   const { tokenInfo } = useTokenLookup(tokenMintForLookup);
 
+  // Stabilize token label so it never "flashes" back to TOKEN while async lookups update
+  const [resolvedTokenLabel, setResolvedTokenLabel] = useState<string>('');
+
+  // Reset resolved label when we load a different card
+  useEffect(() => {
+    if (!pulledCard?.public_id) {
+      setResolvedTokenLabel('');
+      return;
+    }
+    setResolvedTokenLabel('');
+  }, [pulledCard?.public_id]);
+
+  // When we learn a real token label, lock it in (avoid reverting to TOKEN)
+  useEffect(() => {
+    const anyCard: any = pulledCard;
+    const mint =
+      (anyCard?.token_mint as string | null) ||
+      (funding?.token_portfolio?.tokens?.[0]?.mint as string | null) ||
+      null;
+
+    const label = getDisplayTokenLabel(mint, tokenInfo);
+    if (label && label !== 'TOKEN') {
+      setResolvedTokenLabel(label);
+    }
+  }, [pulledCard, funding, tokenInfo]);
+
+
   const [solPriceUsd, setSolPriceUsd] = useState<number | null>(null);
   const [claimSummary, setClaimSummary] = useState<ClaimSummary | null>(null);
 
@@ -309,7 +336,7 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
       }
 
       const tokenMint = (cardAny.token_mint || mainToken?.mint || null) as string | null;
-      const tokenSymbol = getDisplayTokenLabel(tokenMint, tokenInfo);
+      const tokenSymbol = resolvedTokenLabel || getDisplayTokenLabel(tokenMint, tokenInfo);
 
       const tokenAmount =
         mainToken?.amount_ui ??
@@ -396,7 +423,7 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
     }
 
     const tokenMint = (anyCard.token_mint || mainToken?.mint || null) as string | null;
-    const tokenSymbol = getDisplayTokenLabel(tokenMint, tokenInfo);
+    const tokenSymbol = resolvedTokenLabel || getDisplayTokenLabel(tokenMint, tokenInfo);
 
     const tokenAmount =
       mainToken?.amount_ui ??
@@ -486,7 +513,7 @@ const createdAt: string =
       snapshotTriple,
       snapshotSymbol,
     };
-  }, [pulledCard, funding, solPriceUsd]);
+  }, [pulledCard, funding, solPriceUsd, tokenInfo, resolvedTokenLabel]);
 
   // Helper to render a clean amount line
   const renderAmountTriple = (
@@ -510,6 +537,32 @@ const createdAt: string =
         </DialogHeader>
 
         <div className="space-y-4">
+
+          {/* How to claim */}
+          <div className="rounded-lg border border-border bg-muted/20 p-3">
+            <div className="text-xs font-semibold text-foreground">
+              How to claim
+            </div>
+            <ol className="mt-2 list-decimal pl-4 space-y-1 text-xs text-muted-foreground">
+              <li>Enter your Card ID and click <span className="font-medium text-foreground">Pull Card</span>.</li>
+              <li>Enter the deposit address where you want the tokens delivered.</li>
+              <li>Enter the unique CVV for your card.</li>
+              <li>Click <span className="font-medium text-foreground">Claim Funds</span>.</li>
+            </ol>
+            <div className="mt-2 text-xs text-muted-foreground">
+              Don&apos;t have a wallet yet?{' '}
+              <a
+                href="https://phantom.com/learn/guides/how-to-create-a-new-wallet"
+                target="_blank"
+                rel="noreferrer"
+                className="text-primary underline underline-offset-4 hover:opacity-90"
+              >
+                Click HERE
+              </a>
+            </div>
+          </div>
+
+
           {/* Card ID input */}
           <div>
             <Label className="text-[9px] uppercase">
