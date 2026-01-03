@@ -619,17 +619,38 @@ function guessExtension(mimetype, originalname) {
       );
       return;
     }
-
     const exists = Array.isArray(data) && data.some((b) => b?.name === TEMPLATE_BUCKET);
     if (!exists) {
       console.error(
-        `\n[UPLOAD] ❌ Supabase bucket NOT FOUND: "${TEMPLATE_BUCKET}"\n` +
-          `[UPLOAD] Fix: Create that bucket in Supabase Storage OR set SUPABASE_TEMPLATE_BUCKET to an existing bucket name.\n`
+        `
+[UPLOAD] ❌ Supabase bucket NOT FOUND: "${TEMPLATE_BUCKET}"
+` +
+          `[UPLOAD] Fix: Create that bucket in Supabase Storage OR set SUPABASE_TEMPLATE_BUCKET to an existing bucket name.
+`
       );
+
+      // ✅ Auto-create bucket when using a Service Role key (fixes “Bucket not found” in prod)
+      if (supabase?.storage?.createBucket) {
+        const { error: createErr } = await supabase.storage.createBucket(TEMPLATE_BUCKET, {
+          public: true,
+        });
+        if (createErr) {
+          console.error(
+            `[UPLOAD] ❌ Failed to auto-create bucket "${TEMPLATE_BUCKET}". Create it manually in Supabase Storage. Error:`,
+            createErr
+          );
+        } else {
+          console.log(`[UPLOAD] ✅ Auto-created bucket: "${TEMPLATE_BUCKET}" (public)`);
+        }
+      } else {
+        console.warn(
+          `[UPLOAD] supabase.storage.createBucket() not available; cannot auto-create. TEMPLATE_BUCKET=${TEMPLATE_BUCKET}`
+        );
+      }
     } else {
       console.log(`[UPLOAD] ✅ Supabase bucket found: "${TEMPLATE_BUCKET}"`);
     }
-  } catch (err) {
+} catch (err) {
     console.warn('[UPLOAD] Bucket verification failed (non-fatal):', err?.message || err);
   }
 })();
