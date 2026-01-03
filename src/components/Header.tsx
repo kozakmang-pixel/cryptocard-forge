@@ -7,7 +7,7 @@ interface HeaderProps {
   onClaimClick: () => void;
 }
 
-const TOKEN_CA = 'AuxRtUDw7KhWZxbMcfqPoB1cLcvq44Sw83UHRd3Spump';
+const TOKEN_CA = '5hiNHHBFZ3R2b7r4cfVX92DzyGm4C8yzHKJNTyBrpump';
 
 export const Header: FC<HeaderProps> = ({ onClaimClick }) => {
   const [copied, setCopied] = useState(false);
