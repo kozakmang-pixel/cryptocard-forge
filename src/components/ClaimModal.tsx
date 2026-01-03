@@ -10,6 +10,7 @@ import { CryptoCard } from './CryptoCard';
 import { useLanguage } from '@/lib/languageStore';
 import { apiService, type CardStatusResponse } from '@/services/api';
 import type { CardData } from '@/types/card';
+import { useTokenLookup } from '@/hooks/useTokenLookup';
 
 // CRYPTOCARDS mint (your CA from header)
 const CRYPTOCARDS_MINT = 'AuxRtUDw7KhWZxbMcfqPoB1cLcvq44Sw83UHRd3Spump';
@@ -95,12 +96,14 @@ interface FundingSnapshot {
   token_portfolio: TokenPortfolio | null;
 }
 
-function getSymbolForCard(card: CardStatusResponse | null, mainTokenMint?: string | null) {
-  const mint = (card as any)?.token_mint || mainTokenMint || null;
-
+function getDisplayTokenLabel(
+  mint: string | null | undefined,
+  tokenInfo: { name: string; symbol: string } | null
+) {
   if (!mint) return 'SOL';
   if (mint === CRYPTOCARDS_MINT) return 'CRYPTOCARDS';
-  return 'TOKEN';
+  // Pull live token symbol/name (DexScreener) when available
+  return tokenInfo?.symbol || tokenInfo?.name || 'TOKEN';
 }
 
 export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProps) {
@@ -125,6 +128,17 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
   const [loading, setLoading] = useState(false);
   const [pulledCard, setPulledCard] = useState<CardStatusResponse | (CardStatusResponse & any) | null>(null);
   const [funding, setFunding] = useState<FundingSnapshot | null>(null);
+
+  // Token label lookup for the card (DexScreener)
+  const tokenMintForLookup = useMemo(() => {
+    const anyCard: any = pulledCard;
+    const mintFromCard: string | null = anyCard?.token_mint || null;
+    const mintFromPortfolio: string | null =
+      funding?.token_portfolio?.tokens?.[0]?.mint || null;
+    return mintFromCard || mintFromPortfolio || '';
+  }, [pulledCard, funding]);
+
+  const { tokenInfo } = useTokenLookup(tokenMintForLookup);
 
   const [solPriceUsd, setSolPriceUsd] = useState<number | null>(null);
   const [claimSummary, setClaimSummary] = useState<ClaimSummary | null>(null);
@@ -294,10 +308,8 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
         }
       }
 
-      const tokenSymbol = getSymbolForCard(
-        pulledCard,
-        mainToken?.mint || cardAny.token_mint || null
-      );
+      const tokenMint = (cardAny.token_mint || mainToken?.mint || null) as string | null;
+      const tokenSymbol = getDisplayTokenLabel(tokenMint, tokenInfo);
 
       const tokenAmount =
         mainToken?.amount_ui ??
@@ -383,10 +395,8 @@ export function ClaimModal({ open, onOpenChange, initialCardId }: ClaimModalProp
       }
     }
 
-    const tokenSymbol = getSymbolForCard(
-      pulledCard,
-      mainToken?.mint || anyCard.token_mint || null
-    );
+    const tokenMint = (anyCard.token_mint || mainToken?.mint || null) as string | null;
+    const tokenSymbol = getDisplayTokenLabel(tokenMint, tokenInfo);
 
     const tokenAmount =
       mainToken?.amount_ui ??
