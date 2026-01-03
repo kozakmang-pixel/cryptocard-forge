@@ -451,18 +451,16 @@ export default function Index() {
             </div>
 
             {/* Funding */}
-            {cardCreated && cardData && (
-              <FundingPanel
-                cardId={cardData.cardId}
-                cvv={cardData.cvv}
-                depositAddress={cardData.depositAddress}
-                funded={funded}
-                locked={locked}
-                fundedAmount={funded ? `${cardData.solValue} SOL` : '0 SOL'}
-                tokenSymbol={cardData.tokenSymbol || tokenSymbol}
-                onFundingStatusChange={handleFundingStatusChange}
-              />
-            )}
+            <FundingPanel
+              cardId={cardData?.cardId || ''}
+              cvv={cardData?.cvv || ''}
+              depositAddress={cardData?.depositAddress || ''}
+              funded={funded}
+              locked={locked}
+              fundedAmount={funded && cardData ? `${cardData.solValue} SOL` : '0 SOL'}
+              tokenSymbol={cardData?.tokenSymbol || tokenSymbol}
+              onFundingStatusChange={handleFundingStatusChange}
+            />
 
             <Button
               onClick={handleLockAndShare}
