@@ -224,20 +224,34 @@ export default function Index() {
 
   // Funding callback from FundingPanel → keep card preview in sync
   const handleFundingStatusChange = useCallback(
-    (isFunded: boolean, solAmount: number, tokenSymbolFromPanel?: string) => {
+    (
+      isFunded: boolean,
+      solAmount: number,
+      tokenAmountFromPanel?: string,
+      tokenSymbolFromPanel?: string,
+      fiatValueFromPanel?: string
+    ) => {
       setFunded(isFunded);
+
       setCardData((prev) =>
         prev
           ? {
               ...prev,
               funded: isFunded,
               tokenSymbol: tokenSymbolFromPanel || prev.tokenSymbol,
-              tokenAmount: solAmount.toString(),
+              // For SPL-token cards, FundingPanel passes the real token units here.
+              // For SOL cards, tokenAmountFromPanel may be undefined; in that case mirror solAmount.
+              tokenAmount:
+                tokenAmountFromPanel ??
+                (tokenSymbolFromPanel === 'SOL'
+                  ? solAmount.toString()
+                  : prev.tokenAmount),
               solValue: solAmount.toFixed(6),
               fiatValue:
-                solAmount > 0 && solPrice
+                fiatValueFromPanel ??
+                (solAmount > 0 && solPrice
                   ? (solAmount * solPrice).toFixed(2)
-                  : prev.fiatValue,
+                  : prev.fiatValue),
             }
           : null
       );
