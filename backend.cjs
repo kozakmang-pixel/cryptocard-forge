@@ -715,6 +715,94 @@ app.post('/upload-template', upload.single('file'), async (req, res) => {
     console.error('Error in /upload-template:', err);
     return res.status(500).json({ error: err?.message || 'upload_failed' });
   }
+
+/**
+ * List uploaded templates stored in Supabase Storage.
+ * Returns public URLs so the frontend can mix them into the stock image pool.
+ *
+ * Query params:
+ *  - type: 'image' | 'gif' | 'all' (default: 'all')
+ *  - limit: number (default: 400, max: 2000)
+ */
+app.get('/list-templates', async (req, res) => {
+  try {
+    const type = String(req.query.type || 'all').toLowerCase();
+    const limitRaw = Number(req.query.limit ?? 400);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(2000, Math.floor(limitRaw))) : 400;
+
+    // We store uploads under the "templates/" prefix (see /upload-template).
+    const prefix = 'templates';
+
+    const urls = [];
+    let offset = 0;
+
+    // Supabase list() is paginated via offset + limit.
+    // We'll page until we collect enough, or there are no more results.
+    while (urls.length < limit) {
+      const pageSize = Math.min(1000, limit - urls.length);
+
+      const { data: objects, error } = await supabase.storage
+        .from(TEMPLATE_BUCKET)
+        .list(prefix, { limit: pageSize, offset });
+
+      if (error) {
+        // If the bucket doesn't exist, return empty list rather than failing the whole refresh.
+        const msg = error?.message || '';
+        if (msg.toLowerCase().includes('bucket') && msg.toLowerCase().includes('not found')) {
+          return res.json({ urls: [] });
+        }
+        return res.status(500).json({ error: 'list_failed', details: msg });
+      }
+
+      if (!objects || objects.length === 0) break;
+
+      for (const obj of objects) {
+        const name = obj?.name;
+        if (!name) continue;
+
+        // Ignore folder placeholders
+        if (obj?.id === null && obj?.metadata === null && obj?.updated_at === null && obj?.created_at === null) {
+          continue;
+        }
+
+        const lower = String(name).toLowerCase();
+        const isGif = lower.endsWith('.gif');
+        const isImage =
+          lower.endsWith('.png') ||
+          lower.endsWith('.jpg') ||
+          lower.endsWith('.jpeg') ||
+          lower.endsWith('.webp') ||
+          lower.endsWith('.avif') ||
+          lower.endsWith('.svg') ||
+          lower.endsWith('.gif');
+
+        if (!isImage) continue;
+
+        if (type === 'gif' && !isGif) continue;
+        if (type === 'image' && isGif) continue;
+
+        const objectPath = `${prefix}/${name}`;
+        const publicRes = supabase.storage.from(TEMPLATE_BUCKET).getPublicUrl(objectPath);
+        const url = publicRes?.data?.publicUrl;
+        if (url) urls.push(url);
+
+        if (urls.length >= limit) break;
+      }
+
+      offset += objects.length;
+
+      // If we got fewer than requested, we reached the end.
+      if (objects.length < pageSize) break;
+    }
+
+    return res.json({ urls });
+  } catch (err) {
+    console.error('Error in /list-templates:', err);
+    return res.status(500).json({ error: err?.message || 'list_failed' });
+  }
+});
+
+
 });
 
 // Serve static frontend from dist
