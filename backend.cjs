@@ -19,6 +19,9 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://cryptocards.fun';
 
+// Google Vision SafeSearch moderation (optional but recommended)
+const GOOGLE_VISION_API_KEY = process.env.GOOGLE_VISION_API_KEY || '';
+
 // Optional: public burn wallet for dashboard + protocol tax destination
 const BURN_WALLET =
   process.env.BURN_WALLET ||
@@ -554,6 +557,61 @@ function guessExtension(mimetype, originalname) {
   return map[String(mimetype || '').toLowerCase()] || '';
 }
 
+
+// --- Image moderation (Google Vision SafeSearch) ---
+// Reject on adult/racy/violence if the likelihood is LIKELY or VERY_LIKELY.
+const SAFESEARCH_BAD_LEVELS = new Set(['LIKELY', 'VERY_LIKELY']);
+
+function isAllowedTemplateMime(mimetype) {
+  const mt = String(mimetype || '').toLowerCase();
+  return mt === 'image/jpeg' || mt === 'image/jpg' || mt === 'image/png' || mt === 'image/gif' || mt === 'image/webp';
+}
+
+async function runSafeSearchOnBuffer(buffer) {
+  if (!GOOGLE_VISION_API_KEY) {
+    throw new Error('GOOGLE_VISION_API_KEY missing');
+  }
+
+  const fetch = (await import('node-fetch')).default;
+
+  const base64 = Buffer.from(buffer).toString('base64');
+
+  const res = await fetch(
+    `https://vision.googleapis.com/v1/images:annotate?key=${GOOGLE_VISION_API_KEY}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        requests: [
+          {
+            image: { content: base64 },
+            features: [{ type: 'SAFE_SEARCH_DETECTION' }],
+          },
+        ],
+      }),
+    }
+  );
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Vision API status ${res.status} ${body || ''}`.trim());
+  }
+
+  const json = await res.json().catch(() => null);
+  const safe = json?.responses?.[0]?.safeSearchAnnotation || null;
+  return safe;
+}
+
+function isRejectedSafeSearch(safe) {
+  if (!safe) return true;
+  return (
+    SAFESEARCH_BAD_LEVELS.has(safe.adult) ||
+    SAFESEARCH_BAD_LEVELS.has(safe.racy) ||
+    SAFESEARCH_BAD_LEVELS.has(safe.violence)
+  );
+}
+
+
 app.post('/upload-template', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
@@ -563,6 +621,27 @@ app.post('/upload-template', upload.single('file'), async (req, res) => {
     const mimetype = req.file.mimetype || '';
     if (!String(mimetype).startsWith('image/')) {
       return res.status(400).json({ error: 'Only image uploads are allowed' });
+    }
+
+    if (!isAllowedTemplateMime(mimetype)) {
+      return res.status(400).json({ error: 'Only JPG, PNG, GIF, or WebP images are allowed' });
+    }
+
+    // Moderate user uploads so NSFW / violent images never become public
+    if (!GOOGLE_VISION_API_KEY) {
+      return res.status(500).json({ error: 'Moderation not configured (missing GOOGLE_VISION_API_KEY)' });
+    }
+
+    let safe = null;
+    try {
+      safe = await runSafeSearchOnBuffer(req.file.buffer);
+    } catch (moderationErr) {
+      console.error('SafeSearch moderation failed:', moderationErr);
+      return res.status(500).json({ error: 'Failed to moderate image' });
+    }
+
+    if (isRejectedSafeSearch(safe)) {
+      return res.status(400).json({ error: 'Image rejected by content moderation' });
     }
 
     const ext = guessExtension(mimetype, req.file.originalname);
@@ -594,61 +673,6 @@ app.post('/upload-template', upload.single('file'), async (req, res) => {
   } catch (err) {
     console.error('Error in /upload-template:', err);
     return res.status(500).json({ error: err?.message || 'upload_failed' });
-  }
-});
-
-
-/**
- * List uploaded card templates from Supabase Storage (public URLs).
- * Used by the frontend ImageGrid to show user-uploaded images/GIFs alongside stock images.
- *
- * Query params:
- * - type: "image" | "gif" | "all" (default: "all")
- * - limit: number (default: 200, max: 1000)
- */
-app.get('/list-templates', async (req, res) => {
-  try {
-    const type = String(req.query.type || 'all').toLowerCase();
-    const rawLimit = Number(req.query.limit || 200);
-    const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(Math.floor(rawLimit), 1), 1000) : 200;
-
-    const { data, error } = await supabase.storage
-      .from(TEMPLATE_BUCKET)
-      .list('templates', {
-        limit,
-        offset: 0,
-        sortBy: { column: 'name', order: 'desc' },
-      });
-
-    if (error) {
-      console.error('Supabase storage list error:', error);
-      return res.status(500).json({ error: 'Failed to list templates' });
-    }
-
-    const files = Array.isArray(data) ? data : [];
-    const urls = files
-      .filter((f) => f && typeof f.name === 'string' && f.name.length > 0)
-      // ignore folders (Supabase can return items without an id/metadata when it's a folder)
-      .filter((f) => !f.name.endsWith('/'))
-      .filter((f) => {
-        const name = String(f.name).toLowerCase();
-        const isGif = name.endsWith('.gif');
-        if (type === 'gif') return isGif;
-        if (type === 'image') return !isGif;
-        return true; // all
-      })
-      .map((f) => {
-        const publicRes = supabase.storage
-          .from(TEMPLATE_BUCKET)
-          .getPublicUrl(`templates/${f.name}`);
-        return publicRes?.data?.publicUrl || null;
-      })
-      .filter(Boolean);
-
-    return res.json({ urls });
-  } catch (err) {
-    console.error('Error in /list-templates:', err);
-    return res.status(500).json({ error: err?.message || 'list_templates_failed' });
   }
 });
 
