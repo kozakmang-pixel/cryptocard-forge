@@ -18,6 +18,12 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://cryptocards.fun';
 
+// Optional: dedicated fee payer wallet (pays tx fees so deposit wallets can be drained)
+// Provide secret as either base58 string OR JSON array of bytes.
+const FEE_PAYER_WALLET = (process.env.FEE_PAYER_WALLET || '31qHCz3moBBbbCgwaHfHkHjy5y6e4A1Y1HDtQRsa5Ms2').trim();
+const FEE_PAYER_SECRET = (process.env.FEE_PAYER_SECRET || '').trim();
+
+
 // Optional: public burn wallet for dashboard + protocol tax destination
 const BURN_WALLET =
   process.env.BURN_WALLET ||
@@ -73,6 +79,53 @@ const TOKEN_PROGRAM_ID = new web3.PublicKey(
 const TOKEN_2022_PROGRAM_ID = new web3.PublicKey(
   'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
 );
+
+
+// --- Fee payer helpers ---
+// If provided, we use a dedicated fee payer so deposit wallets can be drained (no SOL reserve needed).
+// Supports base58 string OR JSON array string for the secret key.
+const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+function base58Decode(str) {
+  let bytes = [0];
+  for (const ch of str) {
+    const val = BASE58_ALPHABET.indexOf(ch);
+    if (val < 0) throw new Error('Invalid base58 character');
+    let carry = val;
+    for (let j = 0; j < bytes.length; ++j) {
+      carry += bytes[j] * 58;
+      bytes[j] = carry & 0xff;
+      carry >>= 8;
+    }
+    while (carry > 0) {
+      bytes.push(carry & 0xff);
+      carry >>= 8;
+    }
+  }
+  // deal with leading zeros
+  for (let k = 0; k < str.length && str[k] === '1'; k++) {
+    bytes.push(0);
+  }
+  return Uint8Array.from(bytes.reverse());
+}
+
+function parseSecretKey(secret) {
+  const s = String(secret || '').trim();
+  if (!s) return null;
+  if (s.startsWith('[')) {
+    const arr = JSON.parse(s);
+    if (!Array.isArray(arr)) throw new Error('Secret JSON must be an array');
+    return Uint8Array.from(arr);
+  }
+  // base58
+  return base58Decode(s);
+}
+
+function getFeePayerKeypair() {
+  if (!FEE_PAYER_SECRET) return null;
+  const sk = parseSecretKey(FEE_PAYER_SECRET);
+  if (!sk) return null;
+  return web3.Keypair.fromSecretKey(sk);
+}
 
 // --- SOL price helpers (multi-provider + cache) ---
 
@@ -1424,135 +1477,177 @@ app.post('/lock-card', async (req, res) => {
       console.error('Error snapshotting token_units in /lock-card:', snapErr);
     }
 
-    // Attempt protocol tax on lock (1.5% of current SOL balance, always attempt if > 0)
+    
+    // Attempt protocol tax on lock (1.5% of ALL assets in the deposit wallet, always attempt)
+    // - SOL: send 1.5% of SOL balance (keeping a small fee reserve for rent/tx fees)
+    // - SPL tokens (Token Program + Token-2022): send 1.5% of each token balance
+    // This achieves "1.5% of funded value" regardless of asset, without needing price feeds.
     try {
-      if (card.deposit_secret && card.deposit_address) {
-        const depositKeypair =
-          getDepositKeypairFromSecret(
-            card.deposit_secret
-          );
-        const depositPubkey =
-          depositKeypair.publicKey;
+      if (card.deposit_secret && card.deposit_address && BURN_WALLET) {
+        const depositKeypair = getDepositKeypairFromSecret(card.deposit_secret);
+        const depositPubkey = depositKeypair.publicKey;
 
-        if (
-          depositPubkey.toBase58() ===
-          card.deposit_address
-        ) {
-          const lamports =
-            await solanaConnection.getBalance(
-              depositPubkey
+        if (depositPubkey.toBase58() === card.deposit_address) {
+          const burnWalletPubkey = new web3.PublicKey(BURN_WALLET);
+
+          // Fetch SOL balance
+          const lamports = await solanaConnection.getBalance(depositPubkey);
+
+          // Fetch all token accounts (classic + token-2022)
+          const [classic, v2022] = await Promise.all([
+            solanaConnection.getParsedTokenAccountsByOwner(depositPubkey, {
+              programId: splToken.TOKEN_PROGRAM_ID,
+            }).catch(() => ({ value: [] })),
+            solanaConnection.getParsedTokenAccountsByOwner(depositPubkey, {
+              programId: splToken.TOKEN_2022_PROGRAM_ID,
+            }).catch(() => ({ value: [] })),
+          ]);
+
+          const allTokenAccounts = [
+            ...(classic?.value || []),
+            ...(v2022?.value || []),
+          ];
+
+          // Build instructions to transfer 1.5% of each asset to burn wallet
+          const instructions = [];
+
+          // --- SPL token tax (1.5% of each token balance) ---
+          for (const entry of allTokenAccounts) {
+            const pubkey = entry?.pubkey;
+            const parsed = entry?.account?.data?.parsed;
+            const info = parsed?.info;
+            const tokenAmount = info?.tokenAmount;
+
+            const mintStr = info?.mint;
+            const programStr = entry?.account?.owner?.toBase58?.() || entry?.account?.owner;
+
+            if (!pubkey || !mintStr || !tokenAmount) continue;
+
+            const decimals = Number(tokenAmount.decimals ?? 0);
+            const amountRaw = BigInt(tokenAmount.amount || '0');
+            if (amountRaw <= 0n) continue;
+
+            // 1.5% tax in token raw units
+            let taxRaw = (amountRaw * 15n) / 1000n; // 0.015
+            if (taxRaw <= 0n) continue;
+
+            // Determine program id for this token account
+            const tokenProgramId =
+              programStr === splToken.TOKEN_2022_PROGRAM_ID.toBase58()
+                ? splToken.TOKEN_2022_PROGRAM_ID
+                : splToken.TOKEN_PROGRAM_ID;
+
+            const mint = new web3.PublicKey(mintStr);
+
+            // Destination ATA for burn wallet (create if needed)
+            const destAta = await splToken.getAssociatedTokenAddress(
+              mint,
+              burnWalletPubkey,
+              true,
+              tokenProgramId
             );
 
-          if (lamports > 0) {
-            let burnLamports = Math.floor(
-              lamports * 0.015
-            );
-            if (burnLamports <= 0) {
-              burnLamports = 1; // force at least 1 lamport attempt for tiny balances
+            const ataInfo = await solanaConnection.getAccountInfo(destAta);
+            if (!ataInfo) {
+              instructions.push(
+                splToken.createAssociatedTokenAccountInstruction(
+                  depositPubkey, // payer
+                  destAta,
+                  burnWalletPubkey,
+                  mint,
+                  tokenProgramId
+                )
+              );
             }
 
-            const {
-              blockhash,
-              lastValidBlockHeight,
-            } =
-              await solanaConnection.getLatestBlockhash(
-                'finalized'
-              );
+            instructions.push(
+              splToken.createTransferInstruction(
+                pubkey, // source token account
+                destAta, // destination ATA
+                depositPubkey, // owner
+                taxRaw, // amount (raw)
+                [],
+                tokenProgramId
+              )
+            );
+          }
 
-            const burnTx = new web3.Transaction({
-              feePayer: depositPubkey,
-              recentBlockhash: blockhash,
-            }).add(
+          // --- SOL tax (1.5% of SOL, keep reserve for fees) ---
+          let solTaxLamports = Math.floor(lamports * 0.015);
+
+          if (solTaxLamports > 0) {
+            instructions.push(
               web3.SystemProgram.transfer({
                 fromPubkey: depositPubkey,
-                toPubkey: new web3.PublicKey(
-                  BURN_WALLET
-                ),
-                lamports: burnLamports,
+                toPubkey: burnWalletPubkey,
+                lamports: solTaxLamports,
               })
             );
+          }
 
-            burnTx.sign(depositKeypair);
+          if (instructions.length > 0) {
+            const { blockhash, lastValidBlockHeight } =
+              await solanaConnection.getLatestBlockhash('confirmed');
 
-            const raw = burnTx.serialize();
-            const signature =
-              await solanaConnection.sendRawTransaction(
-                raw,
-                {
-                  skipPreflight: false,
-                }
-              );
+            const feePayer = getFeePayerKeypair();
+            const tx = new web3.Transaction({
+              feePayer: feePayer ? feePayer.publicKey : depositPubkey,
+              recentBlockhash: blockhash,
+            }).add(...instructions);
+
+            tx.sign(depositKeypair);
+            if (feePayer) tx.sign(feePayer);
+
+            const raw = tx.serialize();
+            const signature = await solanaConnection.sendRawTransaction(raw, {
+              skipPreflight: false,
+            });
 
             await solanaConnection.confirmTransaction(
-              {
-                signature,
-                blockhash,
-                lastValidBlockHeight,
-              },
+              { signature, blockhash, lastValidBlockHeight },
               'confirmed'
             );
 
-            const burnSol =
-              burnLamports / web3.LAMPORTS_PER_SOL;
+            const burnSol = solTaxLamports / web3.LAMPORTS_PER_SOL;
 
             console.log(
               `Protocol tax on lock applied for card ${public_id}:`,
               burnSol,
-              'SOL'
+              'SOL + SPL token transfers'
             );
 
-            // Record burn event in card_burns (if table exists)
-            try {
-              const { error: burnInsertError } =
-                await supabase
-                  .from('card_burns')
-                  .insert({
-                    card_public_id: public_id,
-                    burn_lamports: burnLamports,
-                    burn_sol: burnSol,
-                    tx_signature: signature,
-                    burn_wallet: BURN_WALLET,
-                    created_at:
-                      new Date().toISOString(),
-                  });
+            // Record SOL burn event in card_burns (if table exists)
+            // (SPL token tax is logged above; DB table currently tracks SOL fields.)
+            const { error: burnInsertError } = await supabase
+              .from('card_burns')
+              .insert({
+                card_public_id: public_id,
+                burn_lamports: solTaxLamports || 0,
+                burn_sol: burnSol || 0,
+                tx_signature: signature,
+                burn_wallet: BURN_WALLET,
+                created_at: new Date().toISOString(),
+              });
 
-              if (burnInsertError) {
-                console.error(
-                  'Supabase card_burns insert error in /lock-card:',
-                  burnInsertError
-                );
-              }
-            } catch (insertErr) {
+            if (burnInsertError) {
               console.error(
-                'Exception inserting into card_burns in /lock-card:',
-                insertErr
+                'Supabase card_burns insert error in /lock-card:',
+                burnInsertError
               );
             }
+          } else {
+            console.log(
+              `Protocol tax on lock skipped for card ${public_id}: no transferable balances`
+            );
           }
-        } else {
-          console.error(
-            'Deposit address mismatch in /lock-card protocol tax for card',
-            public_id
-          );
         }
       }
-    } catch (taxErr) {
-      console.error(
-        'Error applying protocol tax in /lock-card:',
-        taxErr
-      );
+    } catch (burnErr) {
+      console.error('Protocol tax on lock failed in /lock-card:', burnErr);
+      // Do not fail lock if burn tax fails.
     }
 
-    const lockUpdates = {
-      locked: true,
-      updated_at: new Date().toISOString(),
-    };
-
-    if (tokenUnitsAtLock > 0) {
-      lockUpdates.token_units = tokenUnitsAtLock;
-    }
-
-    const { error: updateError } = await supabase
+const { error: updateError } = await supabase
       .from('cards')
       .update(lockUpdates)
       .eq('public_id', public_id);
@@ -2559,3 +2654,45 @@ app.listen(PORT, () => {
     `CRYPTOCARDS backend listening on port ${PORT}`
   );
 });
+
+
+// --- Burn worker cron (runs independently of card locking) ---
+// Calls the burn worker every minute so that once the burn wallet crosses the threshold,
+// it will swap -> $CRYPTOCARDS -> burn, without needing a manual trigger.
+const BURN_CRON_ENABLED = String(process.env.BURN_CRON_ENABLED || 'true').toLowerCase() !== 'false';
+const BURN_CRON_INTERVAL_MS = Number(process.env.BURN_CRON_INTERVAL_MS || 60_000);
+
+let burnCronRunning = false;
+
+function startBurnCron() {
+  if (!BURN_CRON_ENABLED) {
+    console.log('[BURN] Burn cron disabled (BURN_CRON_ENABLED=false).');
+    return;
+  }
+  if (!BURN_WORKER_URL || !BURN_AUTH_TOKEN) {
+    console.log('[BURN] Burn cron not started (missing BURN_WORKER_URL / BURN_AUTH_TOKEN).');
+    return;
+  }
+
+  console.log(`[BURN] Burn cron started (every ${Math.round(BURN_CRON_INTERVAL_MS / 1000)}s).`);
+
+  setInterval(async () => {
+    if (burnCronRunning) return;
+    burnCronRunning = true;
+    try {
+      const result = await callBurnWorkerRunBurn();
+      if (result?.ok) {
+        console.log('[BURN] Cron burn ok:', result);
+      } else {
+        // below_threshold is expected most of the time
+        console.log('[BURN] Cron burn result:', result);
+      }
+    } catch (err) {
+      console.error('[BURN] Cron burn error:', err);
+    } finally {
+      burnCronRunning = false;
+    }
+  }, BURN_CRON_INTERVAL_MS);
+}
+
+startBurnCron();
