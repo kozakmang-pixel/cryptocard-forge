@@ -51,7 +51,7 @@ export function ImageGrid({ selectedImage, onSelectImage, onUpload }: ImageGridP
 
         if (!giphyApiKey) {
           console.warn('Missing VITE_GIPHY_API_KEY, falling back to static images');
-          setItems(pickRandomUnique(STATIC_IMAGE_URLS, 4));
+          setItems(pickRandomUnique(STATIC_IMAGE_URLS, 8));
           return;
         }
 
@@ -75,9 +75,9 @@ export function ImageGrid({ selectedImage, onSelectImage, onUpload }: ImageGridP
             .filter(Boolean) || [];
 
         if (!urls.length) {
-          setItems(pickRandomUnique(STATIC_IMAGE_URLS, 4));
+          setItems(pickRandomUnique(STATIC_IMAGE_URLS, 8));
         } else {
-          setItems(pickRandomUnique(urls, 4));
+          setItems(pickRandomUnique(urls, 8));
         }
       } else {
         // IMAGE MODE – Pexels search
@@ -85,7 +85,7 @@ export function ImageGrid({ selectedImage, onSelectImage, onUpload }: ImageGridP
 
         if (!pexelsApiKey) {
           console.warn('Missing VITE_PEXELS_API_KEY, falling back to static images');
-          setItems(pickRandomUnique(STATIC_IMAGE_URLS, 4));
+          setItems(pickRandomUnique(STATIC_IMAGE_URLS, 8));
           return;
         }
 
@@ -112,15 +112,15 @@ export function ImageGrid({ selectedImage, onSelectImage, onUpload }: ImageGridP
             .filter(Boolean) || [];
 
         if (!urls.length) {
-          setItems(pickRandomUnique(STATIC_IMAGE_URLS, 4));
+          setItems(pickRandomUnique(STATIC_IMAGE_URLS, 8));
         } else {
-          setItems(pickRandomUnique(urls, 4));
+          setItems(pickRandomUnique(urls, 8));
         }
       }
     } catch (err) {
       console.error('ImageGrid load error', err);
       // Absolute fallback – always show *something*
-      setItems(pickRandomUnique(STATIC_IMAGE_URLS, 4));
+      setItems(pickRandomUnique(STATIC_IMAGE_URLS, 8));
     } finally {
       setLoading(false);
     }
@@ -142,7 +142,7 @@ export function ImageGrid({ selectedImage, onSelectImage, onUpload }: ImageGridP
   const displayItems = useMemo(() => {
     if (!selectedImage) return items;
     if (!items.includes(selectedImage)) {
-      return [selectedImage, ...items.slice(0, 3)];
+      return [selectedImage, ...items.slice(0, 7)];
     }
     return items;
   }, [items, selectedImage]);
@@ -247,7 +247,7 @@ export function ImageGrid({ selectedImage, onSelectImage, onUpload }: ImageGridP
         </form>
       </div>
 
-      {/* Grid – 4 tiles, same layout */}
+      {/* Grid – 8 tiles, same layout */}
       <div className="grid grid-cols-4 gap-2">
         {displayItems.map((url, idx) => (
           <button
