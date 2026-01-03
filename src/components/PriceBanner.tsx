@@ -10,11 +10,11 @@ interface PriceBannerProps {
 
 // CRYPTOCARDS token mint on Solana
 const CRYPTOCARDS_MINT =
-  'AuxRtUDw7KhWZxbMcfqPoB1cLcvq44Sw83UHRd3Spump';
+  '5hiNHHBFZ3R2b7r4cfVX92DzyGm4C8yzHKJNTyBrpump';
 
 // Pump.fun stream link (clickable under banner)
 const PUMPFUN_STREAM_URL =
-  'https://pump.fun/coin/AuxRtUDw7KhWZxbMcfqPoB1cLcvq44Sw83UHRd3Spump';
+  'https://pump.fun/coin/5hiNHHBFZ3R2b7r4cfVX92DzyGm4C8yzHKJNTyBrpump';
 
 export function PriceBanner({
   solPrice,
