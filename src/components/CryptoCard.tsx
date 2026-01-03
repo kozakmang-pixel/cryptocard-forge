@@ -63,6 +63,9 @@ export function CryptoCard({
 
   const canScratch = isClaimMode && locked;
 
+  // IMPORTANT: place your logo file at: /public/cryptocards-logo.png
+  const logoSrc = '/cryptocards-logo.png';
+
   const handleScratch = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (canScratch) {
@@ -100,6 +103,15 @@ export function CryptoCard({
               src={displayImage}
               className="absolute inset-0 w-full h-full object-cover opacity-55"
             />
+
+            {/* Logo (Front) */}
+            <img
+              src={logoSrc}
+              alt="CRYPTOCARDS"
+              className="absolute bottom-2 right-2 w-[28px] h-[28px] object-contain z-20 drop-shadow"
+              draggable={false}
+            />
+
             <div className="absolute inset-0 p-3 flex flex-col justify-between z-10">
               <div className="flex justify-between items-start">
                 <div>
@@ -120,11 +132,13 @@ export function CryptoCard({
                 </div>
               </div>
 
-              <div className="flex justify-between items-center text-[6px] opacity-70">
-                <span className="uppercase font-semibold">
-                  {displayExpiry || 'NO EXPIRATION DATE'}
-                </span>
-                <span className="uppercase">ID: {cardId}</span>
+              <div className="flex justify-between items-end text-[6px] opacity-70">
+                <div className="flex flex-col leading-tight">
+                  <span className="uppercase font-semibold">
+                    {displayExpiry || 'NO EXPIRATION DATE'}
+                  </span>
+                  <span className="uppercase">ID: {cardId}</span>
+                </div>
               </div>
 
               <span className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 text-[9px] font-black tracking-[0.25em] uppercase bg-gradient-to-r from-emerald-300 via-cyan-300 to-blue-400 bg-clip-text text-transparent">
@@ -145,6 +159,15 @@ export function CryptoCard({
               src={displayImage}
               className="absolute inset-0 w-full h-full object-cover opacity-55"
             />
+
+            {/* Logo (Back) */}
+            <img
+              src={logoSrc}
+              alt="CRYPTOCARDS"
+              className="absolute bottom-2 right-2 w-[26px] h-[26px] object-contain z-10 drop-shadow"
+              draggable={false}
+            />
+
             <div className="absolute inset-0 p-2 flex flex-col items-center justify-center z-10">
               <span
                 className="text-sm font-semibold text-center max-w-[80%]"
@@ -153,7 +176,7 @@ export function CryptoCard({
                 {displayMessage}
               </span>
 
-              <div className="absolute bottom-2 right-2">
+              <div className="absolute bottom-2 right-2" style={{ transform: 'translateY(-32px)' }}>
                 <div
                   onClick={handleScratch}
                   className={cn(
@@ -170,9 +193,12 @@ export function CryptoCard({
                 </div>
               </div>
 
-              <span className="absolute bottom-2 left-2 text-[6px] uppercase opacity-60">
-                ID: {cardId}
-              </span>
+              <div className="absolute bottom-2 left-2 text-[6px] uppercase opacity-60 leading-tight">
+                <div className="font-semibold">
+                  {displayExpiry || 'NO EXPIRATION DATE'}
+                </div>
+                <div>ID: {cardId}</div>
+              </div>
 
               <span className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 text-[9px] font-black tracking-[0.25em] uppercase bg-gradient-to-r from-emerald-300 via-cyan-300 to-blue-400 bg-clip-text text-transparent">
                 CRYPTOCARDS
