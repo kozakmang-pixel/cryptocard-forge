@@ -539,16 +539,23 @@ const createdAt: string =
         <div className="space-y-4">
 
           {/* How to claim */}
-          <div className="rounded-lg border border-border bg-muted/20 p-3">
-            <div className="text-xs font-semibold text-foreground">
-              How to claim
+          <div className="rounded-lg border border-border bg-muted/20 p-3 text-center">
+            <div className="text-xs font-semibold bg-gradient-to-r from-purple-400 to-pink-500 bg-clip-text text-transparent tracking-wide uppercase">
+              HOW TO CLAIM
             </div>
-            <ol className="mt-2 list-decimal pl-4 space-y-1 text-xs text-muted-foreground">
-              <li>Enter your Card ID and click <span className="font-medium text-foreground">Pull Card</span>.</li>
+
+            <ol className="mt-2 list-decimal list-inside inline-block text-left space-y-1 text-xs text-muted-foreground">
+              <li>
+                Enter your Card ID and click{' '}
+                <span className="font-medium text-foreground">Pull Card</span>.
+              </li>
               <li>Enter the deposit address where you want the tokens delivered.</li>
               <li>Enter the unique CVV for your card.</li>
-              <li>Click <span className="font-medium text-foreground">Claim Funds</span>.</li>
+              <li>
+                Click <span className="font-medium text-foreground">Claim Funds</span>.
+              </li>
             </ol>
+
             <div className="mt-2 text-xs text-muted-foreground">
               Don&apos;t have a wallet yet?{' '}
               <a
