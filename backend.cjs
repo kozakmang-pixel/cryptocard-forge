@@ -619,38 +619,17 @@ function guessExtension(mimetype, originalname) {
       );
       return;
     }
+
     const exists = Array.isArray(data) && data.some((b) => b?.name === TEMPLATE_BUCKET);
     if (!exists) {
       console.error(
-        `
-[UPLOAD] ❌ Supabase bucket NOT FOUND: "${TEMPLATE_BUCKET}"
-` +
-          `[UPLOAD] Fix: Create that bucket in Supabase Storage OR set SUPABASE_TEMPLATE_BUCKET to an existing bucket name.
-`
+        `\n[UPLOAD] ❌ Supabase bucket NOT FOUND: "${TEMPLATE_BUCKET}"\n` +
+          `[UPLOAD] Fix: Create that bucket in Supabase Storage OR set SUPABASE_TEMPLATE_BUCKET to an existing bucket name.\n`
       );
-
-      // ✅ Auto-create bucket when using a Service Role key (fixes “Bucket not found” in prod)
-      if (supabase?.storage?.createBucket) {
-        const { error: createErr } = await supabase.storage.createBucket(TEMPLATE_BUCKET, {
-          public: true,
-        });
-        if (createErr) {
-          console.error(
-            `[UPLOAD] ❌ Failed to auto-create bucket "${TEMPLATE_BUCKET}". Create it manually in Supabase Storage. Error:`,
-            createErr
-          );
-        } else {
-          console.log(`[UPLOAD] ✅ Auto-created bucket: "${TEMPLATE_BUCKET}" (public)`);
-        }
-      } else {
-        console.warn(
-          `[UPLOAD] supabase.storage.createBucket() not available; cannot auto-create. TEMPLATE_BUCKET=${TEMPLATE_BUCKET}`
-        );
-      }
     } else {
       console.log(`[UPLOAD] ✅ Supabase bucket found: "${TEMPLATE_BUCKET}"`);
     }
-} catch (err) {
+  } catch (err) {
     console.warn('[UPLOAD] Bucket verification failed (non-fatal):', err?.message || err);
   }
 })();
@@ -715,137 +694,6 @@ app.post('/upload-template', upload.single('file'), async (req, res) => {
     console.error('Error in /upload-template:', err);
     return res.status(500).json({ error: err?.message || 'upload_failed' });
   }
-
-/**
- * List uploaded templates stored in Supabase Storage.
- * Returns public URLs so the frontend can mix them into the stock image pool.
- *
- * Query params:
- *  - type: 'image' | 'gif' | 'all' (default: 'all')
- *  - limit: number (default: 400, max: 2000)
- */
-app.get('/list-templates', async (req, res) => {
-  try {
-    const type = String(req.query.type || 'all').toLowerCase();
-    const limitRaw = Number(req.query.limit ?? 400);
-    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(2000, Math.floor(limitRaw))) : 400;
-
-    // Collect uploaded templates from Supabase Storage.
-    // IMPORTANT: Users might have uploaded files:
-    // - via this app (under "templates/")
-    // - directly in the bucket root or other folders (Supabase UI)
-    //
-    // Supabase Storage list() is NOT recursive, so we walk folders (BFS) starting from:
-    // - templates/
-    // - root
-    const startPrefixes = ['templates', ''];
-    const visited = new Set();
-    const queue = [...startPrefixes];
-    const urls = [];
-
-    // Safety cap so we never loop forever on weird storage structures
-    const MAX_FOLDERS = 200;
-    const MAX_OBJECTS_SCANNED = 5000;
-
-    let foldersScanned = 0;
-    let objectsScanned = 0;
-
-    const isSupportedImage = (name) => {
-      const lower = String(name || '').toLowerCase();
-      const isGif = lower.endsWith('.gif');
-      const isImage =
-        lower.endsWith('.png') ||
-        lower.endsWith('.jpg') ||
-        lower.endsWith('.jpeg') ||
-        lower.endsWith('.webp') ||
-        lower.endsWith('.avif') ||
-        lower.endsWith('.svg') ||
-        lower.endsWith('.gif');
-
-      if (!isImage) return { ok: false, isGif: false };
-      return { ok: true, isGif };
-    };
-
-    const pushPublicUrl = (objectPath) => {
-      const publicRes = supabase.storage.from(TEMPLATE_BUCKET).getPublicUrl(objectPath);
-      const url = publicRes?.data?.publicUrl;
-      if (url) urls.push(url);
-    };
-
-    while (queue.length && urls.length < limit && foldersScanned < MAX_FOLDERS && objectsScanned < MAX_OBJECTS_SCANNED) {
-      const prefix = queue.shift();
-      if (visited.has(prefix)) continue;
-      visited.add(prefix);
-      foldersScanned += 1;
-
-      let offset = 0;
-
-      while (urls.length < limit && objectsScanned < MAX_OBJECTS_SCANNED) {
-        const pageSize = Math.min(1000, limit - urls.length);
-
-        const { data: objects, error } = await supabase.storage
-          .from(TEMPLATE_BUCKET)
-          .list(prefix, { limit: pageSize, offset });
-
-        if (error) {
-          // If the bucket doesn't exist, return empty list rather than failing the whole refresh.
-          const msg = error?.message || '';
-          if (msg.toLowerCase().includes('bucket') && msg.toLowerCase().includes('not found')) {
-            return res.json({ urls: [] });
-          }
-          return res.status(500).json({ error: 'list_failed', details: msg });
-        }
-
-        if (!objects || objects.length === 0) break;
-
-        for (const obj of objects) {
-          objectsScanned += 1;
-          if (objectsScanned >= MAX_OBJECTS_SCANNED) break;
-
-          const name = obj?.name;
-          if (!name) continue;
-
-          // FOLDER detection: Supabase returns "folders" as items with null id + null metadata.
-          // Timestamps can vary across versions, so we only rely on id/metadata being null.
-          const looksLikeFolder = obj?.id === null && obj?.metadata === null;
-
-          if (looksLikeFolder) {
-            // Avoid re-adding empty root prefix as a "folder"
-            const nextPrefix = prefix ? `${prefix}/${name}` : name;
-            // Only walk a reasonable number of folders
-            if (!visited.has(nextPrefix) && queue.length < MAX_FOLDERS) queue.push(nextPrefix);
-            continue;
-          }
-
-          const { ok, isGif } = isSupportedImage(name);
-          if (!ok) continue;
-
-          if (type === 'gif' && !isGif) continue;
-          if (type === 'image' && isGif) continue;
-
-          const objectPath = prefix ? `${prefix}/${name}` : name;
-          pushPublicUrl(objectPath);
-
-          if (urls.length >= limit) break;
-        }
-
-        offset += objects.length;
-        if (objects.length < pageSize) break;
-      }
-    }
-
-    if (String(req.query.debug || '') === '1') {
-      return res.json({ urls, meta: { bucket: TEMPLATE_BUCKET, limit, foldersScanned, objectsScanned, visited: visited.size } });
-    }
-    return res.json({ urls });
-  } catch (err) {
-    const msg = err?.message || String(err);
-    return res.status(500).json({ error: 'list_failed', details: msg });
-  }
-});
-
-
-
 });
 
 // Serve static frontend from dist
@@ -3035,6 +2883,112 @@ app.get('/public-activity', async (_req, res) => {
   } catch (err) {
     console.error('Error in /public-activity:', err);
     res.status(500).json({ error: 'Failed to load public activity' });
+  }
+});
+
+
+// List template URLs from Supabase Storage (used by ImageGrid refresh to include user uploads)
+app.get('/list-templates', async (req, res) => {
+  try {
+    const type = String(req.query.type || 'all').toLowerCase(); // all | image | gif
+    const limit = Math.min(Number(req.query.limit || 400) || 400, 2000);
+    const debug = String(req.query.debug || '0') === '1';
+
+    const bucket = process.env.SUPABASE_TEMPLATE_BUCKET || 'card-templates';
+    const extsImage = new Set(['.png', '.jpg', '.jpeg', '.webp', '.avif', '.svg']);
+    const extsGif = new Set(['.gif']);
+
+    const shouldInclude = (name) => {
+      const lower = String(name || '').toLowerCase();
+      const dot = lower.lastIndexOf('.');
+      const ext = dot >= 0 ? lower.slice(dot) : '';
+      if (type === 'gif') return extsGif.has(ext);
+      if (type === 'image') return extsImage.has(ext);
+      return extsGif.has(ext) || extsImage.has(ext);
+    };
+
+    // Supabase storage list is not recursive, so we BFS folders.
+    const visited = new Set();
+    let foldersScanned = 0;
+    let objectsScanned = 0;
+
+    const queue = ['']; // start at root
+    // also prioritize the app upload prefix
+    const uploadPrefix = 'templates';
+    if (uploadPrefix && uploadPrefix !== '' && !queue.includes(uploadPrefix)) queue.push(uploadPrefix);
+
+    const paths = [];
+    while (queue.length && paths.length < limit) {
+      const prefix = queue.shift();
+      const safePrefix = prefix || '';
+      if (visited.has(safePrefix)) continue;
+      visited.add(safePrefix);
+      foldersScanned += 1;
+
+      let offset = 0;
+      while (paths.length < limit) {
+        const { data, error } = await supabase.storage
+          .from(bucket)
+          .list(safePrefix, { limit: 100, offset });
+
+        if (error) {
+          // If prefix doesn't exist, just skip it.
+          break;
+        }
+        if (!data || data.length === 0) break;
+
+        for (const item of data) {
+          if (paths.length >= limit) break;
+
+          const isFolder =
+            item &&
+            item.id === null &&
+            (item.metadata === null || item.metadata === undefined) &&
+            typeof item.name === 'string' &&
+            item.name.length > 0;
+
+          if (isFolder) {
+            const nextPrefix = safePrefix ? `${safePrefix}/${item.name}` : item.name;
+            if (!visited.has(nextPrefix)) queue.push(nextPrefix);
+            continue;
+          }
+
+          objectsScanned += 1;
+          if (!item || !item.name) continue;
+          if (!shouldInclude(item.name)) continue;
+
+          const objectPath = safePrefix ? `${safePrefix}/${item.name}` : item.name;
+          paths.push(objectPath);
+        }
+
+        if (data.length < 100) break;
+        offset += 100;
+        if (offset > 5000) break; // safety cap
+      }
+    }
+
+    // Convert to public URLs (bucket is public per your setup)
+    const base = `${SUPABASE_URL}/storage/v1/object/public/${bucket}/`;
+    const urls = paths.map((p) => base + encodeURI(p).replace(/#/g, '%23'));
+
+    if (debug) {
+      return res.json({
+        urls,
+        meta: {
+          bucket,
+          type,
+          limit,
+          foldersScanned,
+          objectsScanned,
+          visited: Array.from(visited).slice(0, 200),
+        },
+      });
+    }
+
+    res.json({ urls });
+  } catch (err) {
+    console.error('Error in /list-templates:', err);
+    res.status(500).json({ error: 'Failed to list templates' });
   }
 });
 
