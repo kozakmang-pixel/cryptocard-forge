@@ -19,8 +19,6 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://cryptocards.fun';
 
-// Google Vision SafeSearch moderation (optional but recommended)
-const GOOGLE_VISION_API_KEY = process.env.GOOGLE_VISION_API_KEY || '';
 
 // Optional: public burn wallet for dashboard + protocol tax destination
 const BURN_WALLET =
@@ -530,8 +528,43 @@ async function getBurnWorkerHealth() {
 // --- Express setup ---
 
 const app = express();
+app.set('trust proxy', true);
 app.use(cors());
 app.use(express.json());
+
+// Canonicalize host + force HTTPS (helps social previews + avoids duplicate domains)
+app.use((req, res, next) => {
+  try {
+    const host = String(req.headers.host || '').toLowerCase();
+    const xfProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+    const proto = xfProto || req.protocol || 'http';
+
+    let canonicalHost = null;
+    try {
+      const u = new URL(String(FRONTEND_URL || ''));
+      canonicalHost = u.host ? u.host.toLowerCase() : null;
+    } catch {
+      canonicalHost = null;
+    }
+
+    // Force https in production when FRONTEND_URL is https
+    const forceHttps = String(FRONTEND_URL || '').startsWith('https://');
+    if (forceHttps && proto !== 'https') {
+      const targetHost = canonicalHost || host;
+      if (targetHost) {
+        return res.redirect(301, `https://${targetHost}${req.originalUrl}`);
+      }
+    }
+
+    // Redirect www -> apex (or whatever FRONTEND_URL host is)
+    if (canonicalHost && host && host !== canonicalHost && host === `www.${canonicalHost}`) {
+      return res.redirect(301, `https://${canonicalHost}${req.originalUrl}`);
+    }
+  } catch {
+    // ignore
+  }
+  next();
+});
 
 // --- Template upload (custom images/GIFs) ---
 // Stores the uploaded file in Supabase Storage and returns a persistent public URL.
@@ -558,58 +591,6 @@ function guessExtension(mimetype, originalname) {
 }
 
 
-// --- Image moderation (Google Vision SafeSearch) ---
-// Reject on adult/racy/violence if the likelihood is LIKELY or VERY_LIKELY.
-const SAFESEARCH_BAD_LEVELS = new Set(['LIKELY', 'VERY_LIKELY']);
-
-function isAllowedTemplateMime(mimetype) {
-  const mt = String(mimetype || '').toLowerCase();
-  return mt === 'image/jpeg' || mt === 'image/jpg' || mt === 'image/png' || mt === 'image/gif' || mt === 'image/webp';
-}
-
-async function runSafeSearchOnBuffer(buffer) {
-  if (!GOOGLE_VISION_API_KEY) {
-    throw new Error('GOOGLE_VISION_API_KEY missing');
-  }
-
-  const fetch = (await import('node-fetch')).default;
-
-  const base64 = Buffer.from(buffer).toString('base64');
-
-  const res = await fetch(
-    `https://vision.googleapis.com/v1/images:annotate?key=${GOOGLE_VISION_API_KEY}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        requests: [
-          {
-            image: { content: base64 },
-            features: [{ type: 'SAFE_SEARCH_DETECTION' }],
-          },
-        ],
-      }),
-    }
-  );
-
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`Vision API status ${res.status} ${body || ''}`.trim());
-  }
-
-  const json = await res.json().catch(() => null);
-  const safe = json?.responses?.[0]?.safeSearchAnnotation || null;
-  return safe;
-}
-
-function isRejectedSafeSearch(safe) {
-  if (!safe) return true;
-  return (
-    SAFESEARCH_BAD_LEVELS.has(safe.adult) ||
-    SAFESEARCH_BAD_LEVELS.has(safe.racy) ||
-    SAFESEARCH_BAD_LEVELS.has(safe.violence)
-  );
-}
 
 
 app.post('/upload-template', upload.single('file'), async (req, res) => {
@@ -625,23 +606,6 @@ app.post('/upload-template', upload.single('file'), async (req, res) => {
 
     if (!isAllowedTemplateMime(mimetype)) {
       return res.status(400).json({ error: 'Only JPG, PNG, GIF, or WebP images are allowed' });
-    }
-
-    // Moderate user uploads so NSFW / violent images never become public
-    if (!GOOGLE_VISION_API_KEY) {
-      return res.status(500).json({ error: 'Moderation not configured (missing GOOGLE_VISION_API_KEY)' });
-    }
-
-    let safe = null;
-    try {
-      safe = await runSafeSearchOnBuffer(req.file.buffer);
-    } catch (moderationErr) {
-      console.error('SafeSearch moderation failed:', moderationErr);
-      return res.status(500).json({ error: 'Failed to moderate image' });
-    }
-
-    if (isRejectedSafeSearch(safe)) {
-      return res.status(400).json({ error: 'Image rejected by content moderation' });
     }
 
     const ext = guessExtension(mimetype, req.file.originalname);
@@ -676,6 +640,7 @@ app.post('/upload-template', upload.single('file'), async (req, res) => {
   }
 });
 
+
 // Serve static frontend from dist
 const distPath = path.join(__dirname, 'dist');
 
@@ -698,6 +663,89 @@ function toAbsoluteUrl(maybeUrl) {
   const pathPart = s.startsWith('/') ? s : `/${s}`;
   return base ? `${base}${pathPart}` : s;
 }
+
+// --- Social preview helpers (server-rendered OG/Twitter tags) ---
+
+let _cachedIndexHtml = null;
+let _cachedIndexMtimeMs = 0;
+
+function readIndexHtml() {
+  const fs = require('fs');
+  const htmlPath = path.join(distPath, 'index.html');
+  const stat = fs.statSync(htmlPath);
+  const mtime = stat.mtimeMs || 0;
+
+  if (_cachedIndexHtml && _cachedIndexMtimeMs === mtime) {
+    return _cachedIndexHtml;
+  }
+
+  const html = fs.readFileSync(htmlPath, 'utf8');
+  _cachedIndexHtml = html;
+  _cachedIndexMtimeMs = mtime;
+  return html;
+}
+
+function stripSocialMeta(html) {
+  return String(html || '')
+    .replace(/\s*<meta\s+property="og:[^"]+"[^>]*>\s*/gi, '\n')
+    .replace(/\s*<meta\s+name="twitter:[^"]+"[^>]*>\s*/gi, '\n');
+}
+
+function injectSocialMeta(html, metaBlock) {
+  const cleaned = stripSocialMeta(html);
+  if (cleaned.includes('</head>')) {
+    return cleaned.replace('</head>', `${metaBlock}\n  </head>`);
+  }
+  return `${metaBlock}\n${cleaned}`;
+}
+
+function buildSocialMeta({ title, description, imageUrl, pageUrl }) {
+  const img = escapeHtmlAttr(imageUrl || '');
+  const url = escapeHtmlAttr(pageUrl || '');
+  const t = escapeHtmlAttr(title || '');
+  const d = escapeHtmlAttr(description || '');
+
+  return `
+    <!-- SOCIAL PREVIEW (server-rendered) -->
+    <meta property="og:title" content="${t}" />
+    <meta property="og:description" content="${d}" />
+    <meta property="og:image" content="${img}" />
+    <meta property="og:image:secure_url" content="${img}" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="${url}" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="${t}" />
+    <meta name="twitter:description" content="${d}" />
+    <meta name="twitter:image" content="${img}" />
+    <meta name="twitter:url" content="${url}" />
+  `;
+}
+
+// Homepage social preview (for https://cryptocards.fun and www redirect)
+app.get(['/', '/index.html'], (_req, res) => {
+  try {
+    const base = String(FRONTEND_URL || 'https://cryptocards.fun').replace(/\/+$/, '');
+    const pageUrl = `${base}/`;
+    const imageUrl = `${base}/social/cryptocards-x-preview-1200x630.jpg`;
+
+    const meta = buildSocialMeta({
+      title: 'CRYPTOCARDS — On-chain, non-custodial crypto gift cards',
+      description: 'Mint • fund • lock • send. The future of digital gifting on Solana.',
+      imageUrl,
+      pageUrl,
+    });
+
+    const html = readIndexHtml();
+    const out = injectSocialMeta(html, meta);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.status(200).send(out);
+  } catch (err) {
+    console.error('Homepage social meta failed:', err);
+    return res.sendFile(path.join(distPath, 'index.html'));
+  }
+});
+
 
 /**
  * Dynamic social preview for claim links:
@@ -749,7 +797,7 @@ app.get(['/claim', '/claim/'], async (req, res) => {
 
     const imageUrl =
       toAbsoluteUrl(card.template_url) ||
-      'https://cryptocards.fun/social/cryptocards-banner-1500x500.jpg';
+      'https://cryptocards.fun/social/cryptocards-x-preview-1200x630.jpg';
 
     // Read SPA HTML and inject meta tags before </head>.
     const htmlPath = path.join(distPath, 'index.html');
