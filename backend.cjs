@@ -18,12 +18,6 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://cryptocards.fun';
 
-// Optional: dedicated fee payer wallet (pays tx fees so deposit wallets can be drained)
-// Provide secret as either base58 string OR JSON array of bytes.
-const FEE_PAYER_WALLET = (process.env.FEE_PAYER_WALLET || '31qHCz3moBBbbCgwaHfHkHjy5y6e4A1Y1HDtQRsa5Ms2').trim();
-const FEE_PAYER_SECRET = (process.env.FEE_PAYER_SECRET || '').trim();
-
-
 // Optional: public burn wallet for dashboard + protocol tax destination
 const BURN_WALLET =
   process.env.BURN_WALLET ||
@@ -79,53 +73,6 @@ const TOKEN_PROGRAM_ID = new web3.PublicKey(
 const TOKEN_2022_PROGRAM_ID = new web3.PublicKey(
   'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
 );
-
-
-// --- Fee payer helpers ---
-// If provided, we use a dedicated fee payer so deposit wallets can be drained (no SOL reserve needed).
-// Supports base58 string OR JSON array string for the secret key.
-const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-function base58Decode(str) {
-  let bytes = [0];
-  for (const ch of str) {
-    const val = BASE58_ALPHABET.indexOf(ch);
-    if (val < 0) throw new Error('Invalid base58 character');
-    let carry = val;
-    for (let j = 0; j < bytes.length; ++j) {
-      carry += bytes[j] * 58;
-      bytes[j] = carry & 0xff;
-      carry >>= 8;
-    }
-    while (carry > 0) {
-      bytes.push(carry & 0xff);
-      carry >>= 8;
-    }
-  }
-  // deal with leading zeros
-  for (let k = 0; k < str.length && str[k] === '1'; k++) {
-    bytes.push(0);
-  }
-  return Uint8Array.from(bytes.reverse());
-}
-
-function parseSecretKey(secret) {
-  const s = String(secret || '').trim();
-  if (!s) return null;
-  if (s.startsWith('[')) {
-    const arr = JSON.parse(s);
-    if (!Array.isArray(arr)) throw new Error('Secret JSON must be an array');
-    return Uint8Array.from(arr);
-  }
-  // base58
-  return base58Decode(s);
-}
-
-function getFeePayerKeypair() {
-  if (!FEE_PAYER_SECRET) return null;
-  const sk = parseSecretKey(FEE_PAYER_SECRET);
-  if (!sk) return null;
-  return web3.Keypair.fromSecretKey(sk);
-}
 
 // --- SOL price helpers (multi-provider + cache) ---
 
@@ -1573,7 +1520,13 @@ app.post('/lock-card', async (req, res) => {
           }
 
           // --- SOL tax (1.5% of SOL, keep reserve for fees) ---
+          const feeReserveLamports = Math.floor(0.002 * web3.LAMPORTS_PER_SOL); // 0.002 SOL reserve
           let solTaxLamports = Math.floor(lamports * 0.015);
+
+          // Ensure we keep a fee reserve in the deposit wallet
+          if (lamports - solTaxLamports < feeReserveLamports) {
+            solTaxLamports = Math.max(0, lamports - feeReserveLamports);
+          }
 
           if (solTaxLamports > 0) {
             instructions.push(
@@ -1589,14 +1542,12 @@ app.post('/lock-card', async (req, res) => {
             const { blockhash, lastValidBlockHeight } =
               await solanaConnection.getLatestBlockhash('confirmed');
 
-            const feePayer = getFeePayerKeypair();
             const tx = new web3.Transaction({
-              feePayer: feePayer ? feePayer.publicKey : depositPubkey,
+              feePayer: depositPubkey,
               recentBlockhash: blockhash,
             }).add(...instructions);
 
             tx.sign(depositKeypair);
-            if (feePayer) tx.sign(feePayer);
 
             const raw = tx.serialize();
             const signature = await solanaConnection.sendRawTransaction(raw, {
@@ -1647,7 +1598,18 @@ app.post('/lock-card', async (req, res) => {
       // Do not fail lock if burn tax fails.
     }
 
-const { error: updateError } = await supabase
+
+    const lockUpdates = {
+      locked: true,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (tokenUnitsAtLock > 0) {
+      lockUpdates.token_units = tokenUnitsAtLock;
+    }
+
+
+    const { error: updateError } = await supabase
       .from('cards')
       .update(lockUpdates)
       .eq('public_id', public_id);
@@ -2696,3 +2658,4 @@ function startBurnCron() {
 }
 
 startBurnCron();
+
