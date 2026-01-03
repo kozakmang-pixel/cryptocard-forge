@@ -17,7 +17,6 @@ interface CryptoCardProps {
   expiryDate?: string;
   hasExpiry?: boolean;
   isClaimMode?: boolean;
-  // NEW: for claim flow, we can show the CVV the user typed
   claimCvv?: string;
 }
 
@@ -43,8 +42,6 @@ export function CryptoCard({
 
   const cardId = data?.cardId || '0000-0000';
 
-  // In claim mode, prefer the CVV the user typed into the modal.
-  // Otherwise fall back to data.cvv or masked.
   const cvv =
     (isClaimMode && claimCvv && claimCvv.trim()) ||
     data?.cvv ||
@@ -64,7 +61,6 @@ export function CryptoCard({
       ? data.expiryDate
       : null;
 
-  // CVV can only be scratched in claim mode when card is locked
   const canScratch = isClaimMode && locked;
 
   const handleScratch = (e: React.MouseEvent) => {
@@ -92,17 +88,16 @@ export function CryptoCard({
             transform: flipped ? 'rotateY(180deg)' : 'rotateY(0deg)',
           }}
         >
-          {/* Front Face */}
+          {/* Front */}
           <div
             className={cn(
-              'absolute inset-0 rounded-xl overflow-hidden bg-card border border-border/50 transition-opacity duration-700',
+              'absolute inset-0 rounded-xl overflow-hidden bg-card border border-border/50',
               flipped && 'opacity-0'
             )}
             style={{ backfaceVisibility: 'hidden' }}
           >
             <img
               src={displayImage}
-              alt="Card background"
               className="absolute inset-0 w-full h-full object-cover opacity-55"
             />
             <div className="absolute inset-0 p-3 flex flex-col justify-between z-10">
@@ -125,59 +120,51 @@ export function CryptoCard({
                 </div>
               </div>
 
-              <div className="flex justify-between items-center text-[7px] opacity-70">
+              <div className="flex justify-between items-center text-[6px] opacity-70">
                 <span className="uppercase font-semibold">
                   {displayExpiry || 'NO EXPIRATION DATE'}
                 </span>
                 <span className="uppercase">ID: {cardId}</span>
               </div>
 
-              {/* Brand mark — always visible */}
-              <span className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 text-[9px] font-black tracking-[0.25em] uppercase bg-gradient-to-r from-emerald-300 via-cyan-300 to-blue-400 bg-clip-text text-transparent drop-shadow-sm">
+              <span className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 text-[9px] font-black tracking-[0.25em] uppercase bg-gradient-to-r from-emerald-300 via-cyan-300 to-blue-400 bg-clip-text text-transparent">
                 CRYPTOCARDS
               </span>
             </div>
           </div>
 
-          {/* Back Face */}
+          {/* Back */}
           <div
             className={cn(
-              'absolute inset-0 rounded-xl overflow-hidden bg-card border border-border/50 transition-opacity duration-700',
+              'absolute inset-0 rounded-xl overflow-hidden bg-card border border-border/50',
               !flipped && 'opacity-0'
             )}
             style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}
           >
             <img
               src={displayImage}
-              alt="Card background"
               className="absolute inset-0 w-full h-full object-cover opacity-55"
             />
             <div className="absolute inset-0 p-2 flex flex-col items-center justify-center z-10">
               <span
-                className="text-sm font-semibold text-center max-w-[80%] break-words"
+                className="text-sm font-semibold text-center max-w-[80%]"
                 style={{ fontFamily: displayFont }}
               >
                 {displayMessage}
               </span>
 
-              <div className="absolute bottom-2 right-2 flex items-center gap-1">
-                {/* CVV Scratch Area - Only functional in claim mode */}
+              <div className="absolute bottom-2 right-2">
                 <div
                   onClick={handleScratch}
                   className={cn(
-                    'px-2 py-1 rounded text-[9px] font-mono font-black tracking-wider border border-border/50 transition-all',
+                    'px-2 py-1 rounded text-[9px] font-mono font-black tracking-wider border border-border/50',
                     scratched
-                      ? 'bg-foreground text-background cursor-default'
+                      ? 'bg-foreground text-background'
                       : 'bg-gradient-to-r from-muted to-card',
                     canScratch
-                      ? 'cursor-pointer hover:brightness-110'
+                      ? 'cursor-pointer'
                       : 'opacity-60 cursor-not-allowed'
                   )}
-                  title={
-                    canScratch
-                      ? 'Click to scratch and reveal CVV'
-                      : 'CVV can only be scratched when claiming'
-                  }
                 >
                   {scratched ? cvv : isClaimMode ? 'SCRATCH' : '•••••'}
                 </div>
@@ -187,8 +174,7 @@ export function CryptoCard({
                 ID: {cardId}
               </span>
 
-              {/* Brand mark — always visible */}
-              <span className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 text-[9px] font-black tracking-[0.25em] uppercase bg-gradient-to-r from-emerald-300 via-cyan-300 to-blue-400 bg-clip-text text-transparent drop-shadow-sm">
+              <span className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 text-[9px] font-black tracking-[0.25em] uppercase bg-gradient-to-r from-emerald-300 via-cyan-300 to-blue-400 bg-clip-text text-transparent">
                 CRYPTOCARDS
               </span>
             </div>
