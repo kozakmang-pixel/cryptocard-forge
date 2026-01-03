@@ -94,6 +94,20 @@ export function FundingPanel({
   const [lookupCvv, setLookupCvv] = useState('');
   const [loadingLookup, setLoadingLookup] = useState(false);
 
+  // Persist CVV locally (client-side only) so it can be shown in your dashboard
+  useEffect(() => {
+    if (!lookupCardId || !lookupCvv) return;
+    try {
+      const key = 'cryptocards_cvv_map';
+      const raw = localStorage.getItem(key);
+      const map = raw ? JSON.parse(raw) : {};
+      map[lookupCardId] = lookupCvv;
+      localStorage.setItem(key, JSON.stringify(map));
+    } catch {
+      // ignore
+    }
+  }, [lookupCardId, lookupCvv]);
+
   // Active (displayed) card context (defaults to props)
   const [activeCardId, setActiveCardId] = useState(cardId);
   const [activeDepositAddress, setActiveDepositAddress] = useState(depositAddress);
@@ -501,17 +515,17 @@ const assetLabel = tokenSymbol || 'TOKEN';
           Send {assetLabel} to the deposit wallet below. Once funded, lock and share your
           CRYPTOCARD.
         </p>
+        <p className="text-[9px] text-muted-foreground mt-1">
+          Create an account and log in to save your card details and access them anytime.
+        </p>
       </div>
 
       
-      {/* LOAD BY CARD ID (optional) */}
+      {/* LOAD BY CARD ID */}
       <div className="rounded-lg border border-border/40 bg-card/70 p-2.5">
-        <div className="flex items-center justify-between">
-          <span className="text-[9px] font-semibold uppercase text-muted-foreground">
+        <div className="text-center">
+          <span className="text-[9px] font-semibold uppercase text-primary tracking-wide">
             Load existing card
-          </span>
-          <span className="text-[9px] text-muted-foreground">
-            (optional)
           </span>
         </div>
 
