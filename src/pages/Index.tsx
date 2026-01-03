@@ -1,760 +1,700 @@
-// src/components/FundingPanel.tsx
-import { useEffect, useState, useCallback } from 'react';
+// src/pages/Index.tsx
+import { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+import { AnimatedBackground } from '@/components/AnimatedBackground';
+import { SecurityBanner } from '@/components/SecurityBanner';
+import { PriceBanner } from '@/components/PriceBanner';
+import { CurrencySelect } from '@/components/CurrencySelect';
+import { LanguageSelect } from '@/components/LanguageSelect';
+import { Header } from '@/components/Header';
+import { ProgressBar } from '@/components/ProgressBar';
+import { CardDesigner } from '@/components/CardDesigner';
+import { CryptoCard } from '@/components/CryptoCard';
+import { FundingPanel } from '@/components/FundingPanel';
+import { LoginPanel } from '@/components/LoginPanel';
+import { UserDashboard } from '@/components/UserDashboard';
+import { AuditSection } from '@/components/AuditSection';
+import { PublicDashboard } from '@/components/PublicDashboard';
+import { ClaimModal } from '@/components/ClaimModal';
+import { ShareModal } from '@/components/ShareModal';
+import { DocumentationModal } from '@/components/DocumentationModal';
+import { TermsModal } from '@/components/TermsModal';
+import { PrivacyModal } from '@/components/PrivacyModal';
+import { DiscordModal } from '@/components/DiscordModal';
+import { DevPanel } from '@/components/DevPanel';
+import { CardData, FontFamily } from '@/types/card';
+import { apiService } from '@/services/api';
 import { toast } from 'sonner';
-import { useLanguage } from '@/lib/languageStore';
 import {
-  Copy,
-  CheckCircle2,
-  AlertCircle,
+  Palette,
+  Gift,
+  Lock,
+  Share2,
+  FileText,
+  Shield,
   ExternalLink,
-  RefreshCcw,
-  Eye,
-  EyeOff,
 } from 'lucide-react';
+import { useLanguage } from '@/lib/languageStore';
 
-interface FundingPanelProps {
-  cardId: string;
-  cvv: string;
-  depositAddress: string;
+const BUILDER_STORAGE_KEY = 'cc_builder_state_v1';
+
+interface StoredBuilderState {
+  cardData: CardData | null;
+  cardCreated: boolean;
   funded: boolean;
   locked: boolean;
-  fundedAmount: string;
+  currentStep: number;
+  tokenAddress: string;
   tokenSymbol: string;
-  onFundingStatusChange?: (isFunded: boolean, solAmount: number, tokenAmount?: string, tokenSymbol?: string, fiatValue?: string) => void;
+  tokenName: string;
+  tokenAmount: string;
+  message: string;
+  font: FontFamily;
+  hasExpiry: boolean;
+  expiryDate: string;
+  selectedImage: string;
+  currency: string;
 }
 
-interface CardStatusResponse {
-  public_id: string;
-  deposit_address: string | null;
-  funded: boolean;
-  locked: boolean;
-  claimed: boolean;
-  token_amount: number | null;
-  amount_fiat: number | null;
-  currency: string | null;
-}
+export default function Index() {
+  const { language, setLanguage, t } = useLanguage();
 
-const CC_AMOUNT_SNAPSHOT_KEY = 'cc_amount_snapshot_v1';
+  const [cardData, setCardData] = useState<CardData | null>(null);
+  const [cardCreated, setCardCreated] = useState(false);
+  const [funded, setFunded] = useState(false);
+  const [locked, setLocked] = useState(false);
+  const [currentStep, setCurrentStep] = useState(1);
 
-type AmountSnapshot = {
-  tokenAmount?: string;
-  tokenSymbol?: string;
-  solValue?: string;
-  fiatValue?: string;
-  updatedAt: number;
-};
+  const [tokenAddress, setTokenAddress] = useState('');
+  const [tokenSymbol, setTokenSymbol] = useState('TOKEN');
+  const [tokenName, setTokenName] = useState('');
+  const [tokenAmount, setTokenAmount] = useState('');
 
-const loadAmountSnapshot = (cardId: string): AmountSnapshot | null => {
-  try {
-    const raw = localStorage.getItem(CC_AMOUNT_SNAPSHOT_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') return null;
-    return parsed[cardId] ?? null;
-  } catch {
-    return null;
-  }
-};
+  const [message, setMessage] = useState('');
+  const [font, setFont] = useState<FontFamily>('Inter');
+  const [hasExpiry, setHasExpiry] = useState(false);
+  const [expiryDate, setExpiryDate] = useState('');
+  const [selectedImage, setSelectedImage] = useState(
+    'https://images.unsplash.com/photo-1621416894569-0f39ed31d247?w=300&h=190&fit=crop'
+  );
 
-const saveAmountSnapshot = (cardId: string, snap: AmountSnapshot) => {
-  try {
-    const raw = localStorage.getItem(CC_AMOUNT_SNAPSHOT_KEY);
-    const parsed = raw ? JSON.parse(raw) : {};
-    const next = { ...(parsed && typeof parsed === 'object' ? parsed : {}), [cardId]: snap };
-    localStorage.setItem(CC_AMOUNT_SNAPSHOT_KEY, JSON.stringify(next));
-  } catch {
-    // ignore
-  }
-};
+  const [currency, setCurrency] = useState('USD');
+  const [solPrice, setSolPrice] = useState(150);
 
+  const [isCreating, setIsCreating] = useState(false);
 
-export function FundingPanel({
-  cardId,
-  cvv,
-  depositAddress,
-  funded,
-  locked,
-  fundedAmount,
-  tokenSymbol,
-  onFundingStatusChange,
-}: FundingPanelProps) {
-  const { t } = useLanguage();
+  const [claimModalOpen, setClaimModalOpen] = useState(false);
+  const [shareModalOpen, setShareModalOpen] = useState(false);
+  const [docsModalOpen, setDocsModalOpen] = useState(false);
+  const [termsModalOpen, setTermsModalOpen] = useState(false);
+  const [privacyModalOpen, setPrivacyModalOpen] = useState(false);
+  const [discordModalOpen, setDiscordModalOpen] = useState(false);
 
-  const [checking, setChecking] = useState(false);
-  const [copiedAddr, setCopiedAddr] = useState(false);
-  const [copiedCvv, setCopiedCvv] = useState(false);
-  const [copiedCard, setCopiedCard] = useState(false);
-  const [cvvVisible, setCvvVisible] = useState(false);
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [authUser, setAuthUser] = useState<{
+    id: string;
+    username: string;
+    email?: string;
+  } | null>(null);
 
-  // Optional: load an existing card by ID (for re-funding / checking details)
-  const [lookupCardId, setLookupCardId] = useState('');
-  const [lookupCvv, setLookupCvv] = useState('');
-  const [loadingLookup, setLoadingLookup] = useState(false);
+  const [cardsRefreshKey, setCardsRefreshKey] = useState(0);
 
-  // Persist CVV locally (client-side only) so it can be shown in your dashboard
+  // Hydrate auth from localStorage
   useEffect(() => {
-    if (!lookupCardId || !lookupCvv) return;
+    const storedToken = localStorage.getItem('auth_token');
+    const storedUser = localStorage.getItem('auth_user');
+    if (storedToken && storedUser) {
+      setAuthToken(storedToken);
+      try {
+        setAuthUser(JSON.parse(storedUser));
+      } catch {
+        // ignore bad json
+      }
+    }
+  }, []);
+
+  // Reusable SOL price fetch for top banner + manual refresh
+  const fetchSolPrice = useCallback(async () => {
     try {
-      const key = 'cryptocards_cvv_map';
-      const raw = localStorage.getItem(key);
-      const map = raw ? JSON.parse(raw) : {};
-      map[lookupCardId] = lookupCvv;
-      localStorage.setItem(key, JSON.stringify(map));
+      const res = await fetch(
+        'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd'
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.solana?.usd) {
+        setSolPrice(data.solana.usd);
+      }
+    } catch {
+      // silent – backend still has its own pricing
+    }
+  }, []);
+
+  // Simple SOL price fetch for the top banner (client-side).
+  // Backend handles pricing for funding/audit/claim.
+  useEffect(() => {
+    fetchSolPrice();
+    const interval = setInterval(fetchSolPrice, 60_000);
+    return () => clearInterval(interval);
+  }, [fetchSolPrice]);
+
+  // Hydrate builder from localStorage
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(BUILDER_STORAGE_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw) as Partial<StoredBuilderState>;
+
+      if (saved.currency) setCurrency(saved.currency);
+      if (saved.tokenAddress) setTokenAddress(saved.tokenAddress);
+      if (saved.tokenSymbol) setTokenSymbol(saved.tokenSymbol);
+      if (saved.tokenName) setTokenName(saved.tokenName);
+      if (saved.tokenAmount) setTokenAmount(saved.tokenAmount);
+      if (saved.message) setMessage(saved.message);
+      if (saved.font) setFont(saved.font);
+      if (typeof saved.hasExpiry === 'boolean') setHasExpiry(saved.hasExpiry);
+      if (saved.expiryDate) setExpiryDate(saved.expiryDate);
+      if (saved.selectedImage) setSelectedImage(saved.selectedImage);
+      if (typeof saved.cardCreated === 'boolean') setCardCreated(saved.cardCreated);
+      if (typeof saved.funded === 'boolean') setFunded(saved.funded);
+      if (typeof saved.locked === 'boolean') setLocked(saved.locked);
+      if (typeof saved.currentStep === 'number') setCurrentStep(saved.currentStep);
+      if (saved.cardData) setCardData(saved.cardData as CardData);
+    } catch (err) {
+      console.error('Failed to hydrate builder state', err);
+    }
+  }, []);
+
+  // Persist builder to localStorage whenever it changes
+  useEffect(() => {
+    const stateToSave: StoredBuilderState = {
+      cardData,
+      cardCreated,
+      funded,
+      locked,
+      currentStep,
+      tokenAddress,
+      tokenSymbol,
+      tokenName,
+      tokenAmount,
+      message,
+      font,
+      hasExpiry,
+      expiryDate,
+      selectedImage,
+      currency,
+    };
+    try {
+      localStorage.setItem(BUILDER_STORAGE_KEY, JSON.stringify(stateToSave));
+    } catch (err) {
+      console.error('Failed to persist builder state', err);
+    }
+  }, [
+    cardData,
+    cardCreated,
+    funded,
+    locked,
+    currentStep,
+    tokenAddress,
+    tokenSymbol,
+    tokenName,
+    tokenAmount,
+    message,
+    font,
+    hasExpiry,
+    expiryDate,
+    selectedImage,
+    currency,
+  ]);
+
+  const handleTokenInfoChange = (info: { symbol: string; name: string } | null) => {
+    if (info) {
+      setTokenSymbol(info.symbol);
+      setTokenName(info.name);
+    } else {
+      setTokenSymbol('TOKEN');
+      setTokenName('');
+    }
+  };
+
+  const handleImageUpload = (file: File) => {
+    const url = URL.createObjectURL(file);
+    setSelectedImage(url);
+    toast.success('Image uploaded!');
+  };
+
+  // Funding callback from FundingPanel → keep card preview in sync
+  const handleFundingStatusChange = useCallback(
+    (isFunded: boolean, solAmount: number, tokenSymbolFromPanel?: string) => {
+      setFunded(isFunded);
+      setCardData((prev) =>
+        prev
+          ? {
+              ...prev,
+              funded: isFunded,
+              tokenSymbol: tokenSymbolFromPanel || prev.tokenSymbol,
+              tokenAmount: solAmount.toString(),
+              solValue: solAmount.toFixed(6),
+              fiatValue:
+                solAmount > 0 && solPrice
+                  ? (solAmount * solPrice).toFixed(2)
+                  : prev.fiatValue,
+            }
+          : null
+      );
+    },
+    [solPrice]
+  );
+
+  const handleCreateCard = async () => {
+    setIsCreating(true);
+    try {
+      const result = await apiService.createCard(
+        {
+          message: message || 'Gift',
+          currency,
+          amount_fiat: 0,
+          token_mint: tokenAddress || undefined,
+          expires_at:
+            hasExpiry && expiryDate
+              ? new Date(expiryDate).toISOString()
+              : undefined,
+          template_url: selectedImage,
+        },
+        authToken || undefined
+      );
+
+      const newCard: CardData = {
+        cardId: result.public_id,
+        cvv: result.cvv,
+        depositAddress: result.deposit_address,
+        image: selectedImage,
+        tokenAddress,
+        tokenSymbol: tokenSymbol || 'TOKEN',
+        tokenAmount: '0',
+        message: message || 'Gift',
+        font,
+        hasExpiry,
+        expiryDate,
+        created: new Date().toISOString(),
+        locked: false,
+        funded: false,
+        fiatValue: '0.00',
+        solValue: '0.000000',
+        step: 2,
+      };
+
+      setCardData(newCard);
+      setCardCreated(true);
+      setCurrentStep(2);
+      setFunded(false);
+      setCardsRefreshKey((prev) => prev + 1);
+
+      toast.success(`Card created! ID: ${newCard.cardId}`);
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to create card');
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
+  const handleLockAndShare = useCallback(async () => {
+    if (!funded || !cardData) return;
+    try {
+      await apiService.lockCard(cardData.cardId);
+      setLocked(true);
+      setCurrentStep(3);
+      setCardData((prev) => (prev ? { ...prev, locked: true } : null));
+      toast.success('Card locked!');
+      setTimeout(() => {
+        setShareModalOpen(true);
+      }, 100);
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to lock card');
+    }
+  }, [funded, cardData]);
+
+  const handleReset = () => {
+    setCardData(null);
+    setCardCreated(false);
+    setFunded(false);
+    setLocked(false);
+    setCurrentStep(1);
+
+    setTokenAddress('');
+    setTokenSymbol('TOKEN');
+    setTokenName('');
+    setTokenAmount('');
+    setMessage('');
+    setFont('Inter');
+    setHasExpiry(false);
+    setExpiryDate('');
+
+    try {
+      localStorage.removeItem(BUILDER_STORAGE_KEY);
     } catch {
       // ignore
     }
-  }, [lookupCardId, lookupCvv]);
-
-  // Active (displayed) card context (defaults to props)
-  const [activeCardId, setActiveCardId] = useState(cardId);
-  const [activeDepositAddress, setActiveDepositAddress] = useState(depositAddress);
-  const [activeCvv, setActiveCvv] = useState(cvv);
-  const [activeFunded, setActiveFunded] = useState(funded);
-  const [activeLocked, setActiveLocked] = useState(locked);
-
-
-
-  // canonical funded amounts that should PERSIST even after claim
-  // solAmount = value in SOL (native SOL + SPL token value in SOL)
-  const [solAmount, setSolAmount] = useState<number | null>(null);
-  const [usdAmount, setUsdAmount] = useState<number | null>(null);
-  const [solPrice, setSolPrice] = useState<number | null>(null);
-
-  // tokenAmount = actual token units (e.g. 193.962058 CRYPTOCARDS)
-  const [tokenAmount, setTokenAmount] = useState<number | null>(() => {
-    const parsed = parseFloat(fundedAmount);
-    return Number.isFinite(parsed) ? parsed : null;
-  });
-
-
-  useEffect(() => {
-    setActiveCardId(cardId);
-    setActiveDepositAddress(depositAddress);
-    setActiveCvv(cvv);
-    setActiveFunded(funded);
-    setActiveLocked(locked);
-    // do not overwrite user-typed lookup fields
-  }, [activeCardId, depositAddress, cvv, funded, locked]);
-
-const assetLabel = tokenSymbol || 'TOKEN';
-
-  // helper: fetch SOL price from backend
-  const fetchSolPrice = useCallback(async () => {
-    try {
-      const res = await fetch('/sol-price');
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-      const data = await res.json();
-      if (typeof data.price_usd === 'number') {
-        setSolPrice(data.price_usd);
-        return data.price_usd as number;
-      }
-    } catch (err) {
-      console.error('FundingPanel: failed to fetch SOL price', err);
-    }
-    return solPrice;
-  }, [solPrice]);
-
-  // helper: fetch token price in SOL directly from Jupiter on the client
-  const fetchTokenPriceInSolFromJupiter = useCallback(
-    async (mintAddress: string): Promise<number | null> => {
-      try {
-        const url = `https://lite-api.jup.ag/price/v2?ids=${encodeURIComponent(
-          mintAddress
-        )}&vsToken=So11111111111111111111111111111111111111112`;
-        const res = await fetch(url);
-        if (!res.ok) {
-          console.error('Jupiter price fetch error:', res.status);
-          return null;
-        }
-        const body = await res.json();
-        const entry = body?.data?.[mintAddress];
-        const price = entry?.price;
-        if (typeof price === 'number' && Number.isFinite(price) && price > 0) {
-          return price;
-        }
-        return null;
-      } catch (err) {
-        console.error('Jupiter price fetch exception:', err);
-        return null;
-      }
-    },
-    []
-  );
-
-  // initial load: pull any existing funded/claimed amounts from backend
-
-  const [hydratedFromSnapshot, setHydratedFromSnapshot] = useState(false);
-
-  // Hydrate last-known amounts after refresh so UI doesn't rely on 'Check on-chain funding' again
-  useEffect(() => {
-    if (hydratedFromSnapshot) return;
-    if (!cardId) return;
-
-    const looksMissing =
-      !fundedAmount || fundedAmount === '0' || fundedAmount === '0.000000' || fundedAmount === '0.00';
-
-    if (!activeFunded && !looksMissing) {
-      setHydratedFromSnapshot(true);
-      return;
-    }
-
-    const snap = loadAmountSnapshot(cardId);
-    if (!snap) {
-      setHydratedFromSnapshot(true);
-      return;
-    }
-
-    const snapSol = snap.solValue ? Number(snap.solValue) : 0;
-
-    // Apply snapshot to local UI state so amounts persist visually after refresh
-    const snapToken = snap.tokenAmount ? Number(snap.tokenAmount) : null;
-    const snapFiat = snap.fiatValue ? Number(snap.fiatValue) : null;
-
-    if (Number.isFinite(snapSol)) setSolAmount(snapSol);
-    if (snapToken !== null && Number.isFinite(snapToken)) setTokenAmount(snapToken);
-    if (snapFiat !== null && Number.isFinite(snapFiat)) setUsdAmount(snapFiat);
-    setActiveFunded(true);
-
-    if (onFundingStatusChange) {
-      onFundingStatusChange(
-        funded || true,
-        Number.isFinite(snapSol) ? snapSol : 0,
-        snap.tokenAmount,
-        snap.tokenSymbol,
-        snap.fiatValue
-      );
-    }
-    setHydratedFromSnapshot(true);
-  }, [activeCardId, funded, fundedAmount, hydratedFromSnapshot, onFundingStatusChange]);
-
-  useEffect(() => {
-    const loadInitial = async () => {
-      try {
-        const [statusRes, priceRes] = await Promise.all([
-          fetch(`/card-status/${encodeURIComponent(activeCardId)}`),
-          fetch('/sol-price').catch(() => null),
-        ]);
-
-        if (statusRes.ok) {
-          const status = (await statusRes.json()) as CardStatusResponse;
-
-          setActiveFunded(!!status.funded);
-          setActiveLocked(!!status.locked);
-          setActiveDepositAddress(status.deposit_address || '');
-
-
-          // status.token_amount here is our "SOL-equivalent" tracked in DB, not token units
-          const solLike =
-            typeof status.token_amount === 'number' && status.token_amount > 0
-              ? status.token_amount
-              : null;
-          const fiatAmt =
-            typeof status.amount_fiat === 'number' && status.amount_fiat > 0
-              ? status.amount_fiat
-              : null;
-
-          if (solLike !== null) {
-            setSolAmount(solLike);
-
-            if (onFundingStatusChange) {
-              onFundingStatusChange(true, solLike, undefined, tokenSymbol, fiatAmt !== null ? fiatAmt.toFixed(2) : undefined);
-            }
-          }
-
-          if (fiatAmt !== null) {
-            setUsdAmount(fiatAmt);
-          }
-        }
-
-        if (priceRes && priceRes.ok) {
-          const pd = await priceRes.json();
-          if (typeof pd.price_usd === 'number') {
-            setSolPrice(pd.price_usd);
-            if (solAmount !== null && usdAmount == null) {
-              setUsdAmount(solAmount * pd.price_usd);
-            }
-          }
-        }
-      } catch (err) {
-        console.error('FundingPanel: failed to load initial card status', err);
-      }
-    };
-
-    loadInitial();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeCardId]);
-
-  // formatted display values (persist even after claim)
-  const displaySol = solAmount !== null ? solAmount : 0;
-  const displayToken = tokenAmount !== null ? tokenAmount : displaySol;
-  const displayUsd =
-    usdAmount !== null
-      ? usdAmount
-      : solPrice !== null
-      ? displaySol * solPrice
-      : 0;
-
-  const formattedToken = displayToken.toFixed(6);
-  const formattedSol = displaySol.toFixed(6);
-  const formattedUsd = displayUsd.toFixed(2);
-
-  // tax: 1.5% of SOL balance, with fiat
-  const taxSol = displaySol * 0.015;
-  const isSolAsset = assetLabel.toUpperCase() === 'SOL';
-  const taxToken = isSolAsset ? taxSol : displayToken * 0.015;
-  const taxUsd = displayUsd * 0.015;
-  const formattedTaxToken = taxToken.toFixed(6);
-  const formattedTaxSol = taxSol.toFixed(6);
-  const formattedTaxUsd = taxUsd.toFixed(2);
-
-  const handleCopy = async (value: string, type: 'addr' | 'cvv' | 'card') => {
-    try {
-      await navigator.clipboard.writeText(value);
-      if (type === 'addr') {
-        setCopiedAddr(true);
-        setTimeout(() => setCopiedAddr(false), 1200);
-      } else if (type === 'cvv') {
-        setCopiedCvv(true);
-        setTimeout(() => setCopiedCvv(false), 1200);
-      } else {
-        setCopiedCard(true);
-        setTimeout(() => setCopiedCard(false), 1200);
-      }
-    } catch {
-      toast.error('Failed to copy to clipboard');
-    }
   };
 
-  const handleLoadCardById = useCallback(async () => {
-    const id = lookupCardId.trim().toUpperCase();
-    if (!id) return;
-
-    setLoadingLookup(true);
-    try {
-      const res = await fetch(`/card-status/${encodeURIComponent(id)}`);
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-      const status = (await res.json()) as CardStatusResponse;
-
-      setActiveCardId(id);
-      setActiveDepositAddress(status.deposit_address || '');
-      setActiveFunded(!!status.funded);
-      setActiveLocked(!!status.locked);
-
-      // CVV cannot be derived from chain/server; user can paste it from their dashboard.
-      setActiveCvv(lookupCvv.trim());
-
-      // Reset displayed amounts so they reload for this card (effects below will hydrate from snapshot or status)
-      setSolAmount(null);
-      setUsdAmount(null);
-      setTokenAmount(null);
-      setHydratedFromSnapshot(false);
-
-      toast.success('Card loaded.');
-    } catch (err) {
-      console.error('FundingPanel: failed to load card by id', err);
-      toast.error('Could not load that Card ID.');
-    } finally {
-      setLoadingLookup(false);
-    }
-  }, [lookupCardId, lookupCvv]);
-
-
-  const handleCheckFunding = async () => {
-    if (!cardId) return;
-    setChecking(true);
-    try {
-      const res = await fetch(`/sync-card-funding/${encodeURIComponent(activeCardId)}`, {
-        method: 'POST',
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        console.error('sync-card-funding error:', res.status, text);
-        throw new Error('Failed to sync card funding');
-      }
-
-      const data: any = await res.json();
-
-      const fundedFlag = !!data?.funded;
-      const tokenPortfolio = data?.token_portfolio;
-      const hasTokenPortfolio =
-        tokenPortfolio &&
-        Array.isArray(tokenPortfolio.tokens) &&
-        tokenPortfolio.tokens.length > 0;
-
-      const solNativeBackend =
-        typeof data.sol_native === 'number' && data.sol_native > 0
-          ? data.sol_native
-          : typeof data.sol === 'number' && data.sol > 0
-          ? data.sol
-          : 0;
-
-      const tokensValueBackend =
-        typeof data.tokens_total_value_sol === 'number' &&
-        data.tokens_total_value_sol > 0
-          ? data.tokens_total_value_sol
-          : 0;
-
-      const totalBackend =
-        typeof data.total_value_sol === 'number' && data.total_value_sol > 0
-          ? data.total_value_sol
-          : 0;
-
-      // Primary token (typical case: only one SPL on the card)
-      let primaryTokenAmount: number | null = null;
-      let primaryTokenMint: string | null = null;
-
-      if (hasTokenPortfolio) {
-        const first = tokenPortfolio.tokens[0];
-        if (first) {
-          if (typeof first.amount_ui === 'number' && first.amount_ui > 0) {
-            primaryTokenAmount = first.amount_ui;
-          }
-          if (typeof first.mint === 'string') {
-            primaryTokenMint = first.mint;
-          }
-        }
-      }
-
-      // Decide what SOL value to display:
-      // - Pure SOL card: just native SOL
-      // - Tokens with backend valuation: trust backend total_value_sol
-      // - Tokens with no backend valuation: try Jupiter client-side
-      let finalSolValue = 0;
-
-      if (!hasTokenPortfolio) {
-        // Just SOL on the card
-        finalSolValue = totalBackend || solNativeBackend;
-      } else if (tokensValueBackend > 0 && totalBackend > 0) {
-        // Backend could price tokens + SOL
-        finalSolValue = totalBackend;
-      } else if (fundedFlag && primaryTokenAmount !== null && primaryTokenMint) {
-        // Backend couldn't price tokens — try Jupiter from the browser
-        const priceInSol = await fetchTokenPriceInSolFromJupiter(primaryTokenMint);
-
-        if (priceInSol && priceInSol > 0) {
-          const tokenSol = primaryTokenAmount * priceInSol;
-          finalSolValue = solNativeBackend + tokenSol;
-        } else {
-          // Tokens exist but even Jupiter can't price yet; only count native SOL (if any)
-          finalSolValue = solNativeBackend;
-        }
-      } else {
-        finalSolValue = solNativeBackend;
-      }
-
-      // If there's still effectively no SOL value but we *do* see tokens,
-      // we still mark as funded but show 0 SOL/fiat.
-      const isCardFunded =
-        fundedFlag ||
-        finalSolValue > 0 ||
-        (hasTokenPortfolio && primaryTokenAmount !== null);
-
-      // Compute USD
-      const priceUsd = (await fetchSolPrice()) ?? solPrice;
-      const usdVal =
-        priceUsd && finalSolValue > 0 ? finalSolValue * priceUsd : displayUsd;
-
-      if (finalSolValue > 0) {
-        setSolAmount(finalSolValue);
-        setUsdAmount(usdVal);
-      }
-
-      if (primaryTokenAmount !== null) {
-        setTokenAmount(primaryTokenAmount);
-      }
-
-      if (onFundingStatusChange) {
-        // Persist last-known amounts so they survive refresh
-        saveAmountSnapshot(cardId, {
-          tokenAmount: primaryTokenAmount !== null ? primaryTokenAmount.toString() : undefined,
-          tokenSymbol: tokenSymbol || undefined,
-          solValue: finalSolValue.toFixed(6),
-          fiatValue: typeof usdVal === 'number' && usdVal > 0 ? usdVal.toFixed(2) : undefined,
-          updatedAt: Date.now(),
-        });
-        onFundingStatusChange(isCardFunded, finalSolValue, primaryTokenAmount !== null ? primaryTokenAmount.toString() : undefined, tokenSymbol, typeof usdVal === 'number' && usdVal > 0 ? usdVal.toFixed(2) : undefined);
-      }
-
-      if (isCardFunded) {
-        if (finalSolValue > 0) {
-          toast.success('Deposit detected! Your CRYPTOCARD is now funded.');
-        } else {
-          toast.success(
-            'Deposit detected! Your CRYPTOCARD holds tokens, but SOL value is not yet available.'
-          );
-        }
-      } else {
-        toast.info('No funds detected yet. Try again after your transaction confirms.');
-      }
-    } catch (err: any) {
-      console.error('FundingPanel checkFunding failed', err);
-      toast.error(err?.message || 'Failed to check funding status');
-    } finally {
-      setChecking(false);
-    }
+  const handleEmailUpdate = (email: string) => {
+    setAuthUser((prev) => (prev ? { ...prev, email } : null));
   };
-
-  const solscanUrl = depositAddress
-    ? `https://solscan.io/account/${activeDepositAddress}`
-    : undefined;
 
   return (
-    <div className="mt-3 space-y-3">
-      {/* TITLE */}
-      <div className="text-center mb-1">
-        <h3 className="text-xs font-black uppercase tracking-[0.18em] bg-gradient-to-r from-cyan-400 via-sky-300 to-emerald-400 bg-clip-text text-transparent">
-          FUND YOUR CRYPTOCARD
-        </h3>
-        <p className="text-[9px] text-muted-foreground mt-1">
-          Send {assetLabel} to the deposit wallet below. Once funded, lock and share your
-          CRYPTOCARD.
-        </p>
-        <p className="text-[9px] text-muted-foreground mt-1">
-          Create an account and log in to save your card details and access them anytime.
-        </p>
-      </div>
+    <div className="min-h-screen pb-12 relative">
+      <AnimatedBackground />
+      <SecurityBanner />
+      <PriceBanner solPrice={solPrice} onRefresh={fetchSolPrice} />
 
-
-      {/* LOAD BY CARD ID */}
-      <div className="rounded-lg border border-border/40 bg-card/70 p-2.5">
-        <div className="text-center">
-          <span className="text-[9px] font-semibold uppercase text-primary tracking-wide">
-            Load existing card
-          </span>
+      <div className="pt-[60px] px-3 max-w-5xl mx-auto relative z-10">
+        {/* Top controls */}
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <CurrencySelect value={currency} onChange={setCurrency} />
+          <LanguageSelect value={language} onChange={setLanguage} />
         </div>
 
-        <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2">
-          <div>
-            <Label className="text-[8px] uppercase tracking-wide opacity-80">
-              Card ID
-            </Label>
-            <Input
-              value={lookupCardId}
-              onChange={(e) => setLookupCardId(e.target.value.toUpperCase())}
-              placeholder="e.g. 1234-5678"
-              className="h-7 text-[9px] font-mono bg-background/60 border-border/40 mt-1"
-            />
-          </div>
+        <Header onClaimClick={() => setClaimModalOpen(true)} />
+        <ProgressBar currentStep={currentStep} locked={locked} funded={funded} />
 
-          <div>
-            <Label className="text-[8px] uppercase tracking-wide opacity-80">
-              CVV (from your dashboard)
-            </Label>
-            <Input
-              value={lookupCvv}
-              onChange={(e) => {
-                setLookupCvv(e.target.value);
-                setActiveCvv(e.target.value);
-              }}
-              placeholder="•••••"
-              className="h-7 text-[9px] font-mono bg-background/60 border-border/40 mt-1"
-              maxLength={5}
-            />
-          </div>
+        {/* Main grid: Designer + Preview/Funding */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mt-3">
+          {/* Designer */}
+          <CardDesigner
+            tokenAddress={tokenAddress}
+            message={message}
+            font={font}
+            hasExpiry={hasExpiry}
+            expiryDate={expiryDate}
+            selectedImage={selectedImage}
+            tokenName={tokenName}
+            onTokenAddressChange={setTokenAddress}
+            onMessageChange={setMessage}
+            onFontChange={setFont}
+            onExpiryToggle={setHasExpiry}
+            onExpiryDateChange={setExpiryDate}
+            onImageSelect={setSelectedImage}
+            onImageUpload={handleImageUpload}
+            onCreateCard={handleCreateCard}
+            onTokenInfoChange={handleTokenInfoChange}
+            isCreating={isCreating}
+            cardCreated={cardCreated}
+            locked={locked}
+          />
 
-          <div className="flex items-end">
+          {/* Preview + Funding */}
+          <div className="glass-card rounded-xl p-3 shadow-card">
+            <CryptoCard
+              data={cardData}
+              locked={locked}
+              message={message || 'Your message here'}
+              image={selectedImage}
+              font={font}
+              tokenSymbol={cardData?.tokenSymbol || tokenSymbol}
+              tokenAmount={cardData?.tokenAmount || '0'}
+              solValue={cardData?.solValue || '0.000000'}
+              fiatValue={cardData?.fiatValue || '0.00'}
+              fiatCurrency={currency}
+              hasExpiry={hasExpiry}
+              expiryDate={expiryDate}
+              isClaimMode={false}
+            />
+
+            {/* Instructions pill under preview */}
+            <div className="bg-primary/5 border border-primary/20 rounded-xl p-3 text-center">
+              <div className="text-[10px] text-primary uppercase font-bold mb-2">
+                {t('instructions.title')}
+              </div>
+              <div className="text-[8px] space-y-1.5">
+                <p className="flex items-center justify-center gap-2">
+                  <Palette className="w-3 h-3 flex-shrink-0 text-primary" />
+                  <span>
+                    <strong>{t('instructions.design')}</strong>{' '}
+                    {t('instructions.designDesc')}
+                  </span>
+                </p>
+                <p className="flex items-center justify-center gap-2">
+                  <Gift className="w-3 h-3 flex-shrink-0 text-accent" />
+                  <span>
+                    <strong>{t('instructions.fund')}</strong>{' '}
+                    {t('instructions.fundDesc')}
+                  </span>
+                </p>
+                <p className="flex items-center justify-center gap-2">
+                  <Lock className="w-3 h-3 flex-shrink-0 text-warning" />
+                  <span>
+                    <strong>{t('instructions.lock')}</strong>{' '}
+                    {t('instructions.lockDesc')}
+                  </span>
+                </p>
+                <p className="flex items-center justify-center gap-2">
+                  <Share2 className="w-3 h-3 flex-shrink-0 text-secondary" />
+                  <span>
+                    <strong>{t('instructions.share')}</strong>{' '}
+                    {t('instructions.shareDesc')}
+                  </span>
+                </p>
+              </div>
+            </div>
+
+            {/* Funding */}
+            {cardCreated && cardData && (
+              <FundingPanel
+                cardId={cardData.cardId}
+                cvv={cardData.cvv}
+                depositAddress={cardData.depositAddress}
+                funded={funded}
+                locked={locked}
+                fundedAmount={funded ? `${cardData.solValue} SOL` : '0 SOL'}
+                tokenSymbol={cardData.tokenSymbol || tokenSymbol}
+                onFundingStatusChange={handleFundingStatusChange}
+              />
+            )}
+
             <Button
-              type="button"
-              className="h-7 w-full"
-              variant="outline"
-              onClick={handleLoadCardById}
-              disabled={loadingLookup || !lookupCardId.trim()}
+              onClick={handleLockAndShare}
+              disabled={!funded || locked}
+              className="w-full mt-2 h-8 text-[10px] font-black gradient-success text-primary-foreground disabled:opacity-50"
             >
-              {loadingLookup ? 'Loading…' : 'Load'}
+              {locked ? t('button.cardLocked') : t('button.lockAndShare')}
+            </Button>
+
+            <div className="text-sm font-bold text-destructive text-center mt-3 p-3 bg-destructive/10 border-2 border-destructive/40 rounded-lg">
+              {t('button.lockWarning')}
+            </div>
+
+            <Button
+              onClick={handleReset}
+              variant="destructive"
+              className="w-full mt-2 h-7 text-[9px] font-bold"
+            >
+              {t('button.reset')}
             </Button>
           </div>
         </div>
-      </div>
 
-{/* STATUS SUMMARY */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-        <div className="rounded-lg border border-border/40 bg-card/70 p-2.5 space-y-1">
-          <div className="flex items-center justify-between">
-            <span className="text-[9px] font-semibold uppercase text-muted-foreground">
-              Funded
-            </span>
-            <span
-              className={
-                activeLocked
-                  ? 'inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-full bg-warning/10 border border-warning/40 text-warning-foreground'
-                  : activeFunded || solAmount
-                  ? 'inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-400/40 text-emerald-300'
-                  : 'inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-full bg-muted/20 border border-muted/40 text-muted-foreground'
-              }
-            >
-              <CheckCircle2 className="w-3 h-3" />
-              {activeFunded || solAmount ? 'FUNDED' : 'NOT FUNDED'}
-            </span>
-          </div>
-          <div className="mt-1 text-[10px] font-mono text-emerald-300">
-            <span className="block">
-              {formattedToken} {assetLabel}
-            </span>
-            <span className="block">{formattedSol} SOL</span>
-            <span className="block">${formattedUsd} USD</span>
-          </div>
-        </div>
-
-        <div className="rounded-lg border border-border/40 bg-card/70 p-2.5 space-y-1">
-          <div className="flex items-center justify-between">
-            <span className="text-[9px] font-semibold uppercase text-muted-foreground">
-              1.5% Protocol Tax on Funded &amp; Locked CRYPTOCARDS
-            </span>
-          </div>
-          <div className="mt-2 rounded-lg border border-red-500/50 bg-red-500/10 px-2 py-2">
-            <div className="text-[11px] font-extrabold tracking-wide text-red-400">
-              NOT CURRENTLY IMPLEMENTED
-            </div>
-            <div className="mt-0.5 text-[9px] text-red-200/90 leading-snug">
-              Tax estimation is displayed for transparency, but automated tax swap/burn is not live yet.
-            </div>
-          </div>
-          <p className="text-[9px] text-muted-foreground mt-1 leading-snug">
-            A 1.5% protocol tax is applied to the SOL balance on each funded and locked
-            CRYPTOCARD. Tax proceeds automatically swap to $CRYPTOCARDS and are sent to our
-            public burn wallet, which triggers a burn whenever its balance reaches 0.02 SOL
-            or more.
-          </p>
-          <p className="text-[10px] font-mono mt-1 text-orange-300">
-            Estimated tax on this CRYPTOCARD: {formattedTaxToken} {assetLabel} •{' '}
-            {formattedTaxSol} SOL • ~${formattedTaxUsd} USD
-          </p>
-        </div>
-      </div>
-
-      {/* DEPOSIT DETAILS */}
-      <div className="rounded-xl border border-primary/30 bg-primary/5 p-3 space-y-2">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-[9px] font-semibold uppercase text-primary tracking-wide">
-            Deposit wallet ({assetLabel})
-          </span>
-          {solscanUrl && (
-            <a
-              href={solscanUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-[9px] text-primary hover:text-accent transition-colors"
-            >
-              <ExternalLink className="w-3 h-3" />
-              View on Solscan
-            </a>
-          )}
-        </div>
-
-        <div className="flex items-center gap-2">
-          <Input
-            value={activeDepositAddress}
-            readOnly
-            className="h-8 text-[9px] font-mono bg-background/80 border-border/50"
+        {/* Auth + dashboards */}
+        {!authUser ? (
+          <LoginPanel
+            onLoginSuccess={(token, user) => {
+              setAuthToken(token);
+              setAuthUser(user);
+            }}
           />
-          <Button
-            type="button"
-            variant="outline"
-            size="icon"
-            className="h-8 w-8"
-            onClick={() => handleCopy(activeDepositAddress, 'addr')}
-          >
-            {copiedAddr ? <CheckCircle2 className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-          </Button>
-        </div>
+        ) : (
+          <UserDashboard
+            onLogout={() => {
+              setAuthToken(null);
+              setAuthUser(null);
+              localStorage.removeItem('auth_token');
+              localStorage.removeItem('auth_user');
+            }}
+            token={authToken}
+            user={authUser}
+            onEmailUpdate={handleEmailUpdate}
+            refreshKey={cardsRefreshKey}
+          />
+        )}
 
-        <div className="grid grid-cols-2 gap-2 mt-2">
-          <div>
-            <Label className="text-[8px] uppercase tracking-wide opacity-80">
-              Card ID
-            </Label>
-            <div className="flex items-center gap-2 mt-1">
-              <Input
-                value={activeCardId}
-                readOnly
-                className="h-7 text-[9px] font-mono bg-background/60 border-border/40"
-              />
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className="h-7 w-7"
-                onClick={() => handleCopy(activeCardId, 'card')}
-              >
-                {copiedCard ? (
-                  <CheckCircle2 className="w-3 h-3" />
-                ) : (
-                  <Copy className="w-3 h-3" />
-                )}
-              </Button>
+        <AuditSection />
+        <PublicDashboard />
+
+        {/* Footer */}
+        <footer className="mt-8 pt-8 border-t border-border/30">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+            {/* Brand Section */}
+            <div className="flex flex-col md:flex-row items-center md:items-start gap-3 text-center md:text-left">
+              <div className="relative flex-shrink-0">
+                <img
+                  src="/cryptocards-logo.png"
+                  alt="CRYPTOCARDS logo"
+                  className="relative w-14 h-14 md:w-16 md:h-16 rounded-full"
+                />
+              </div>
+              <div>
+                <h4 className="text-lg font-black tracking-[0.2em] uppercase bg-gradient-to-r from-emerald-300 via-cyan-300 to-blue-400 bg-clip-text text-transparent mb-1">
+                  CRYPTOCARDS
+                </h4>
+                <p className="text-[9px] text-muted-foreground max-w-xs">
+                  On-chain, non-custodial crypto gift cards. The future of digital gifting on
+                  Solana.
+                </p>
+              </div>
+            </div>
+
+            {/* Quick Links */}
+            <div className="text-center">
+              <h5 className="text-[10px] font-bold uppercase text-foreground mb-3">
+                Quick Links
+              </h5>
+              <div className="flex flex-col gap-2">
+                <button
+                  onClick={() => setDocsModalOpen(true)}
+                  className="text-[9px] text-muted-foreground hover:text-primary transition-colors flex items-center justify-center gap-1"
+                >
+                  <FileText className="w-3 h-3" /> Documentation
+                </button>
+                <button
+                  onClick={() => setTermsModalOpen(true)}
+                  className="text-[9px] text-muted-foreground hover:text-primary transition-colors flex items-center justify-center gap-1"
+                >
+                  <Shield className="w-3 h-3" /> Terms of Service
+                </button>
+                <button
+                  onClick={() => setPrivacyModalOpen(true)}
+                  className="text-[9px] text-muted-foreground hover:text-primary transition-colors flex items-center justify-center gap-1"
+                >
+                  <ExternalLink className="w-3 h-3" /> Privacy Policy
+                </button>
+              </div>
+            </div>
+
+            {/* Social Links */}
+            <div className="text-center md:text-right">
+              <h5 className="text-[10px] font-bold uppercase text-foreground mb-3">
+                Community
+              </h5>
+              <div className="flex items-center justify-center md:justify-end gap-4">
+                <a
+                  href="https://x.com/i/communities/2004719020248105452"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="hover:scale-110 transition-transform p-2 rounded-lg bg-card/60 border border-border/30 hover:border-primary/50"
+                >
+                  <img
+                    src="https://cdn.simpleicons.org/x/00CFFF"
+                    alt="Twitter/X"
+                    className="w-5 h-5"
+                  />
+                </a>
+                <a
+                  href="https://t.me/+7aL_9pVutjE4ZmZh"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="hover:scale-110 transition-transform p-2 rounded-lg bg-card/60 border border-border/30 hover:border-primary/50"
+                >
+                  <img
+                    src="https://cdn.simpleicons.org/telegram/00CFFF"
+                    alt="Telegram"
+                    className="w-5 h-5"
+                  />
+                </a>
+                <button
+                  onClick={() => setDiscordModalOpen(true)}
+                  className="hover:scale-110 transition-transform p-2 rounded-lg bg-card/60 border border-border/30 hover:border-primary/50"
+                >
+                  <img
+                    src="https://cdn.simpleicons.org/discord/00CFFF"
+                    alt="Discord"
+                    className="w-5 h-5"
+                  />
+                </button>
+                <a
+                  href="mailto:cryptocards@linuxmail.org"
+                  className="hover:scale-110 transition-transform p-2 rounded-lg bg-card/60 border border-border/30 hover:border-primary/50"
+                >
+                  <img
+                    src="https://cdn.simpleicons.org/gmail/00CFFF"
+                    alt="Contact"
+                    className="w-5 h-5"
+                  />
+                </a>
+              </div>
             </div>
           </div>
-          <div>
-            <Label className="text-[8px] uppercase tracking-wide opacity-80">
-              CVV
-            </Label>
-            <div className="flex items-center gap-2 mt-1">
-              <Input
-                value={cvvVisible ? activeCvv : '•••••'}
-                readOnly
-                className="h-7 text-[9px] font-mono bg-background/60 border-border/40"
+
+          {/* Bottom Bar – aligned grid so © line is under QUICK LINKS */}
+          <div className="pt-4 border-t border-border/20 grid grid-cols-1 md:grid-cols-3 items-center gap-3">
+            {/* Left: Solana badge */}
+            <div className="flex items-center gap-2 justify-center md:justify-start">
+              <img
+                src="https://cryptologos.cc/logos/solana-sol-logo.svg"
+                alt="Solana"
+                className="w-4 h-4"
               />
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className="h-7 w-7"
-                onClick={() => setCvvVisible((v) => !v)}
-              >
-                {cvvVisible ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className="h-7 w-7"
-                onClick={() => handleCopy(activeCvv, 'cvv')}
-              >
-                {copiedCvv ? (
-                  <CheckCircle2 className="w-3 h-3" />
-                ) : (
-                  <Copy className="w-3 h-3" />
-                )}
-              </Button>
+              <span className="text-[10px] font-bold text-primary">
+                {t('footer.poweredBy')}
+              </span>
+            </div>
+
+            {/* Center: copyright under QUICK LINKS */}
+            <div className="flex justify-center">
+              <p className="text-[9px] text-primary font-bold">
+                {t('footer.copyright')}
+              </p>
+            </div>
+
+            {/* Right: creator credit */}
+            <div className="flex justify-center md:justify-end">
+              <p className="text-[8px] text-muted-foreground">
+                {t('footer.creator')}
+              </p>
             </div>
           </div>
-        </div>
-
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 mt-3">
-          <Button
-            type="button"
-            onClick={handleCheckFunding}
-            disabled={checking}
-            className="w-full sm:w-auto h-8 text-[10px] font-black gradient-success text-primary-foreground disabled:opacity-60"
-          >
-            {checking ? (
-              <span className="inline-flex items-center gap-2">
-                <RefreshCcw className="w-3 h-3 animate-spin" />
-                Checking funding…
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-2">
-                <RefreshCcw className="w-3 h-3" />
-                CHECK ON-CHAIN FUNDING
-              </span>
-            )}
-          </Button>
-
-          <div className="flex items-center gap-1 text-[8px] text-muted-foreground">
-            <AlertCircle className="w-3 h-3 text-warning" />
-            <span>
-              Use a Solana wallet (Phantom, Backpack, etc.). Wait for finality before locking.
-            </span>
-          </div>
-        </div>
+        </footer>
       </div>
+
+      {/* Modals */}
+      <ClaimModal open={claimModalOpen} onOpenChange={setClaimModalOpen} />
+      {cardData && (
+        <ShareModal
+          open={shareModalOpen}
+          onOpenChange={setShareModalOpen}
+          cardId={cardData.cardId}
+        />
+      )}
+      <DocumentationModal open={docsModalOpen} onOpenChange={setDocsModalOpen} />
+      <TermsModal open={termsModalOpen} onOpenChange={setTermsModalOpen} />
+      <PrivacyModal open={privacyModalOpen} onOpenChange={setPrivacyModalOpen} />
+      <DiscordModal open={discordModalOpen} onOpenChange={setDiscordModalOpen} />
+
+      {/* Dev panel (unchanged) */}
+      <DevPanel
+        onSimulateCardCreated={(id, amount, symbol) => {
+          setCardData({
+            cardId: id,
+            cvv: '12345',
+            depositAddress: 'Demo123...xyz',
+            image: selectedImage,
+            tokenAddress,
+            tokenSymbol: symbol,
+            tokenAmount: amount,
+            message,
+            font,
+            hasExpiry,
+            expiryDate,
+            created: new Date().toISOString(),
+            locked: false,
+            funded: false,
+            fiatValue: '50.00',
+            solValue: '0.333300',
+            step: 2,
+          });
+          setCardCreated(true);
+          setCurrentStep(2);
+          setTokenSymbol(symbol);
+          setTokenAmount(amount);
+        }}
+        onSimulateFunded={() => {
+          setFunded(true);
+          setCardData((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  funded: true,
+                  tokenAmount: '1000',
+                  fiatValue: '50.00',
+                  solValue: '0.333300',
+                }
+              : null
+          );
+        }}
+        onSimulateLocked={() => {
+          setLocked(true);
+          setCurrentStep(3);
+          setCardData((prev) => (prev ? { ...prev, locked: true } : null));
+        }}
+        onResetAll={handleReset}
+      />
     </div>
   );
 }
