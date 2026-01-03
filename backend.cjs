@@ -6,6 +6,7 @@ require('dotenv').config();
 const path = require('path');
 const express = require('express');
 const cors = require('cors');
+const multer = require('multer');
 const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 const web3 = require('@solana/web3.js');
@@ -528,6 +529,73 @@ async function getBurnWorkerHealth() {
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// --- Template upload (custom images/GIFs) ---
+// Stores the uploaded file in Supabase Storage and returns a persistent public URL.
+const TEMPLATE_BUCKET = process.env.SUPABASE_TEMPLATE_BUCKET || 'card-templates';
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 8 * 1024 * 1024, // 8MB
+  },
+});
+
+function guessExtension(mimetype, originalname) {
+  const extFromName = path.extname(originalname || '').toLowerCase();
+  if (extFromName && extFromName.length <= 10) return extFromName;
+  const map = {
+    'image/jpeg': '.jpg',
+    'image/jpg': '.jpg',
+    'image/png': '.png',
+    'image/gif': '.gif',
+    'image/webp': '.webp',
+  };
+  return map[String(mimetype || '').toLowerCase()] || '';
+}
+
+app.post('/upload-template', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const mimetype = req.file.mimetype || '';
+    if (!String(mimetype).startsWith('image/')) {
+      return res.status(400).json({ error: 'Only image uploads are allowed' });
+    }
+
+    const ext = guessExtension(mimetype, req.file.originalname);
+    const rand = crypto.randomBytes(16).toString('hex');
+    const objectPath = `templates/${Date.now()}_${rand}${ext}`;
+
+    const uploadRes = await supabase.storage
+      .from(TEMPLATE_BUCKET)
+      .upload(objectPath, req.file.buffer, {
+        contentType: mimetype,
+        upsert: false,
+      });
+
+    if (uploadRes.error) {
+      console.error('Supabase storage upload error:', uploadRes.error);
+      return res.status(500).json({ error: 'Failed to upload image' });
+    }
+
+    const publicRes = supabase.storage
+      .from(TEMPLATE_BUCKET)
+      .getPublicUrl(objectPath);
+
+    const url = publicRes?.data?.publicUrl || null;
+    if (!url) {
+      return res.status(500).json({ error: 'Failed to generate image URL' });
+    }
+
+    return res.json({ url });
+  } catch (err) {
+    console.error('Error in /upload-template:', err);
+    return res.status(500).json({ error: err?.message || 'upload_failed' });
+  }
+});
 
 // Serve static frontend from dist
 const distPath = path.join(__dirname, 'dist');
