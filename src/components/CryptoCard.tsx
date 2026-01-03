@@ -131,6 +131,11 @@ export function CryptoCard({
                 </span>
                 <span className="uppercase">ID: {cardId}</span>
               </div>
+
+              {/* Brand mark — always visible */}
+              <span className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 text-[9px] font-black tracking-[0.25em] uppercase bg-gradient-to-r from-emerald-300 via-cyan-300 to-blue-400 bg-clip-text text-transparent drop-shadow-sm">
+                CRYPTOCARDS
+              </span>
             </div>
           </div>
 
@@ -180,6 +185,11 @@ export function CryptoCard({
 
               <span className="absolute bottom-2 left-2 text-[6px] uppercase opacity-60">
                 ID: {cardId}
+              </span>
+
+              {/* Brand mark — always visible */}
+              <span className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 text-[9px] font-black tracking-[0.25em] uppercase bg-gradient-to-r from-emerald-300 via-cyan-300 to-blue-400 bg-clip-text text-transparent drop-shadow-sm">
+                CRYPTOCARDS
               </span>
             </div>
           </div>
