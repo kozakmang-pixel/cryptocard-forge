@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { ImageIcon, Loader2, VideoIcon, Search } from 'lucide-react';
 import { CARD_IMAGE_URLS } from '@/config/cardImages';
+import { apiService } from '@/services/api';
 
 interface ImageGridProps {
   selectedImage: string;
@@ -33,6 +34,11 @@ function pickRandomUnique<T>(source: T[], count: number): T[] {
   return copy.slice(0, count);
 }
 
+function isGifUrl(url: string): boolean {
+  return /\.gif(\?|$)/i.test(String(url || ''));
+}
+
+
 export function ImageGrid({ selectedImage, onSelectImage, onUpload }: ImageGridProps) {
   const [items, setItems] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
@@ -44,14 +50,30 @@ export function ImageGrid({ selectedImage, onSelectImage, onUpload }: ImageGridP
 
   const loadItems = async (term: string) => {
     setLoading(true);
+    let uploadedFiltered: string[] = [];
     try {
+      // Always include user-uploaded templates (Supabase Storage) alongside stock images.
+      // If this request fails, we simply continue with the stock/3rd-party sources.
+      try {
+        const uploadedRes = await apiService.listTemplates({ type: 'all', limit: 400 });
+        const uploadedAll = Array.isArray(uploadedRes?.urls) ? uploadedRes.urls : [];
+        uploadedFiltered = showGifs
+          ? uploadedAll.filter((u) => isGifUrl(u))
+          : uploadedAll.filter((u) => !isGifUrl(u));
+      } catch {
+        uploadedFiltered = [];
+      }
+
       if (showGifs) {
         // GIF MODE – Giphy search
         const searchTerm = term.trim() || 'solana degen meme';
 
         if (!giphyApiKey) {
           console.warn('Missing VITE_GIPHY_API_KEY, falling back to static images');
-          setItems(pickRandomUnique(STATIC_IMAGE_URLS, 8));
+          {
+            const pool = [...uploadedFiltered, ...STATIC_IMAGE_URLS];
+            setItems(pickRandomUnique(pool, 8));
+          }
           return;
         }
 
@@ -75,9 +97,15 @@ export function ImageGrid({ selectedImage, onSelectImage, onUpload }: ImageGridP
             .filter(Boolean) || [];
 
         if (!urls.length) {
-          setItems(pickRandomUnique(STATIC_IMAGE_URLS, 8));
+          {
+            const pool = [...uploadedFiltered, ...STATIC_IMAGE_URLS];
+            setItems(pickRandomUnique(pool, 8));
+          }
         } else {
-          setItems(pickRandomUnique(urls, 8));
+          {
+            const pool = [...uploadedFiltered, ...urls];
+            setItems(pickRandomUnique(pool, 8));
+          }
         }
       } else {
         // IMAGE MODE – Pexels search
@@ -85,7 +113,10 @@ export function ImageGrid({ selectedImage, onSelectImage, onUpload }: ImageGridP
 
         if (!pexelsApiKey) {
           console.warn('Missing VITE_PEXELS_API_KEY, falling back to static images');
-          setItems(pickRandomUnique(STATIC_IMAGE_URLS, 8));
+          {
+            const pool = [...uploadedFiltered, ...STATIC_IMAGE_URLS];
+            setItems(pickRandomUnique(pool, 8));
+          }
           return;
         }
 
@@ -112,15 +143,24 @@ export function ImageGrid({ selectedImage, onSelectImage, onUpload }: ImageGridP
             .filter(Boolean) || [];
 
         if (!urls.length) {
-          setItems(pickRandomUnique(STATIC_IMAGE_URLS, 8));
+          {
+            const pool = [...uploadedFiltered, ...STATIC_IMAGE_URLS];
+            setItems(pickRandomUnique(pool, 8));
+          }
         } else {
-          setItems(pickRandomUnique(urls, 8));
+          {
+            const pool = [...uploadedFiltered, ...urls];
+            setItems(pickRandomUnique(pool, 8));
+          }
         }
       }
     } catch (err) {
       console.error('ImageGrid load error', err);
       // Absolute fallback – always show *something*
-      setItems(pickRandomUnique(STATIC_IMAGE_URLS, 8));
+      {
+        const pool = [...uploadedFiltered, ...STATIC_IMAGE_URLS];
+        setItems(pickRandomUnique(pool, 8));
+      }
     } finally {
       setLoading(false);
     }
