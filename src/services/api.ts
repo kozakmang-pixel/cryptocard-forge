@@ -207,6 +207,20 @@ class ApiService {
     return data;
   }
 
+  // Upload a custom card template image/GIF to the backend (Supabase Storage) and get a persistent URL.
+  async uploadTemplate(file: File): Promise<{ url: string }> {
+    const form = new FormData();
+    form.append('file', file);
+
+    const res = await fetch(`${this.baseUrl}/upload-template`, {
+      method: 'POST',
+      body: form,
+    });
+
+    return this.handleResponse<{ url: string }>(res);
+  }
+
+
   // --- CARDS / STATS ---
 
   async createCard(payload: any, token?: string): Promise<any> {
