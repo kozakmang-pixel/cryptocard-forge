@@ -1,7 +1,7 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
-import { Copy, Mail, MessageCircle, Send } from 'lucide-react';
+import { Copy, Mail, MessageCircle, Send, Phone, Facebook, Instagram } from 'lucide-react';
 import { useLanguage } from '@/lib/languageStore';
 
 interface ShareModalProps {
@@ -50,37 +50,49 @@ export function ShareModal({ open, onOpenChange, cardId }: ShareModalProps) {
   };
 
 
-const whatsappShare = () => {
-  const text = encodeURIComponent(`You've been gifted a CryptoCard! Claim it here: ${claimLink}`);
-  window.open(`https://api.whatsapp.com/send?text=${text}`, '_blank');
-};
+  const whatsappShare = () => {
+    const text = encodeURIComponent(`You've been gifted a CryptoCard! Claim it here: ${claimLink}`);
+    window.open(`https://wa.me/?text=${text}`, '_blank');
+  };
 
-const facebookShare = () => {
-  window.open(
-    `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(claimLink)}`,
-    '_blank'
-  );
-};
+  const facebookShare = () => {
+    window.open(
+      `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(claimLink)}`,
+      '_blank'
+    );
+  };
 
-const instagramShare = async () => {
-  // Instagram does not support a standard "web share URL" like Twitter/Facebook.
-  // Best UX: copy the link, then (on mobile) prompt user to paste into IG.
-  try {
-    if (navigator.share) {
-      await navigator.share({
-        title: 'CRYPTOCARDS',
-        text: `You've been gifted a CryptoCard! Claim it here: ${claimLink}`,
-        url: claimLink,
-      });
-      return;
+  const instagramShare = async () => {
+    // Instagram does not provide a reliable web share URL.
+    // Best UX: use native share sheet when available, otherwise copy the link.
+    try {
+      const navAny = navigator;
+      if (navAny && typeof navAny.share === 'function') {
+        await navAny.share({
+          title: 'CryptoCard',
+          text: `You've been gifted a CryptoCard! Claim it here: ${claimLink}`,
+          url: claimLink,
+        });
+        return;
+      }
+    } catch {
+      // fall back to copy
     }
-  } catch {
-    // fall through to copy behavior
-  }
 
-  await copyLink();
-  toast.success('Link copied — paste it into Instagram DM / Story.');
-};
+    await copyLink();
+    toast.success('Link copied — paste into Instagram');
+  };
+
+  const smsShare = () => {
+    // Opens the device SMS app with a prefilled message (carrier charges depend on the user’s plan).
+    const body = encodeURIComponent(`You've been gifted a CryptoCard! Claim it here: ${claimLink}`);
+    const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent || '');
+
+    // iOS uses "sms:&body=" more reliably; others typically support "?body="
+    const smsUrl = isIOS ? `sms:&body=${body}` : `sms:?body=${body}`;
+
+    window.location.href = smsUrl;
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -160,34 +172,44 @@ const instagramShare = async () => {
               <Send className="w-3 h-3" />
               {t('share.twitter')}
             </Button>
-          
-<Button
-  onClick={whatsappShare}
-  variant="outline"
-  className="h-8 text-[9px] font-semibold flex items-center gap-1 justify-center"
->
-  <MessageCircle className="w-3 h-3" />
-  WhatsApp
-</Button>
 
-<Button
-  onClick={facebookShare}
-  variant="outline"
-  className="h-8 text-[9px] font-semibold flex items-center gap-1 justify-center"
->
-  <Send className="w-3 h-3" />
-  Facebook
-</Button>
+            <Button
+              onClick={whatsappShare}
+              variant="outline"
+              className="h-8 text-[9px] font-semibold flex items-center gap-1 justify-center"
+            >
+              <MessageCircle className="w-3 h-3" />
+              WhatsApp
+            </Button>
 
-<Button
-  onClick={instagramShare}
-  variant="outline"
-  className="h-8 text-[9px] font-semibold flex items-center gap-1 justify-center"
->
-  <Copy className="w-3 h-3" />
-  Instagram
-</Button>
-</div>
+            <Button
+              onClick={facebookShare}
+              variant="outline"
+              className="h-8 text-[9px] font-semibold flex items-center gap-1 justify-center"
+            >
+              <Facebook className="w-3 h-3" />
+              Facebook
+            </Button>
+
+            <Button
+              onClick={instagramShare}
+              variant="outline"
+              className="h-8 text-[9px] font-semibold flex items-center gap-1 justify-center"
+            >
+              <Instagram className="w-3 h-3" />
+              Instagram
+            </Button>
+
+            <Button
+              onClick={smsShare}
+              variant="outline"
+              className="h-8 text-[9px] font-semibold flex items-center gap-1 justify-center"
+            >
+              <Phone className="w-3 h-3" />
+              SMS
+            </Button>
+
+          </div>
 
           {/* ⚠ Critical safety warning you asked for */}
           <div className="border-2 border-destructive/60 bg-destructive/10 rounded-lg p-4 text-[12px] text-destructive font-bold leading-snug">
