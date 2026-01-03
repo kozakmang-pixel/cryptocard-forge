@@ -11,6 +11,8 @@ import {
   CreditCard,
   Trash2,
   Copy,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 
 interface UserInfo {
@@ -131,6 +133,20 @@ export function UserDashboard({
 
   // per-card snapshot of TOKEN_UNITS / SOL_VALUE / FIAT once non-zero (persists even if backend resets)
   const [cardSnapshots, setCardSnapshots] = useState<Record<string, CardSnapshot>>({});
+
+  const CVV_MAP_KEY = 'cryptocards_cvv_map';
+  const [cvvMap, setCvvMap] = useState<Record<string, string>>({});
+  const [cvvVisible, setCvvVisible] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(CVV_MAP_KEY);
+      if (raw) setCvvMap(JSON.parse(raw));
+    } catch {
+      // ignore
+    }
+  }, []);
+
 
   // Fetch SOL price from backend
   const fetchSolPrice = async () => {
@@ -687,6 +703,38 @@ export function UserDashboard({
                     >
                       <Copy className="w-3 h-3 text-muted-foreground" />
                     </button>
+                  </div>
+                </div>
+
+                <div className="mt-1">
+                  <div className="text-[8px] uppercase tracking-wide text-muted-foreground">
+                    CVV
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <div className="text-[11px] font-mono font-semibold">
+                      {cvvVisible[card.public_id]
+                        ? (cvvMap[card.public_id] || '—')
+                        : (cvvMap[card.public_id] ? '••••' : '—')}
+                    </div>
+                    {cvvMap[card.public_id] ? (
+                      <button
+                        type="button"
+                        className="inline-flex items-center justify-center rounded-md bg-background/60 border border-border/40 hover:border-primary/60 px-1 h-4"
+                        onClick={() =>
+                          setCvvVisible((prev) => ({
+                            ...prev,
+                            [card.public_id]: !prev[card.public_id],
+                          }))
+                        }
+                        aria-label={cvvVisible[card.public_id] ? 'Hide CVV' : 'Show CVV'}
+                      >
+                        {cvvVisible[card.public_id] ? (
+                          <EyeOff className="w-3 h-3 text-muted-foreground" />
+                        ) : (
+                          <Eye className="w-3 h-3 text-muted-foreground" />
+                        )}
+                      </button>
+                    ) : null}
                   </div>
                 </div>
                 <div className="flex flex-col items-end gap-1">
