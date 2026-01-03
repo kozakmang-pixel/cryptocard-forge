@@ -599,6 +599,124 @@ app.post('/upload-template', upload.single('file'), async (req, res) => {
 
 // Serve static frontend from dist
 const distPath = path.join(__dirname, 'dist');
+
+/**
+ * Escape content for safe use in HTML attribute values.
+ */
+function escapeHtmlAttr(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function toAbsoluteUrl(maybeUrl) {
+  if (!maybeUrl) return null;
+  const s = String(maybeUrl);
+  if (s.startsWith('http://') || s.startsWith('https://')) return s;
+  const base = String(FRONTEND_URL || '').replace(/\/$/, '');
+  const pathPart = s.startsWith('/') ? s : `/${s}`;
+  return base ? `${base}${pathPart}` : s;
+}
+
+/**
+ * Dynamic social preview for claim links:
+ * cryptocards.fun/claim?id=XXXX-XXXX
+ *
+ * Twitter/X and other crawlers do not run client JS, so we must
+ * serve OG/Twitter meta tags from the server.
+ */
+app.get(['/claim', '/claim/'], async (req, res) => {
+  try {
+    const publicId = String(req.query?.id || '').trim();
+
+    // If no id is provided, just serve the SPA.
+    if (!publicId) {
+      return res.sendFile(path.join(distPath, 'index.html'));
+    }
+
+    // Fetch minimal card data for social tags.
+    const { data: card, error } = await supabase
+      .from('cards')
+      .select('public_id, message, template_url, amount_fiat, currency, funded, locked, claimed, refunded, token_mint, token_amount, created_at')
+      .eq('public_id', publicId)
+      .maybeSingle();
+
+    // If card not found (or DB error), fall back to standard SPA HTML.
+    if (error) {
+      console.error('Error fetching card for /claim social meta:', error);
+      return res.sendFile(path.join(distPath, 'index.html'));
+    }
+    if (!card) {
+      return res.sendFile(path.join(distPath, 'index.html'));
+    }
+
+    const claimUrlBase = String(FRONTEND_URL || 'https://cryptocards.fun').replace(/\/$/, '');
+    const claimUrl = `${claimUrlBase}/claim?id=${encodeURIComponent(publicId)}`;
+
+    const title = `Claim CryptoCard ${publicId} — CRYPTOCARDS`;
+    const rawMsg = (card.message || '').toString().trim();
+    const valueLine =
+      card.amount_fiat != null && card.currency
+        ? `Value: ${card.currency} ${card.amount_fiat}`
+        : null;
+
+    // Keep descriptions short for previews.
+    const description = [rawMsg, valueLine, 'Claim your on-chain crypto gift card on Solana.']
+      .filter(Boolean)
+      .join(' • ')
+      .slice(0, 220);
+
+    const imageUrl =
+      toAbsoluteUrl(card.template_url) ||
+      'https://cryptocards.fun/social/cryptocards-banner-1500x500.jpg';
+
+    // Read SPA HTML and inject meta tags before </head>.
+    const htmlPath = path.join(distPath, 'index.html');
+    let html = '';
+    try {
+      html = require('fs').readFileSync(htmlPath, 'utf8');
+    } catch (readErr) {
+      console.error('Failed to read dist/index.html for /claim:', readErr);
+      return res.status(500).send('Server misconfigured');
+    }
+
+    const injectedMeta = `
+    <!-- DYNAMIC SOCIAL PREVIEW (server-rendered for /claim) -->
+    <meta property="og:title" content="${escapeHtmlAttr(title)}" />
+    <meta property="og:description" content="${escapeHtmlAttr(description)}" />
+    <meta property="og:image" content="${escapeHtmlAttr(imageUrl)}" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="${escapeHtmlAttr(claimUrl)}" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="${escapeHtmlAttr(title)}" />
+    <meta name="twitter:description" content="${escapeHtmlAttr(description)}" />
+    <meta name="twitter:image" content="${escapeHtmlAttr(imageUrl)}" />
+    <meta name="twitter:url" content="${escapeHtmlAttr(claimUrl)}" />
+    `;
+
+    // Remove any existing generic social tags so the crawler picks up the correct ones.
+    html = html
+      .replace(/\s*<meta\s+property="og:[^"]+"[^>]*>\s*/gi, '\n')
+      .replace(/\s*<meta\s+name="twitter:[^"]+"[^>]*>\s*/gi, '\n');
+
+    if (html.includes('</head>')) {
+      html = html.replace('</head>', `${injectedMeta}\n  </head>`);
+    } else {
+      // Extremely unlikely; fallback.
+      html = injectedMeta + '\n' + html;
+    }
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.status(200).send(html);
+  } catch (err) {
+    console.error('Exception in /claim social meta route:', err);
+    return res.sendFile(path.join(distPath, 'index.html'));
+  }
+});
+
 app.use(express.static(distPath));
 
 // Utility hash helper
