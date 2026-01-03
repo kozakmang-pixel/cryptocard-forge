@@ -221,6 +221,23 @@ class ApiService {
   }
 
 
+  /**
+   * List uploaded templates (Supabase Storage public URLs).
+   * Used by ImageGrid to show user-uploaded images/GIFs alongside stock images.
+   */
+  async listTemplates(params?: { type?: 'image' | 'gif' | 'all'; limit?: number }): Promise<{ urls: string[] }> {
+    const sp = new URLSearchParams();
+    if (params?.type) sp.set('type', params.type);
+    if (typeof params?.limit === 'number') sp.set('limit', String(params.limit));
+
+    const qs = sp.toString();
+    const url = `${this.baseUrl}/list-templates${qs ? `?${qs}` : ''}`;
+
+    const res = await fetch(url);
+    return this.handleResponse<{ urls: string[] }>(res);
+  }
+
+
   // --- CARDS / STATS ---
 
   async createCard(payload: any, token?: string): Promise<any> {
