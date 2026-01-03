@@ -119,6 +119,21 @@ export function FundingPanel({
       // ignore
     }
   }, [lookupCardId, lookupCvv]);
+  // Persist CVV for newly created / active card as well (so UserDashboard can display it)
+  useEffect(() => {
+    if (!activeCardId || !activeCvv) return;
+    try {
+      const key = 'cryptocards_cvv_map';
+      const raw = localStorage.getItem(key);
+      const map = raw ? JSON.parse(raw) : {};
+      map[activeCardId] = activeCvv;
+      localStorage.setItem(key, JSON.stringify(map));
+    } catch {
+      // ignore
+    }
+  }, [activeCardId, activeCvv]);
+
+
 
   // Active (displayed) card context (defaults to props)
   const [activeCardId, setActiveCardId] = useState(cardId);
