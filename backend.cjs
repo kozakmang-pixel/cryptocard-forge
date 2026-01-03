@@ -730,77 +730,120 @@ app.get('/list-templates', async (req, res) => {
     const limitRaw = Number(req.query.limit ?? 400);
     const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(2000, Math.floor(limitRaw))) : 400;
 
-    // We store uploads under the "templates/" prefix (see /upload-template).
-    const prefix = 'templates';
-
+    // Collect uploaded templates from Supabase Storage.
+    // IMPORTANT: Users might have uploaded files:
+    // - via this app (under "templates/")
+    // - directly in the bucket root or other folders (Supabase UI)
+    //
+    // Supabase Storage list() is NOT recursive, so we walk folders (BFS) starting from:
+    // - templates/
+    // - root
+    const startPrefixes = ['templates', ''];
+    const visited = new Set();
+    const queue = [...startPrefixes];
     const urls = [];
-    let offset = 0;
 
-    // Supabase list() is paginated via offset + limit.
-    // We'll page until we collect enough, or there are no more results.
-    while (urls.length < limit) {
-      const pageSize = Math.min(1000, limit - urls.length);
+    // Safety cap so we never loop forever on weird storage structures
+    const MAX_FOLDERS = 200;
+    const MAX_OBJECTS_SCANNED = 5000;
 
-      const { data: objects, error } = await supabase.storage
-        .from(TEMPLATE_BUCKET)
-        .list(prefix, { limit: pageSize, offset });
+    let foldersScanned = 0;
+    let objectsScanned = 0;
 
-      if (error) {
-        // If the bucket doesn't exist, return empty list rather than failing the whole refresh.
-        const msg = error?.message || '';
-        if (msg.toLowerCase().includes('bucket') && msg.toLowerCase().includes('not found')) {
-          return res.json({ urls: [] });
+    const isSupportedImage = (name) => {
+      const lower = String(name || '').toLowerCase();
+      const isGif = lower.endsWith('.gif');
+      const isImage =
+        lower.endsWith('.png') ||
+        lower.endsWith('.jpg') ||
+        lower.endsWith('.jpeg') ||
+        lower.endsWith('.webp') ||
+        lower.endsWith('.avif') ||
+        lower.endsWith('.svg') ||
+        lower.endsWith('.gif');
+
+      if (!isImage) return { ok: false, isGif: false };
+      return { ok: true, isGif };
+    };
+
+    const pushPublicUrl = (objectPath) => {
+      const publicRes = supabase.storage.from(TEMPLATE_BUCKET).getPublicUrl(objectPath);
+      const url = publicRes?.data?.publicUrl;
+      if (url) urls.push(url);
+    };
+
+    while (queue.length && urls.length < limit && foldersScanned < MAX_FOLDERS && objectsScanned < MAX_OBJECTS_SCANNED) {
+      const prefix = queue.shift();
+      if (visited.has(prefix)) continue;
+      visited.add(prefix);
+      foldersScanned += 1;
+
+      let offset = 0;
+
+      while (urls.length < limit && objectsScanned < MAX_OBJECTS_SCANNED) {
+        const pageSize = Math.min(1000, limit - urls.length);
+
+        const { data: objects, error } = await supabase.storage
+          .from(TEMPLATE_BUCKET)
+          .list(prefix, { limit: pageSize, offset });
+
+        if (error) {
+          // If the bucket doesn't exist, return empty list rather than failing the whole refresh.
+          const msg = error?.message || '';
+          if (msg.toLowerCase().includes('bucket') && msg.toLowerCase().includes('not found')) {
+            return res.json({ urls: [] });
+          }
+          return res.status(500).json({ error: 'list_failed', details: msg });
         }
-        return res.status(500).json({ error: 'list_failed', details: msg });
-      }
 
-      if (!objects || objects.length === 0) break;
+        if (!objects || objects.length === 0) break;
 
-      for (const obj of objects) {
-        const name = obj?.name;
-        if (!name) continue;
+        for (const obj of objects) {
+          objectsScanned += 1;
+          if (objectsScanned >= MAX_OBJECTS_SCANNED) break;
 
-        // Ignore folder placeholders
-        if (obj?.id === null && obj?.metadata === null && obj?.updated_at === null && obj?.created_at === null) {
-          continue;
+          const name = obj?.name;
+          if (!name) continue;
+
+          // FOLDER detection: Supabase returns folders with null id/metadata timestamps.
+          const looksLikeFolder =
+            obj?.id === null &&
+            obj?.metadata === null &&
+            obj?.updated_at === null &&
+            obj?.created_at === null;
+
+          if (looksLikeFolder) {
+            // Avoid re-adding empty root prefix as a "folder"
+            const nextPrefix = prefix ? `${prefix}/${name}` : name;
+            // Only walk a reasonable number of folders
+            if (!visited.has(nextPrefix) && queue.length < MAX_FOLDERS) queue.push(nextPrefix);
+            continue;
+          }
+
+          const { ok, isGif } = isSupportedImage(name);
+          if (!ok) continue;
+
+          if (type === 'gif' && !isGif) continue;
+          if (type === 'image' && isGif) continue;
+
+          const objectPath = prefix ? `${prefix}/${name}` : name;
+          pushPublicUrl(objectPath);
+
+          if (urls.length >= limit) break;
         }
 
-        const lower = String(name).toLowerCase();
-        const isGif = lower.endsWith('.gif');
-        const isImage =
-          lower.endsWith('.png') ||
-          lower.endsWith('.jpg') ||
-          lower.endsWith('.jpeg') ||
-          lower.endsWith('.webp') ||
-          lower.endsWith('.avif') ||
-          lower.endsWith('.svg') ||
-          lower.endsWith('.gif');
-
-        if (!isImage) continue;
-
-        if (type === 'gif' && !isGif) continue;
-        if (type === 'image' && isGif) continue;
-
-        const objectPath = `${prefix}/${name}`;
-        const publicRes = supabase.storage.from(TEMPLATE_BUCKET).getPublicUrl(objectPath);
-        const url = publicRes?.data?.publicUrl;
-        if (url) urls.push(url);
-
-        if (urls.length >= limit) break;
+        offset += objects.length;
+        if (objects.length < pageSize) break;
       }
-
-      offset += objects.length;
-
-      // If we got fewer than requested, we reached the end.
-      if (objects.length < pageSize) break;
     }
 
     return res.json({ urls });
   } catch (err) {
-    console.error('Error in /list-templates:', err);
-    return res.status(500).json({ error: err?.message || 'list_failed' });
+    const msg = err?.message || String(err);
+    return res.status(500).json({ error: 'list_failed', details: msg });
   }
 });
+
 
 
 });
