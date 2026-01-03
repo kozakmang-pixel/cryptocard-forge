@@ -64,7 +64,38 @@ async function runBurnNow() {
   }
 }
 
+
+
+// Run burn worker on an interval (e.g., every minute). Returns a stop() function.
+function startBurnCron(intervalMs = 60_000) {
+  if (!checkBurnEnv()) return () => {};
+  let running = false;
+
+  console.log(`[BURN] Burn cron started (every ${Math.round(intervalMs / 1000)}s).`);
+
+  const timer = setInterval(async () => {
+    if (running) return;
+    running = true;
+    try {
+      const result = await runBurnNow();
+      if (result?.ok) {
+        console.log("[BURN] Cron burn ok:", result);
+      } else {
+        console.log("[BURN] Cron burn result:", result);
+      }
+    } catch (err) {
+      console.error("[BURN] Cron burn error:", err);
+    } finally {
+      running = false;
+    }
+  }, intervalMs);
+
+  return () => clearInterval(timer);
+}
+
+
 module.exports = {
   runBurnNow,
   checkBurnEnv,
+  startBurnCron,
 };
