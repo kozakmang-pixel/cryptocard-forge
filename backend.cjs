@@ -26,7 +26,7 @@ const BURN_WALLET =
 // CRYPTOCARDS token mint (Pump.fun CA)
 const CRYPTOCARDS_MINT =
   process.env.CRYPTOCARDS_MINT ||
-  'AuxRtUDw7KhWZxbMcfqPoB1cLcvq44Sw83UHRd3Spump';
+  '5hiNHHBFZ3R2b7r4cfVX92DzyGm4C8yzHKJNTyBrpump';
 
 // Pump.fun API base (used for LIVE status on the PriceBanner)
 // NOTE: pump.fun frontend endpoints can change; keep this as a single config value.
