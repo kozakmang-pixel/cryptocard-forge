@@ -715,4 +715,3 @@ export default function Index() {
       />
     </div>
   );
-            : !prev.tokenAddress || prev.tokenSymbol === 'SOL'
